@@ -1,0 +1,15 @@
+strategy_id: __STRATEGY_ID__
+market: __SYMBOL__
+family: breakout
+thesis: Trade expansion after volatility compression and range escape.
+entry:
+  compression: low-volatility regime required
+  trigger: breakout above or below local box
+  confirmation: volume expansion
+exit:
+  stop: back inside breakout structure
+  tp1: 1R for 50 percent
+  tp2: 2R for 50 percent
+risk:
+  max_leverage: 4
+  risk_per_trade_pct: 1.0

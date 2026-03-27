@@ -1,0 +1,15 @@
+strategy_id: __STRATEGY_ID__
+market: __SYMBOL__
+family: reversal
+thesis: Trade reclaim after a sweep through an obvious local high or low.
+entry:
+  setup: sweep of local swing level
+  confirmation: reclaim back inside accepted range
+  regime_filter: align with higher timeframe when possible
+exit:
+  stop: beyond sweep extreme
+  tp1: 1R for 50 percent
+  tp2: 2R for 50 percent
+risk:
+  max_leverage: 3
+  risk_per_trade_pct: 0.75

@@ -1,0 +1,89 @@
+{
+  "packs": [
+    {
+      "id": "trend_pullback",
+      "display_name": "Trend Pullback",
+      "family": "continuation",
+      "confidence_tier": "high",
+      "automation_suitability": "high",
+      "required_data": [
+        "candles",
+        "volume"
+      ],
+      "supported_timeframes": [
+        "1D",
+        "4H",
+        "1H"
+      ],
+      "default_risk": {
+        "risk_per_trade_pct": 1.5,
+        "capital_allocation_pct": 100,
+        "max_leverage": 4
+      },
+      "default_exits": {
+        "tp1_r_multiple": 1.0,
+        "tp2_r_multiple": 2.0,
+        "after_tp1": "breakeven"
+      },
+      "notes_for_operator": "Best default pack for a fresh Hyperliquid workspace. Use as the first live strategy."
+    },
+    {
+      "id": "compression_breakout",
+      "display_name": "Compression Breakout",
+      "family": "breakout",
+      "confidence_tier": "high",
+      "automation_suitability": "high",
+      "required_data": [
+        "candles",
+        "volume"
+      ],
+      "supported_timeframes": [
+        "4H",
+        "1H",
+        "15M"
+      ],
+      "default_risk": {
+        "risk_per_trade_pct": 1.0,
+        "capital_allocation_pct": 100,
+        "max_leverage": 4
+      },
+      "default_exits": {
+        "tp1_r_multiple": 1.0,
+        "tp2_r_multiple": 2.0,
+        "after_tp1": "trail_atr"
+      },
+      "notes_for_operator": "Use when you want a trend-initiation or range-escape strategy alongside pullbacks."
+    },
+    {
+      "id": "liquidity_sweep_reversal",
+      "display_name": "Liquidity Sweep Reversal",
+      "family": "reversal",
+      "confidence_tier": "medium",
+      "automation_suitability": "medium",
+      "required_data": [
+        "candles",
+        "volume"
+      ],
+      "supported_timeframes": [
+        "4H",
+        "1H",
+        "15M"
+      ],
+      "default_risk": {
+        "risk_per_trade_pct": 0.75,
+        "capital_allocation_pct": 75,
+        "max_leverage": 3
+      },
+      "default_exits": {
+        "tp1_r_multiple": 1.0,
+        "tp2_r_multiple": 2.0,
+        "after_tp1": "breakeven"
+      },
+      "notes_for_operator": "Reversal pack with lower confidence and tighter risk defaults than the continuation pack."
+    }
+  ],
+  "profile_modes": {
+    "baseline_pack_defaults": "Use default strategy-pack settings for any supported symbol.",
+    "token_specific_revision": "Optional second stage: revise and tune the chosen pack using 90d or longer symbol-specific review."
+  }
+}

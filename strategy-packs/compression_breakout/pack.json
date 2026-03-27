@@ -1,0 +1,27 @@
+{
+  "id": "compression_breakout",
+  "display_name": "Compression Breakout",
+  "family": "breakout",
+  "confidence_tier": "high",
+  "automation_suitability": "high",
+  "required_data": [
+    "candles",
+    "volume"
+  ],
+  "supported_timeframes": [
+    "4H",
+    "1H",
+    "15M"
+  ],
+  "default_risk": {
+    "risk_per_trade_pct": 1.0,
+    "capital_allocation_pct": 100,
+    "max_leverage": 4
+  },
+  "default_exits": {
+    "tp1_r_multiple": 1.0,
+    "tp2_r_multiple": 2.0,
+    "after_tp1": "trail_atr"
+  },
+  "notes_for_operator": "Use when you want a trend-initiation or range-escape strategy alongside pullbacks."
+}

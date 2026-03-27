@@ -1,0 +1,27 @@
+{
+  "id": "liquidity_sweep_reversal",
+  "display_name": "Liquidity Sweep Reversal",
+  "family": "reversal",
+  "confidence_tier": "medium",
+  "automation_suitability": "medium",
+  "required_data": [
+    "candles",
+    "volume"
+  ],
+  "supported_timeframes": [
+    "4H",
+    "1H",
+    "15M"
+  ],
+  "default_risk": {
+    "risk_per_trade_pct": 0.75,
+    "capital_allocation_pct": 75,
+    "max_leverage": 3
+  },
+  "default_exits": {
+    "tp1_r_multiple": 1.0,
+    "tp2_r_multiple": 2.0,
+    "after_tp1": "breakeven"
+  },
+  "notes_for_operator": "Reversal pack with lower confidence and tighter risk defaults than the continuation pack."
+}

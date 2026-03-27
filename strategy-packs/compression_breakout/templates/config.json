@@ -1,0 +1,44 @@
+{
+  "strategy_id": "__STRATEGY_ID__",
+  "display_name": "__DISPLAY_NAME__",
+  "enabled": true,
+  "market": {
+    "symbol": "__SYMBOL__",
+    "coin": "__COIN__",
+    "market_type": "perpetual"
+  },
+  "runner": {
+    "source": "hyperliquid_candles",
+    "anchor_timeframe": "4H",
+    "trigger_timeframe": "1H"
+  },
+  "filters": {
+    "compression_lookback_bars": 20,
+    "atr_percentile_max": 25,
+    "volume_expansion_required": true
+  },
+  "risk": {
+    "position_sizing": {
+      "risk_per_trade_pct": 1.0,
+      "capital_allocation_pct": 100.0,
+      "max_leverage": 4.0
+    },
+    "stop_management": {
+      "after_tp1": {
+        "mode": "trail_atr"
+      }
+    }
+  },
+  "take_profit": {
+    "tp1_close_pct": 50,
+    "tp1_r_multiple": 1.0,
+    "tp2_close_pct": 50,
+    "tp2_r_multiple": 2.0
+  },
+  "execution": {
+    "allow_live_submission": false,
+    "auto_trading": {
+      "enabled": false
+    }
+  }
+}

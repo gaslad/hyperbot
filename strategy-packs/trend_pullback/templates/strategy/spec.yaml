@@ -1,0 +1,15 @@
+strategy_id: __STRATEGY_ID__
+market: __SYMBOL__
+family: continuation
+thesis: Trade pullback continuation within a strong higher-timeframe trend.
+entry:
+  regime: daily trend must align
+  trigger: 4H pullback into value zone
+  confirmation: 1H reclaim in trend direction
+exit:
+  stop: below invalidation level
+  tp1: 1R for 50 percent
+  tp2: 2R for 50 percent
+risk:
+  max_leverage: 4
+  risk_per_trade_pct: 1.5

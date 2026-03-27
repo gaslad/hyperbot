@@ -1,0 +1,10 @@
+{
+  "markets": [
+    {
+      "symbol": "SYMBOL_PLACEHOLDER",
+      "coin": "COIN_PLACEHOLDER",
+      "asset": null,
+      "market_type": "perpetual"
+    }
+  ]
+}

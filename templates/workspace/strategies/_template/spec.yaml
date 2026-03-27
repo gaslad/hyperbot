@@ -1,0 +1,9 @@
+strategy_id: example_strategy
+market: SYMBOL_PLACEHOLDER
+thesis: TODO
+entry:
+  rules: []
+exit:
+  rules: []
+risk:
+  max_leverage: 4
