@@ -18,7 +18,7 @@ Generate a complete automated trading workspace from a small set of user inputs.
 - copy template skeleton
 - fill config files
 - install strategy packs
-- write collaboration docs and runbooks
+- write operator docs and runbooks
 
 3. Connectivity validation
 - environment template
@@ -27,7 +27,7 @@ Generate a complete automated trading workspace from a small set of user inputs.
 - smoke-test path
 
 4. Operations bootstrap
-- launch agent templates
+- prepare operator commands and operating notes
 - status/restart/stop commands
 - notification configuration
 

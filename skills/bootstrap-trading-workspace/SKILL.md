@@ -29,7 +29,7 @@ Generate a new workspace with:
 - env template
 - operator commands
 - automation setup notes
-- LLM collaboration docs
+- workspace docs and runbooks
 - research notes explaining baseline packs vs token-specific revision
 
 ## Rules

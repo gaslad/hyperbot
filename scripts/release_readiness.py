@@ -18,6 +18,8 @@ REQUIRED_FILES = [
 ]
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 URL_RE = re.compile(r"^https://")
+WORKSPACE_TEXT_EXTENSIONS = {".md", ".json", ".py", ".yaml", ".yml", ".example"}
+WORKSPACE_FORBIDDEN_TERMS = ("Codex", "codex", "LLM", "OpenAI")
 
 
 def run(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -43,6 +45,20 @@ def add_issue(issues: list[str], message: str) -> None:
 
 def add_warning(warnings: list[str], message: str) -> None:
     warnings.append(message)
+
+
+def validate_workspace_agnostic(issues: list[str]) -> None:
+    workspace_root = ROOT / "templates" / "workspace"
+    for path in workspace_root.rglob("*"):
+        if not path.is_file() or path.suffix not in WORKSPACE_TEXT_EXTENSIONS:
+            continue
+        text = path.read_text(encoding="utf-8")
+        for term in WORKSPACE_FORBIDDEN_TERMS:
+            if term in text:
+                add_issue(
+                    issues,
+                    f"workspace template should remain LLM-agnostic: found '{term}' in {path.relative_to(ROOT)}",
+                )
 
 
 def validate_manifest(manifest: dict, issues: list[str], warnings: list[str]) -> None:
@@ -114,6 +130,7 @@ def main() -> int:
 
     manifest = load_json(PLUGIN_MANIFEST)
     validate_manifest(manifest, issues, warnings)
+    validate_workspace_agnostic(issues)
 
     run(
         [
