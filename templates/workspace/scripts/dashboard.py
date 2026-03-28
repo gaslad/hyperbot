@@ -639,6 +639,17 @@ input[type=range] { width:100%; accent-color:var(--accent); }
       <input type="range" id="s-daily" min="1" max="20" step="0.5" value="5" oninput="document.getElementById('s-dll-val').textContent=this.value+'%'">
       <div class="risk-help">Percentage of your perps account equity. Circuit breaker halts all trading if hit.</div>
     </div>
+    <h2 style="margin-top:1.5rem;font-size:1rem">Wallet</h2>
+    <div class="cred-group">
+      <label style="font-size:0.8rem;color:var(--dim)">Account address (holds your funds)</label>
+      <input class="cred-input" id="s-master-addr" type="text" placeholder="0x..." style="font-size:0.8rem">
+      <div class="cred-note">Your main Hyperliquid wallet — used for balance/position queries</div>
+    </div>
+    <div class="cred-group">
+      <label style="font-size:0.8rem;color:var(--dim)">API wallet private key</label>
+      <input class="cred-input" id="s-api-key" type="password" placeholder="0x..." style="font-size:0.8rem">
+      <div class="cred-note">Leave blank to keep current key</div>
+    </div>
     <div class="btn-row" style="margin-top:1.5rem">
       <button class="btn btn-secondary" onclick="closeSettings()">Cancel</button>
       <button class="btn btn-primary" onclick="saveSettings()">Save Changes</button>
@@ -860,18 +871,18 @@ function showCredentialForm() {
   el.innerHTML = `
     <div class="step-title">Connect your wallet</div>
     <div class="step-sub">
-      Create an API wallet at <a href="https://app.hyperliquid.xyz/API" target="_blank">app.hyperliquid.xyz/API</a>.
-      This is a trade-only key — it cannot withdraw funds.
+      Go to <a href="https://app.hyperliquid.xyz/API" target="_blank">app.hyperliquid.xyz/API</a> to create an API wallet.
+      You need two things from that page:
     </div>
     <div class="cred-group">
-      <label>Wallet address</label>
-      <input class="cred-input" id="cred-addr" type="text" placeholder="0x..." oninput="validateCreds()">
-      <div class="cred-note">Your main Hyperliquid wallet address (starts with 0x, 42 characters)</div>
+      <label style="color:var(--text);font-weight:600">Your account address (the one that holds your funds)</label>
+      <input class="cred-input" id="cred-addr" type="text" placeholder="0x5d87..." oninput="validateCreds()">
+      <div class="cred-note">This is your <b>main wallet</b> address shown in the top-right of Hyperliquid (e.g. 0x5d87...8290). NOT the API wallet address. This is used to read your balances and positions.</div>
     </div>
     <div class="cred-group">
-      <label>API private key</label>
+      <label style="color:var(--text);font-weight:600">API wallet private key</label>
       <input class="cred-input" id="cred-key" type="password" placeholder="0x..." oninput="validateCreds()">
-      <div class="cred-note">The private key of the API wallet you created (starts with 0x, 66 characters). Stored in your macOS Keychain — never sent anywhere.</div>
+      <div class="cred-note">The private key shown when you created the API wallet (starts with 0x, 66 characters). This key can only trade — it cannot withdraw your funds. Stored in macOS Keychain only.</div>
     </div>
     <div id="cred-error" style="color:var(--red);font-size:0.85rem;margin-top:0.5rem;display:none"></div>
     <div class="btn-row">
@@ -1111,6 +1122,8 @@ function openSettings() {
     document.getElementById('s-rpt-val').textContent = s.risk_per_trade_pct + '%';
     document.getElementById('s-daily').value = s.max_daily_loss_pct;
     document.getElementById('s-dll-val').textContent = s.max_daily_loss_pct + '%';
+    document.getElementById('s-master-addr').value = s.master_address || '';
+    document.getElementById('s-api-key').value = '';
     document.getElementById('settings-overlay').classList.add('open');
   });
 }
@@ -1123,7 +1136,17 @@ async function saveSettings() {
     risk_per_trade_pct: parseFloat(document.getElementById('s-risk').value),
     max_daily_loss_pct: parseFloat(document.getElementById('s-daily').value),
   };
+  // Save risk settings
   await fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)});
+  // Save wallet if changed
+  const addr = document.getElementById('s-master-addr').value.trim();
+  const key = document.getElementById('s-api-key').value.trim();
+  if (addr || key) {
+    const creds = {};
+    if (addr) creds.master_address = addr;
+    if (key) creds.agent_private_key = key;
+    await fetch('/api/save-credentials', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(creds)});
+  }
   closeSettings();
   dashPoll();
 }
@@ -1225,14 +1248,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         if path == "/api/save-credentials":
             try:
-                master = body["master_address"].strip()
-                agent_pk = body["agent_private_key"].strip()
-                pk = agent_pk.removeprefix("0x")
-                if len(pk) != 64 or not all(c in "0123456789abcdefABCDEF" for c in pk):
-                    raise ValueError("Invalid private key format")
-                store_credential("master_address", master)
-                store_credential("agent_private_key", agent_pk)
-                print(f"  Credentials saved for {master}", flush=True)
+                master = body.get("master_address", "").strip()
+                agent_pk = body.get("agent_private_key", "").strip()
+                if master:
+                    if not master.startswith("0x") or len(master) != 42:
+                        raise ValueError("Address must be 0x + 40 hex chars")
+                    store_credential("master_address", master)
+                    STATE.master_address = master
+                    print(f"  Master address saved: {master}", flush=True)
+                if agent_pk:
+                    pk = agent_pk.removeprefix("0x")
+                    if len(pk) != 64 or not all(c in "0123456789abcdefABCDEF" for c in pk):
+                        raise ValueError("Invalid private key format")
+                    store_credential("agent_private_key", agent_pk)
+                    print(f"  API key saved", flush=True)
+                if not master and not agent_pk:
+                    raise ValueError("No credentials provided")
                 self._json({"ok": True})
             except Exception as e:
                 self._json({"ok": False, "error": str(e)}, 400)
