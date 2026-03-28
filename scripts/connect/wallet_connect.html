@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hyperbot - Connect Wallet</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #0a0a0f;
+    color: #e0e0e0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .container { max-width: 520px; width: 100%; padding: 2rem; }
+  .logo { font-size: 1.5rem; font-weight: 700; color: #4ade80; margin-bottom: 0.5rem; }
+  .subtitle { color: #888; font-size: 0.9rem; margin-bottom: 2rem; }
+  .card {
+    background: #14141f;
+    border: 1px solid #2a2a3a;
+    border-radius: 12px;
+    padding: 2rem;
+  }
+  .step { display: none; animation: fadeIn 0.3s ease-in; }
+  .step.active { display: block; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  h2 { font-size: 1.2rem; margin-bottom: 0.5rem; color: #fff; }
+  p, li { color: #aaa; font-size: 0.9rem; line-height: 1.6; }
+  p { margin-bottom: 1.5rem; }
+  ol { margin: 0 0 1.5rem 1.2rem; }
+  li { margin-bottom: 0.5rem; }
+  .btn {
+    display: block; width: 100%; padding: 0.9rem;
+    border: none; border-radius: 8px;
+    font-size: 1rem; font-weight: 600;
+    cursor: pointer; transition: all 0.2s;
+    margin-bottom: 0.75rem;
+  }
+  .btn:last-child { margin-bottom: 0; }
+  .btn-primary { background: #4ade80; color: #0a0a0f; }
+  .btn-primary:hover { background: #22c55e; }
+  .btn-primary:disabled { background: #2a3a2a; color: #666; cursor: not-allowed; }
+  .btn-secondary { background: #2a2a3a; color: #e0e0e0; }
+  .btn-secondary:hover { background: #3a3a4a; }
+  .btn-link {
+    background: none; color: #60a5fa; font-size: 0.85rem;
+    text-decoration: underline; padding: 0.5rem;
+  }
+  .btn-link:hover { color: #93bbfc; }
+  .status {
+    margin-top: 1rem; padding: 0.75rem;
+    border-radius: 8px; font-size: 0.85rem; display: none;
+  }
+  .status.error { display: block; background: #2a1515; border: 1px solid #5a2020; color: #f87171; }
+  .status.success { display: block; background: #152a15; border: 1px solid #205a20; color: #4ade80; }
+  .status.info { display: block; background: #15152a; border: 1px solid #20205a; color: #60a5fa; }
+  input[type="text"], input[type="password"] {
+    width: 100%; padding: 0.75rem;
+    background: #1a1a2a; border: 1px solid #3a3a4a;
+    border-radius: 8px; color: #e0e0e0;
+    font-family: 'SF Mono', Monaco, monospace; font-size: 0.85rem;
+    margin-bottom: 0.75rem;
+  }
+  input::placeholder { color: #555; }
+  input:focus { outline: none; border-color: #4ade80; }
+  .security-note {
+    font-size: 0.8rem; color: #888;
+    margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #2a2a3a;
+  }
+  .spinner {
+    display: inline-block; width: 16px; height: 16px;
+    border: 2px solid #4ade80; border-top-color: transparent;
+    border-radius: 50%; animation: spin 0.6s linear infinite;
+    margin-right: 8px; vertical-align: middle;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .checkmark { color: #4ade80; font-size: 3rem; text-align: center; margin-bottom: 1rem; }
+  .divider {
+    text-align: center; color: #555; font-size: 0.8rem;
+    margin: 1rem 0; position: relative;
+  }
+  .divider::before, .divider::after {
+    content: ''; position: absolute; top: 50%;
+    width: 40%; height: 1px; background: #2a2a3a;
+  }
+  .divider::before { left: 0; }
+  .divider::after { right: 0; }
+  a { color: #4ade80; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { background: #1a1a2a; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="logo">Hyperbot</div>
+  <div class="subtitle">Connect your Hyperliquid wallet</div>
+
+  <div class="card">
+    <!-- Step 1: Choose method -->
+    <div id="step-choose" class="step active">
+      <h2>Connect to Hyperliquid</h2>
+      <p>Link your Hyperliquid account so Hyperbot can trade on your behalf via a secure agent wallet.</p>
+      <button class="btn btn-primary" onclick="showStep('step-manual')">Connect with API Wallet</button>
+      <div class="security-note">
+        Uses Hyperliquid's built-in API wallet system. The agent can only trade — it cannot withdraw your funds.
+      </div>
+    </div>
+
+    <!-- Step 2: Manual API wallet flow -->
+    <div id="step-manual" class="step">
+      <h2>API Wallet Setup</h2>
+      <ol>
+        <li>Open <a href="https://app.hyperliquid.xyz/API" target="_blank">app.hyperliquid.xyz/API</a></li>
+        <li>Click <strong>Create API Wallet</strong> (or use an existing one)</li>
+        <li>Copy your <strong>API Private Key</strong> and <strong>Wallet Address</strong></li>
+        <li>Paste them below</li>
+      </ol>
+
+      <input type="text" id="input-address" placeholder="Your wallet address (0x...)" spellcheck="false" />
+      <input type="password" id="input-key" placeholder="API wallet private key (0x...)" spellcheck="false" />
+
+      <button class="btn btn-primary" onclick="submitManual()">Save &amp; Connect</button>
+      <button class="btn btn-link" onclick="showStep('step-choose')">Back</button>
+      <div id="status-manual" class="status"></div>
+      <div class="security-note">
+        Your private key is stored in your macOS Keychain. It never leaves your machine or gets sent to any server besides Hyperliquid.
+      </div>
+    </div>
+
+    <!-- Step 3: Done -->
+    <div id="step-done" class="step">
+      <div class="checkmark">&#10003;</div>
+      <h2 style="text-align:center">Connected</h2>
+      <p style="text-align:center">Your wallet is connected. You can close this window and return to your terminal.</p>
+      <div id="wallet-result" class="status success"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const CALLBACK_PORT = new URLSearchParams(window.location.search).get('port') || '18741';
+const CALLBACK_URL = `http://127.0.0.1:${CALLBACK_PORT}`;
+
+function showStep(id) {
+  document.querySelectorAll('.step').forEach(s => s.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+}
+
+function setStatus(stepId, msg, type) {
+  const el = document.getElementById(`status-${stepId}`);
+  el.className = `status ${type}`;
+  el.innerHTML = msg;
+}
+
+async function submitManual() {
+  const address = document.getElementById('input-address').value.trim();
+  const key = document.getElementById('input-key').value.trim();
+
+  if (!address.startsWith('0x') || address.length !== 42) {
+    setStatus('manual', 'Please enter a valid wallet address (0x... 42 characters)', 'error');
+    return;
+  }
+  if (!key.startsWith('0x') || key.length !== 66) {
+    setStatus('manual', 'Please enter a valid private key (0x... 66 characters)', 'error');
+    return;
+  }
+
+  setStatus('manual', '<span class="spinner"></span>Verifying and saving...', 'info');
+
+  try {
+    const resp = await fetch(`${CALLBACK_URL}/save-credentials`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        master_address: address.toLowerCase(),
+        agent_private_key: key,
+      }),
+    });
+
+    const result = await resp.json();
+    if (result.ok) {
+      document.getElementById('wallet-result').textContent =
+        `Wallet: ${result.master_address}\nCredentials saved to macOS Keychain.`;
+      showStep('step-done');
+    } else {
+      throw new Error(result.error || 'Failed to save credentials');
+    }
+  } catch (err) {
+    setStatus('manual', err.message, 'error');
+  }
+}
+</script>
+</body>
+</html>

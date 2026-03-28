@@ -56,6 +56,9 @@ def build_parser() -> argparse.ArgumentParser:
     run_cmd.add_argument("--profile-days", type=int, default=90)
     run_cmd.add_argument("--force", action="store_true", help="Replace existing workspace if it exists")
 
+    connect_cmd = subparsers.add_parser("connect", help="Connect your Hyperliquid wallet via browser (one-click)")
+    connect_cmd.add_argument("--status", action="store_true", help="Check if a wallet is already connected")
+
     return parser
 
 
@@ -105,6 +108,19 @@ def main() -> int:
 
     if args.command == "run":
         return run_pipeline(args, local_only)
+
+    if args.command == "connect":
+        from connect.server import run_server, read_credential
+        if args.status:
+            master = read_credential("master_address")
+            agent = read_credential("agent_address")
+            if master:
+                log(f"Connected: {master}")
+                log(f"Agent:     {agent}")
+            else:
+                log("Not connected. Run: hyperbot connect")
+            return 0
+        return run_server()
 
     parser.error(f"unknown command: {args.command}")
     return 2
