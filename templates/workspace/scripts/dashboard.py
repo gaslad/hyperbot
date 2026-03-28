@@ -208,8 +208,8 @@ def build_workspace_background(config: dict) -> None:
                     if cfg.get("strategy_id", "").endswith(strat_id):
                         existing = (f, cfg)
                         break
-                except Exception:
-                    pass
+                except Exception as e:
+                    blog(f"WARNING: Skipping invalid config {f.name}: {e}")
 
             if existing:
                 old_path, cfg = existing
@@ -390,19 +390,28 @@ def trading_loop() -> None:
                     STATE.equity = portfolio["total_equity"]
                     STATE.pnl = portfolio["unrealized_pnl"]
                     STATE.positions = portfolio["positions"]
+                    # Surface non-fatal parse warnings from hl_client
+                    if portfolio.get("error"):
+                        STATE.error = f"Portfolio partial: {portfolio['error']}"
                     # Set start-of-day equity on first fetch
                     if STATE.start_of_day_equity <= 0 and STATE.equity > 0:
                         STATE.start_of_day_equity = STATE.equity
                     if cycle <= 1:
                         print(f"[dashboard] Portfolio: ${STATE.equity:.2f} (perps=${portfolio['perps_equity']:.2f} + spot=${portfolio['spot_total_usd']:.2f})", flush=True)
+                except (ConnectionError, TimeoutError, OSError) as e:
+                    # Network error — keep previous equity, surface to UI
+                    STATE.error = f"Network error fetching account: {e}"
+                    print(f"[dashboard] Account network error (keeping cached values): {e}", flush=True)
                 except Exception as e:
+                    STATE.error = f"Account sync error: {e}"
                     print(f"[dashboard] Account fetch error: {e}", flush=True)
             else:
                 if cycle <= 1:
                     print("[dashboard] WARNING: No master_address in Keychain. Account data unavailable.", flush=True)
 
             STATE.last_update = time.strftime("%H:%M:%S")
-            STATE.error = None
+            if not STATE.error:
+                STATE.error = None
 
             # Execute trades if live and active
             if STATE.live_enabled and STATE.trading_active:
@@ -1440,7 +1449,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if master:
                     try:
                         ch = hl_client.get_clearinghouse_state(master)
-                        equity = float(ch.get("marginSummary", {}).get("accountValue", 0))
+                        margin = ch.get("marginSummary") or {}
+                        equity = float(margin.get("accountValue") or 0)
                         if equity > 0:
                             verify_msg = f"Verified: account has ${equity:.2f}"
                             print(f"  {verify_msg}", flush=True)
