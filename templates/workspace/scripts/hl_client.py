@@ -188,7 +188,6 @@ def get_portfolio_value(address: str, base_url: str = HL_MAINNET) -> dict:
                 result["spot_usdc"] = amount
                 result["spot_total_usd"] += amount
             elif amount > 0:
-                # Estimate USD value from mid price
                 try:
                     mid = get_mid_price(token, base_url)
                     if mid:
