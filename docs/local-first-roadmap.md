@@ -101,11 +101,11 @@ Do not make them required for:
 
 ## Suggested Implementation Order
 
-1. Add local operator policy schema and sample file.
-2. Extend `apply_revision.py` with policy-aware safe auto-apply mode.
-3. Add a single local command that runs scaffold -> validate -> review -> safe-apply.
-4. Cache market data snapshots locally so repeated runs do not require refetch.
-5. Add an optional local-only mode flag that disables any future model-dependent features.
+1. ~~Add local operator policy schema and sample file.~~ **Done** — `config/policy/operator-policy.json` ships in every workspace.
+2. ~~Extend `apply_revision.py` with policy-aware safe auto-apply mode.~~ **Done** — `--auto-apply-safe --policy` flags added.
+3. ~~Add a single local command that runs scaffold -> validate -> review -> safe-apply.~~ **Done** — `hyperbot run` pipeline command.
+4. ~~Cache market data snapshots locally so repeated runs do not require refetch.~~ **Done** — `research/cache/` with configurable max age.
+5. ~~Add an optional local-only mode flag that disables any future model-dependent features.~~ **Done** — `hyperbot --local-only` and `--offline` on the profiler.
 
 ## Questions For Claude To Push On
 

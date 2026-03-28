@@ -1,0 +1,33 @@
+{
+  "_comment": "Operator policy for Hyperbot workspace. Controls which actions auto-apply and which require explicit approval.",
+  "version": 1,
+  "auto_apply": {
+    "enabled": true,
+    "safe_bands": {
+      "leverage_max": 4.0,
+      "risk_per_trade_pct_max": 1.0,
+      "stop_loss_may_widen": false,
+      "invalidation_below_sma_pct_max": 5.0,
+      "overextension_max_pct_max": 25.0
+    },
+    "rules": [
+      "leverage unchanged or lower",
+      "risk_per_trade unchanged or lower",
+      "stop-loss logic tightened or unchanged",
+      "filter parameters within safe_bands"
+    ]
+  },
+  "require_approval": [
+    "enable_live_trading",
+    "increase_leverage_above_policy",
+    "widen_stop_loss",
+    "change_account_mode_to_production",
+    "enable_unattended_mode"
+  ],
+  "allowed_symbols": [],
+  "market_data_cache": {
+    "enabled": true,
+    "max_age_hours": 24
+  },
+  "local_only_mode": false
+}

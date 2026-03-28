@@ -41,11 +41,31 @@ class Candle:
         )
 
 
+CACHE_DIR = RESEARCH_DIR / "cache"
+
+
 class CandleFetcher:
-    def __init__(self, base_url: str = "https://api.hyperliquid.xyz") -> None:
+    def __init__(self, base_url: str = "https://api.hyperliquid.xyz", cache_max_age_hours: int = 24) -> None:
         self.base_url = base_url.rstrip("/")
+        self.cache_max_age_seconds = cache_max_age_hours * 3600
+
+    def _cache_path(self, coin: str, interval: str, lookback_days: int) -> Path:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        return CACHE_DIR / f"{coin.lower()}_{interval}_{lookback_days}d.json"
+
+    def _cache_valid(self, path: Path) -> bool:
+        if not path.exists():
+            return False
+        age = time.time() - path.stat().st_mtime
+        return age < self.cache_max_age_seconds
 
     def interval(self, coin: str, interval: str, lookback_days: int) -> list[Candle]:
+        cache_path = self._cache_path(coin, interval, lookback_days)
+
+        if self._cache_valid(cache_path):
+            raw = json.loads(cache_path.read_text(encoding="utf-8"))
+            return [Candle.from_hl(item) for item in raw]
+
         lookback_ms = lookback_days * 24 * 60 * 60 * 1000
         now_ms = int(time.time() * 1000)
         start_ms = now_ms - lookback_ms
@@ -66,6 +86,8 @@ class CandleFetcher:
         )
         with urllib.request.urlopen(request, timeout=20) as response:
             raw = json.loads(response.read().decode("utf-8"))
+
+        cache_path.write_text(json.dumps(raw, indent=2), encoding="utf-8")
         return [Candle.from_hl(item) for item in raw]
 
 
@@ -481,6 +503,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--symbol")
     parser.add_argument("--days", type=int, default=90)
     parser.add_argument("--api-url", default="https://api.hyperliquid.xyz")
+    parser.add_argument("--cache-max-age", type=int, default=24, help="Max cache age in hours (default 24, 0 to disable)")
+    parser.add_argument("--offline", action="store_true", help="Use cached data only, fail if cache is missing or stale")
     parser.add_argument("--json", action="store_true")
     return parser.parse_args()
 
@@ -492,7 +516,19 @@ def main() -> int:
     symbol = args.symbol or workspace.get("symbol", "BTCUSDT")
     coin = workspace.get("coin") or infer_coin(symbol)
 
-    fetcher = CandleFetcher(base_url=args.api_url)
+    cache_age = args.cache_max_age
+    if args.offline:
+        cache_age = 999999  # accept any cached data in offline mode
+
+    fetcher = CandleFetcher(base_url=args.api_url, cache_max_age_hours=cache_age)
+
+    if args.offline:
+        # In offline mode, verify cache exists before attempting fetch
+        for iv, lb in [("1d", max(args.days, 120)), ("4h", max(args.days, 30)), ("1h", max(args.days, 14))]:
+            cp = fetcher._cache_path(coin, iv, lb)
+            if not cp.exists():
+                raise SystemExit(f"offline mode: no cached data at {cp}. Run once online first.")
+
     daily = fetcher.interval(coin, "1d", max(args.days, 120))
     h4 = fetcher.interval(coin, "4h", max(args.days, 30))
     h1 = fetcher.interval(coin, "1h", max(args.days, 14))

@@ -12,6 +12,7 @@ WORKSPACE_MANIFEST = ROOT / "hyperbot.workspace.json"
 CONFIG_DIR = ROOT / "config" / "strategies"
 REVISION_DIR = ROOT / "research" / "revisions"
 BACKUP_DIR = CONFIG_DIR / "backups"
+DEFAULT_POLICY_PATH = ROOT / "config" / "policy" / "operator-policy.json"
 
 
 def utc_stamp() -> str:
@@ -68,6 +69,78 @@ def diff_paths(before: dict[str, Any], after: dict[str, Any]) -> list[dict[str, 
     return changes
 
 
+def load_policy(policy_path: Path | None) -> dict[str, Any]:
+    path = policy_path or DEFAULT_POLICY_PATH
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def revision_within_safe_bands(config: dict[str, Any], revision: dict[str, Any], policy: dict[str, Any]) -> tuple[bool, list[str]]:
+    """Check whether a revision stays within policy safe bands.
+
+    Returns (safe, reasons) where safe is True when auto-apply is allowed.
+    """
+    auto_apply = policy.get("auto_apply", {})
+    if not auto_apply.get("enabled", False):
+        return False, ["auto_apply is disabled in policy"]
+
+    bands = auto_apply.get("safe_bands", {})
+    overrides = revision.get("recommended_overrides", {})
+    violations: list[str] = []
+
+    # Check leverage unchanged or lower
+    new_leverage = _deep_get(overrides, "risk.max_leverage")
+    old_leverage = _deep_get(config, "risk.max_leverage")
+    ceiling = bands.get("leverage_max", 4.0)
+    if new_leverage is not None:
+        if old_leverage is not None and new_leverage > old_leverage:
+            violations.append(f"leverage increased: {old_leverage} -> {new_leverage}")
+        if new_leverage > ceiling:
+            violations.append(f"leverage {new_leverage} exceeds policy ceiling {ceiling}")
+
+    # Check risk_per_trade unchanged or lower
+    new_risk = _deep_get(overrides, "risk.position_sizing.risk_per_trade_pct")
+    old_risk = _deep_get(config, "risk.position_sizing.risk_per_trade_pct")
+    risk_ceiling = bands.get("risk_per_trade_pct_max", 1.0)
+    if new_risk is not None:
+        if old_risk is not None and new_risk > old_risk:
+            violations.append(f"risk_per_trade increased: {old_risk} -> {new_risk}")
+        if new_risk > risk_ceiling:
+            violations.append(f"risk_per_trade {new_risk} exceeds policy ceiling {risk_ceiling}")
+
+    # Check stop-loss not widened
+    may_widen = bands.get("stop_loss_may_widen", False)
+    new_inv = _deep_get(overrides, "risk.invalidation_below_sma_pct")
+    old_inv = _deep_get(config, "risk.invalidation_below_sma_pct")
+    inv_ceiling = bands.get("invalidation_below_sma_pct_max", 5.0)
+    if new_inv is not None:
+        if not may_widen and old_inv is not None and new_inv > old_inv:
+            violations.append(f"stop-loss widened: invalidation {old_inv} -> {new_inv}")
+        if new_inv > inv_ceiling:
+            violations.append(f"invalidation {new_inv} exceeds policy ceiling {inv_ceiling}")
+
+    # Check overextension filter within bounds
+    new_ext = _deep_get(overrides, "filters.overextension_max_pct")
+    ext_ceiling = bands.get("overextension_max_pct_max", 25.0)
+    if new_ext is not None and new_ext > ext_ceiling:
+        violations.append(f"overextension_max_pct {new_ext} exceeds policy ceiling {ext_ceiling}")
+
+    if violations:
+        return False, violations
+    return True, []
+
+
+def _deep_get(obj: dict[str, Any], dotted_path: str) -> Any:
+    parts = dotted_path.split(".")
+    current: Any = obj
+    for part in parts:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+
 def validate_revision(workspace: dict[str, Any], config: dict[str, Any], revision: dict[str, Any], revision_path: Path) -> None:
     strategy_id = revision.get("strategy_id")
     installed = {item["strategy_id"]: item for item in workspace.get("strategy_packs", [])}
@@ -96,6 +169,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--revision", help="Path to a specific revision JSON file")
     parser.add_argument("--config", help="Optional explicit config path")
     parser.add_argument("--apply", action="store_true", help="Write the merged config and create a backup")
+    parser.add_argument("--auto-apply-safe", action="store_true", help="Auto-apply if revision stays within policy safe bands")
+    parser.add_argument("--policy", help="Path to operator policy JSON (default: config/policy/operator-policy.json)")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable output")
     return parser.parse_args()
 
@@ -124,17 +199,29 @@ def main() -> int:
     merged = deep_merge(config, overrides)
     changes = diff_paths(config, merged)
 
+    # Determine effective mode
+    do_apply = args.apply
+    policy_check: dict[str, Any] = {}
+    if args.auto_apply_safe and not args.apply:
+        policy_path = Path(args.policy).expanduser() if args.policy else None
+        policy = load_policy(policy_path)
+        safe, reasons = revision_within_safe_bands(config, revision, policy)
+        policy_check = {"safe": safe, "reasons": reasons}
+        if safe:
+            do_apply = True
+
     result = {
-        "mode": "apply" if args.apply else "preview",
+        "mode": "auto-apply" if (do_apply and args.auto_apply_safe) else ("apply" if do_apply else "preview"),
         "strategy_id": strategy_id,
         "config_path": str(config_path),
         "revision_path": str(revision_path),
         "changes": changes,
         "changed_paths": [item["path"] for item in changes],
         "backup_path": None,
+        "policy_check": policy_check if policy_check else None,
     }
 
-    if args.apply:
+    if do_apply:
         BACKUP_DIR.mkdir(parents=True, exist_ok=True)
         backup_path = BACKUP_DIR / f"{strategy_id}_{utc_stamp()}.json"
         write_json(backup_path, config)
