@@ -1,5 +1,6 @@
 {
   "strategy_id": "__STRATEGY_ID__",
+  "pack_id": "compression_breakout",
   "display_name": "__DISPLAY_NAME__",
   "enabled": true,
   "market": {

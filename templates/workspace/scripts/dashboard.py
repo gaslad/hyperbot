@@ -141,7 +141,7 @@ def read_credential(key: str) -> str | None:
 
 def build_workspace_background(config: dict) -> None:
     """Run in a background thread: profile + auto-apply revisions."""
-    global BUILD_THREAD
+    global BUILD_THREAD, ROOT, POLICY_PATH, MANIFEST_PATH
     try:
         symbol = config["symbol"]
         coin = hl_client.infer_coin(symbol)
@@ -154,6 +154,24 @@ def build_workspace_background(config: dict) -> None:
             print(f"  [build] {msg}", flush=True)
 
         blog(f"Setting up {symbol} workspace with {len(strategies)} strategies...")
+
+        # Rename workspace folder to reflect the chosen pair
+        # e.g. hyperbot-workspace → hyperbot-SOL
+        desired_name = f"hyperbot-{coin}"
+        if ROOT.name != desired_name:
+            new_path = ROOT.parent / desired_name
+            if not new_path.exists():
+                try:
+                    ROOT.rename(new_path)
+                    ROOT = new_path
+                    POLICY_PATH = ROOT / "config" / "policy" / "operator-policy.json"
+                    MANIFEST_PATH = ROOT / "hyperbot.workspace.json"
+                    # Also update hl_client's ROOT reference
+                    hl_client.ROOT = ROOT
+                    hl_client.WORKSPACE_MANIFEST = MANIFEST_PATH
+                    blog(f"Workspace renamed to {desired_name}/")
+                except OSError as e:
+                    blog(f"Note: Could not rename workspace folder — {e}")
 
         # Update workspace manifest with chosen symbol
         if MANIFEST_PATH.exists():
@@ -171,6 +189,60 @@ def build_workspace_background(config: dict) -> None:
             safe["max_daily_loss_pct"] = config.get("max_daily_loss_pct", 5.0)
             POLICY_PATH.write_text(json.dumps(policy, indent=2), encoding="utf-8")
             blog(f"Risk policy updated: leverage={safe['leverage_max']}x, risk/trade={safe['risk_per_trade_pct_max']}%, daily limit={safe['max_daily_loss_pct']}% of equity")
+
+        # Install strategy configs for the chosen pair
+        # The workspace was created with placeholder configs (BTCUSDT).
+        # Re-create them for the actual coin chosen in the wizard.
+        config_dir = ROOT / "config" / "strategies"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        strategy_ids = []
+        for strat_id in strategies:
+            new_id = f"{coin.lower()}_{strat_id}"
+            strategy_ids.append(new_id)
+            # Check if there's already a config for this pack (from placeholder creation)
+            # Find any existing config with this pack_id and copy/update it
+            existing = None
+            for f in config_dir.glob("*.json"):
+                try:
+                    cfg = json.loads(f.read_text(encoding="utf-8"))
+                    if cfg.get("strategy_id", "").endswith(strat_id):
+                        existing = (f, cfg)
+                        break
+                except Exception:
+                    pass
+
+            if existing:
+                old_path, cfg = existing
+                # Update the config for the new coin
+                cfg["strategy_id"] = new_id
+                cfg["pack_id"] = strat_id  # required for signal dispatcher
+                cfg["display_name"] = f"{coin} {strat_id.replace('_', ' ').title()}"
+                cfg["market"] = {"symbol": symbol, "coin": coin, "market_type": "perpetual"}
+                new_path = config_dir / f"{new_id}.json"
+                new_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+                if old_path != new_path:
+                    old_path.unlink(missing_ok=True)
+                blog(f"Strategy config: {new_id}")
+            else:
+                # Create a minimal config from scratch
+                cfg = {
+                    "strategy_id": new_id,
+                    "display_name": f"{coin} {strat_id.replace('_', ' ').title()}",
+                    "enabled": True,
+                    "pack_id": strat_id,
+                    "market": {"symbol": symbol, "coin": coin, "market_type": "perpetual"},
+                    "runner": {"source": "hyperliquid_candles", "anchor_timeframe": "1D", "trigger_timeframe": "4H", "confirmation_timeframe": "1H"},
+                    "entry": {"sma_period": 10, "pullback_zone_pct": 5.0, "confirmation_type": "close_above_prev_high"},
+                    "filters": {"overextension_max_pct": 20.0, "min_pullback_pct": 3.0},
+                    "risk": {"invalidation_below_sma_pct": 3.0, "position_sizing": {"risk_per_trade_pct": 1.5, "max_leverage": 4.0}},
+                    "take_profit": {"tp1_r_multiple": 1.0, "tp2_r_multiple": 2.0},
+                }
+                (config_dir / f"{new_id}.json").write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+                blog(f"Strategy config created: {new_id}")
+
+        # Also update the signals module's CONFIG_DIR reference
+        signals.CONFIG_DIR = config_dir
+        blog(f"Installed {len(strategy_ids)} strategy configs for {coin}")
 
         # Fetch and cache 90-day candle data for profiling
         blog(f"Fetching 90-day price history for {coin}...")
@@ -314,24 +386,15 @@ def trading_loop() -> None:
 
             if master_address:
                 try:
-                    ch_state = hl_client.get_clearinghouse_state(master_address)
-                    margin = ch_state.get("marginSummary", {})
-                    STATE.equity = float(margin.get("accountValue", 0))
-                    STATE.pnl = float(margin.get("totalUnrealizedPnl", 0))
+                    portfolio = hl_client.get_portfolio_value(master_address)
+                    STATE.equity = portfolio["total_equity"]
+                    STATE.pnl = portfolio["unrealized_pnl"]
+                    STATE.positions = portfolio["positions"]
                     # Set start-of-day equity on first fetch
                     if STATE.start_of_day_equity <= 0 and STATE.equity > 0:
                         STATE.start_of_day_equity = STATE.equity
-                    STATE.positions = [
-                        {
-                            "coin": p["position"]["coin"],
-                            "size": p["position"]["szi"],
-                            "entry_price": p["position"]["entryPx"],
-                            "unrealized_pnl": p["position"]["unrealizedPnl"],
-                            "leverage": p["position"].get("leverage", {}).get("value", "?"),
-                        }
-                        for p in ch_state.get("assetPositions", [])
-                        if float(p["position"]["szi"]) != 0
-                    ]
+                    if cycle <= 1:
+                        print(f"[dashboard] Portfolio: ${STATE.equity:.2f} (perps=${portfolio['perps_equity']:.2f} + spot=${portfolio['spot_total_usd']:.2f})", flush=True)
                 except Exception as e:
                     print(f"[dashboard] Account fetch error: {e}", flush=True)
             else:
@@ -415,13 +478,18 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <title>Hyperbot</title>
 <style>
 :root {
-  --bg: #0a0a0f; --bg2: #14141f; --border: #2a2a3a; --text: #e0e0e0;
-  --dim: #888; --green: #4ade80; --red: #f87171; --blue: #60a5fa;
+  --bg: #0a0a0f; --bg2: #12121c; --bg3: #1a1a28; --border: #2a2a3a;
+  --text: #e0e0e0; --dim: #999; --dim2: #777; --muted: #555;
+  --green: #4ade80; --red: #f87171; --blue: #60a5fa; --yellow: #facc15;
   --accent: #4ade80; --accent-dim: #1a3a1a;
+  --font-body: -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  --font-mono: 'SF Mono',SFMono-Regular,Menlo,monospace;
+  --radius: 10px; --radius-sm: 6px;
 }
 * { margin:0; padding:0; box-sizing:border-box; }
-body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; }
+body { font-family:var(--font-body); background:var(--bg); color:var(--text); min-height:100vh; }
 a { color:var(--blue); }
+:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 
 /* --- Wizard container --- */
 .wizard { max-width:640px; margin:0 auto; padding:2rem 1.5rem; min-height:100vh; display:flex; flex-direction:column; justify-content:center; }
@@ -437,39 +505,39 @@ a { color:var(--blue); }
 
 /* Pair picker */
 .pair-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:0.75rem; margin-bottom:1.5rem; }
-.pair-card { background:var(--bg2); border:2px solid var(--border); border-radius:10px; padding:1rem 0.75rem; text-align:center; cursor:pointer; transition:all 0.2s; }
+.pair-card { background:var(--bg2); border:2px solid var(--border); border-radius:var(--radius); padding:1rem 0.75rem; text-align:center; cursor:pointer; transition:all 0.2s; }
 .pair-card:hover { border-color:var(--accent); }
 .pair-card.selected { border-color:var(--accent); background:var(--accent-dim); }
 .pair-card .pair-name { font-weight:700; font-size:1rem; }
-.pair-card .pair-price { font-size:0.8rem; color:var(--dim); margin-top:0.3rem; font-family:monospace; }
+.pair-card .pair-price { font-size:0.8rem; color:var(--dim); margin-top:0.3rem; font-family:var(--font-mono); }
 .pair-search { width:100%; padding:0.75rem 1rem; background:var(--bg2); border:1px solid var(--border); border-radius:8px; color:var(--text); font-size:0.9rem; margin-bottom:1rem; outline:none; }
 .pair-search:focus { border-color:var(--accent); }
-.pair-search::placeholder { color:#555; }
+.pair-search::placeholder { color:var(--muted); }
 
 /* Strategy cards */
-.strat-card { background:var(--bg2); border:2px solid var(--border); border-radius:10px; padding:1.25rem; margin-bottom:0.75rem; cursor:pointer; transition:all 0.2s; }
+.strat-card { background:var(--bg2); border:2px solid var(--border); border-radius:var(--radius); padding:1.25rem; margin-bottom:0.75rem; cursor:pointer; transition:all 0.2s; }
 .strat-card:hover { border-color:var(--accent); }
 .strat-card.selected { border-color:var(--accent); background:var(--accent-dim); }
 .strat-name { font-weight:700; font-size:1rem; display:flex; align-items:center; gap:0.5rem; }
 .strat-tag { font-size:0.7rem; padding:0.15rem 0.5rem; border-radius:10px; font-weight:600; }
 .tag-high { background:#1a3a1a; color:var(--green); }
-.tag-med { background:#3a3a1a; color:#facc15; }
+.tag-med { background:#3a3a1a; color:var(--yellow); }
 .strat-desc { color:var(--dim); font-size:0.85rem; margin-top:0.5rem; line-height:1.5; }
-.strat-meta { display:flex; gap:1.5rem; margin-top:0.6rem; font-size:0.8rem; color:#666; }
+.strat-meta { display:flex; gap:1.5rem; margin-top:0.6rem; font-size:0.8rem; color:var(--dim2); }
 
 /* Risk sliders */
 .risk-group { margin-bottom:1.75rem; }
 .risk-label { display:flex; justify-content:space-between; margin-bottom:0.5rem; font-size:0.9rem; }
-.risk-label .val { color:var(--accent); font-weight:600; font-family:monospace; }
+.risk-label .val { color:var(--accent); font-weight:600; font-family:var(--font-mono); }
 input[type=range] { width:100%; accent-color:var(--accent); }
-.risk-help { font-size:0.75rem; color:#555; margin-top:0.3rem; }
+.risk-help { font-size:0.75rem; color:var(--muted); margin-top:0.3rem; }
 
 /* Credential input */
 .cred-group { margin-bottom:1.25rem; }
 .cred-group label { display:block; font-size:0.85rem; color:var(--dim); margin-bottom:0.4rem; }
-.cred-input { width:100%; padding:0.7rem 1rem; background:var(--bg2); border:1px solid var(--border); border-radius:8px; color:var(--text); font-family:monospace; font-size:0.85rem; outline:none; }
+.cred-input { width:100%; padding:0.7rem 1rem; background:var(--bg2); border:1px solid var(--border); border-radius:8px; color:var(--text); font-family:var(--font-mono); font-size:0.85rem; outline:none; }
 .cred-input:focus { border-color:var(--accent); }
-.cred-note { font-size:0.75rem; color:#555; margin-top:0.3rem; }
+.cred-note { font-size:0.75rem; color:var(--muted); margin-top:0.3rem; }
 .cred-skip { font-size:0.8rem; color:var(--dim); margin-top:1rem; }
 .cred-connected { background:var(--accent-dim); border:1px solid #2a5a2a; border-radius:8px; padding:0.75rem 1rem; font-size:0.85rem; color:var(--green); margin-bottom:1.5rem; }
 
@@ -477,7 +545,7 @@ input[type=range] { width:100%; accent-color:var(--accent); }
 .build-container { text-align:center; padding:2rem 0; }
 .spinner { width:48px; height:48px; border:4px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin 0.8s linear infinite; margin:0 auto 1.5rem; }
 @keyframes spin { to { transform:rotate(360deg); } }
-.build-log { text-align:left; background:var(--bg2); border:1px solid var(--border); border-radius:8px; padding:1rem; max-height:220px; overflow-y:auto; font-family:monospace; font-size:0.8rem; color:#aaa; margin-top:1.5rem; }
+.build-log { text-align:left; background:var(--bg2); border:1px solid var(--border); border-radius:8px; padding:1rem; max-height:220px; overflow-y:auto; font-family:var(--font-mono); font-size:0.8rem; color:#aaa; margin-top:1.5rem; }
 .build-log div { padding:0.15rem 0; }
 
 /* Buttons */
@@ -492,59 +560,98 @@ input[type=range] { width:100%; accent-color:var(--accent); }
 /* --- Dashboard --- */
 .dashboard { display:none; }
 .dashboard.active { display:block; }
-.header { display:flex; justify-content:space-between; align-items:center; padding:1rem 2rem; border-bottom:1px solid var(--border); }
+
+/* Header — two rows */
+.header { padding:0; border-bottom:1px solid var(--border); }
+.header-top { display:flex; justify-content:space-between; align-items:center; padding:0.75rem 2rem; }
+.header-bottom { display:flex; justify-content:space-between; align-items:center; padding:0.5rem 2rem; background:var(--bg2); border-top:1px solid #1a1a28; }
 .logo { font-size:1.3rem; font-weight:700; color:var(--accent); }
-.price-display { font-size:1.8rem; font-weight:700; font-family:'SF Mono',monospace; }
+.price-display { font-size:1.8rem; font-weight:700; font-family:var(--font-mono); }
 .price-up { color:var(--green); }
 .price-down { color:var(--red); }
 .status-badge { padding:0.3rem 0.8rem; border-radius:20px; font-size:0.75rem; font-weight:600; }
 .status-live { background:#1a3a1a; color:var(--green); border:1px solid #2a5a2a; }
 .status-view { background:#1a1a3a; color:var(--blue); border:1px solid #2a2a5a; }
+
+/* Live status indicator */
+.status-indicator { display:flex; align-items:center; gap:0.5rem; font-size:0.85rem; font-weight:600; }
+.status-dot { width:8px; height:8px; border-radius:50%; display:inline-block; }
+.status-dot.active { background:var(--green); box-shadow:0 0 8px var(--green); animation:pulse 2s ease-in-out infinite; }
+.status-dot.scanning { background:var(--yellow); box-shadow:0 0 6px var(--yellow); animation:pulse 3s ease-in-out infinite; }
+.status-dot.stopped { background:var(--dim2); }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
 .grid { display:grid; grid-template-columns:1fr 1fr; gap:1rem; padding:1.5rem 2rem; }
-.card { background:var(--bg2); border:1px solid var(--border); border-radius:10px; padding:1.25rem; }
-.card h3 { font-size:0.85rem; color:var(--dim); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:1rem; }
+.card { background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius); padding:1.25rem; }
+.card h3 { font-size:0.8rem; color:var(--dim2); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.75rem; display:flex; justify-content:space-between; align-items:center; }
 .full-width { grid-column:1/-1; }
-.equity-big { font-size:2rem; font-weight:700; font-family:monospace; color:#fff; }
-.pnl { font-size:1rem; margin-top:0.25rem; }
+.equity-big { font-size:2.2rem; font-weight:700; font-family:var(--font-mono); color:#fff; }
+.pnl { font-size:0.95rem; margin-top:0.25rem; }
 .pnl-pos { color:var(--green); }
 .pnl-neg { color:var(--red); }
 .metric { display:flex; justify-content:space-between; padding:0.4rem 0; font-size:0.85rem; }
-.metric-label { color:var(--dim); }
-.metric-value { color:#ccc; font-family:monospace; }
+.metric-label { color:var(--dim2); }
+.metric-value { color:#ccc; font-family:var(--font-mono); }
 .signal-row { display:flex; justify-content:space-between; align-items:center; padding:0.6rem 0; border-bottom:1px solid #1a1a2a; }
 .signal-row:last-child { border:none; }
 .signal-dir { font-weight:700; font-size:0.85rem; padding:0.2rem 0.6rem; border-radius:4px; }
 .dir-buy { color:var(--green); background:#1a3a1a; }
 .dir-sell { color:var(--red); background:#3a1a1a; }
-.dir-none { color:#888; background:#1a1a1a; }
+.dir-none { color:var(--dim2); background:#1a1a1a; }
 .signal-name { font-size:0.85rem; color:#ccc; }
-.signal-conf { font-size:0.8rem; color:#888; font-family:monospace; }
-.signal-reasons { font-size:0.75rem; color:#666; margin-top:0.3rem; }
-/* Education tooltip */
-.edu-tip { font-size:0.75rem; color:#555; padding:0.6rem 0.8rem; background:#0f0f18; border:1px solid #1f1f2f; border-radius:6px; margin-top:0.75rem; line-height:1.5; }
+.signal-conf { font-size:0.8rem; color:var(--dim2); font-family:var(--font-mono); }
+.signal-reasons { font-size:0.75rem; color:var(--muted); margin-top:0.3rem; }
+
+/* Collapsible edu tips */
+.edu-tip { font-size:0.75rem; color:var(--dim2); padding:0.6rem 0.8rem; background:#0f0f18; border:1px solid #1f1f2f; border-radius:var(--radius-sm); margin-top:0.75rem; line-height:1.5; display:none; }
+.edu-tip.show { display:block; }
 .edu-tip b { color:var(--dim); }
+.edu-toggle { background:none; border:1px solid var(--border); color:var(--dim2); width:22px; height:22px; border-radius:50%; cursor:pointer; font-size:0.7rem; display:flex; align-items:center; justify-content:center; }
+.edu-toggle:hover { border-color:var(--dim); color:var(--text); }
+
 .pos-row { display:flex; justify-content:space-between; padding:0.5rem 0; border-bottom:1px solid #1a1a2a; font-size:0.85rem; }
 .pos-row:last-child { border:none; }
-.log-entry { font-size:0.8rem; font-family:monospace; padding:0.3rem 0; color:#aaa; border-bottom:1px solid #0a0a15; }
+
+/* Formatted trade log */
+.log-entry { display:flex; gap:0.75rem; align-items:baseline; font-size:0.8rem; font-family:var(--font-mono); padding:0.35rem 0; border-bottom:1px solid #0f0f18; }
+.log-time { color:var(--muted); white-space:nowrap; min-width:5rem; }
+.log-action { font-weight:600; min-width:5rem; }
+.log-action.act-buy,.log-action.act-test_buy_ok,.log-action.act-filled,.log-action.act-start { color:var(--green); }
+.log-action.act-sell,.log-action.act-test_sell_ok,.log-action.act-stop,.log-action.act-halt { color:var(--red); }
+.log-action.act-test_buy,.log-action.act-test_sell { color:var(--blue); }
+.log-action.act-rejected,.log-action.act-test_buy_fail,.log-action.act-test_sell_fail { color:var(--red); }
+.log-action.act-settings { color:var(--yellow); }
+.log-detail { color:var(--dim2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
 .controls { display:flex; gap:0.75rem; align-items:center; }
-.btn-start { background:var(--accent); color:var(--bg); padding:0.5rem 1.2rem; border:none; border-radius:6px; font-weight:600; cursor:pointer; font-size:0.85rem; }
+.btn-start { background:var(--accent); color:var(--bg); padding:0.6rem 1.5rem; border:none; border-radius:var(--radius-sm); font-weight:700; cursor:pointer; font-size:0.9rem; letter-spacing:0.02em; }
 .btn-start:hover { background:#22c55e; }
-.btn-stop { background:var(--red); color:#fff; padding:0.5rem 1.2rem; border:none; border-radius:6px; font-weight:600; cursor:pointer; font-size:0.85rem; }
+.btn-stop { background:var(--red); color:#fff; padding:0.6rem 1.5rem; border:none; border-radius:var(--radius-sm); font-weight:700; cursor:pointer; font-size:0.9rem; }
 .btn-stop:hover { background:#ef4444; }
 .btn-start:disabled,.btn-stop:disabled { opacity:0.4; cursor:not-allowed; }
 .error-bar { background:#2a1515; border:1px solid #5a2020; color:var(--red); padding:0.75rem 2rem; font-size:0.85rem; }
-.updated { font-size:0.75rem; color:#555; }
+.updated { font-size:0.75rem; color:var(--muted); }
+
 /* Thinking ticker */
-.thinking-bar { padding:0.5rem 2rem; font-size:0.8rem; color:#666; border-bottom:1px solid var(--border); font-style:italic; transition:opacity 0.4s; min-height:2rem; }
+.thinking-bar { padding:0.5rem 2rem; font-size:0.8rem; color:var(--dim2); border-bottom:1px solid var(--border); font-style:italic; transition:opacity 0.4s; min-height:2rem; display:flex; align-items:center; gap:0.5rem; }
+.thinking-bar::before { content:''; width:6px; height:6px; border-radius:50%; background:var(--yellow); animation:pulse 2s ease-in-out infinite; flex-shrink:0; }
+
+/* Wallet bar */
+.wallet-bar { padding:0.4rem 2rem; font-size:0.75rem; color:var(--dim2); border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; }
+.wallet-addr { font-family:var(--font-mono); color:var(--dim); cursor:pointer; }
+.wallet-addr:hover { color:var(--text); }
+.copy-toast { font-size:0.7rem; color:var(--green); margin-left:0.5rem; opacity:0; transition:opacity 0.3s; }
+
 /* Settings overlay */
 .settings-overlay { display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.7); z-index:100; justify-content:center; align-items:center; }
 .settings-overlay.open { display:flex; }
-.settings-panel { background:var(--bg2); border:1px solid var(--border); border-radius:12px; padding:2rem; max-width:480px; width:90%; }
+.settings-panel { background:var(--bg2); border:1px solid var(--border); border-radius:12px; padding:2rem; max-width:480px; width:90%; max-height:90vh; overflow-y:auto; }
 .settings-panel h2 { font-size:1.2rem; margin-bottom:1.5rem; }
 .settings-close { float:right; background:none; border:none; color:var(--dim); font-size:1.2rem; cursor:pointer; }
 .settings-close:hover { color:var(--text); }
+
 /* Icon buttons */
-.icon-btn { background:none; border:1px solid var(--border); color:var(--dim); padding:0.4rem 0.8rem; border-radius:6px; cursor:pointer; font-size:0.8rem; }
+.icon-btn { background:none; border:1px solid var(--border); color:var(--dim); padding:0.5rem 1rem; border-radius:var(--radius-sm); cursor:pointer; font-size:0.8rem; }
 .icon-btn:hover { border-color:var(--dim); color:var(--text); }
 .test-btn { background:#1a1a3a; border:1px solid #2a2a5a; color:var(--blue); }
 .test-btn:hover { background:#2a2a4a; }
@@ -562,35 +669,45 @@ input[type=range] { width:100%; accent-color:var(--accent); }
 <!-- ======================== DASHBOARD ======================== -->
 <div id="dashboard" class="dashboard">
   <div class="header">
-    <div style="display:flex;align-items:center;gap:1rem">
-      <span class="logo">Hyperbot</span>
-      <span id="d-symbol" style="color:var(--dim);font-size:0.9rem"></span>
-      <span id="d-status" class="status-badge status-view">VIEW ONLY</span>
-      <span id="d-network" class="status-badge" style="background:#3a2a1a;color:#facc15;border:1px solid #5a4a2a;font-size:0.65rem">MAINNET</span>
-    </div>
-    <div style="display:flex;align-items:center;gap:1rem">
-      <button class="icon-btn test-btn" id="d-test-btn" onclick="testTrade()">Test Trade</button>
-      <button class="icon-btn" onclick="openSettings()">Settings</button>
-      <div id="d-controls" class="controls" style="display:none">
-        <button id="d-btn-start" class="btn-start" onclick="startTrading()">Start Trading</button>
-        <button id="d-btn-stop" class="btn-stop" onclick="stopTrading()" disabled>Stop</button>
+    <div class="header-top">
+      <div style="display:flex;align-items:center;gap:1rem">
+        <span class="logo">Hyperbot</span>
+        <span id="d-symbol" style="color:var(--dim);font-size:0.9rem;font-weight:600"></span>
+        <span id="d-status" class="status-badge status-view">VIEW ONLY</span>
+        <span id="d-network" class="status-badge" style="background:#3a2a1a;color:var(--yellow);border:1px solid #5a4a2a;font-size:0.7rem">MAINNET</span>
       </div>
-      <div>
-        <div id="d-price" class="price-display">&mdash;</div>
-        <div id="d-updated" class="updated"></div>
+      <div style="display:flex;align-items:center;gap:1.5rem">
+        <div id="d-status-indicator" class="status-indicator">
+          <span class="status-dot scanning"></span>
+          <span id="d-status-label" style="color:var(--yellow)">Scanning</span>
+        </div>
+        <div style="text-align:right">
+          <div id="d-price" class="price-display">&mdash;</div>
+          <div id="d-updated" class="updated"></div>
+        </div>
+      </div>
+    </div>
+    <div class="header-bottom">
+      <div class="wallet-bar" style="padding:0;border:none;font-size:0.75rem">
+        <span>Wallet: <span id="d-wallet-addr" class="wallet-addr" onclick="copyWallet()" title="Click to copy">&mdash;</span><span id="copy-toast" class="copy-toast">Copied!</span></span>
+        <span style="color:var(--muted)">API wallet (trade-only, no withdrawals)</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:0.75rem">
+        <button class="icon-btn test-btn" id="d-test-btn" onclick="testTrade()">Test Trade</button>
+        <button class="icon-btn" onclick="openSettings()">Settings</button>
+        <div id="d-controls" class="controls" style="display:none">
+          <button id="d-btn-start" class="btn-start" onclick="startTrading()">Start Trading</button>
+          <button id="d-btn-stop" class="btn-stop" onclick="stopTrading()" disabled>Stop</button>
+        </div>
       </div>
     </div>
   </div>
   <div id="d-thinking" class="thinking-bar"></div>
-  <div id="d-wallet-bar" style="padding:0.4rem 2rem;font-size:0.75rem;color:#555;border-bottom:1px solid var(--border);display:flex;justify-content:space-between">
-    <span>Wallet: <span id="d-wallet-addr" style="font-family:monospace;color:#777">—</span></span>
-    <span style="color:#555">API wallet (trade-only, no withdrawals)</span>
-  </div>
   <div id="d-error" class="error-bar" style="display:none"></div>
 
   <div class="grid">
     <div class="card">
-      <h3>Account</h3>
+      <h3>Account <button class="edu-toggle" onclick="toggleEdu(this)" title="What does this mean?">?</button></h3>
       <div id="d-equity" class="equity-big">$&mdash;</div>
       <div id="d-pnl" class="pnl">&mdash;</div>
       <div style="margin-top:1rem">
@@ -602,20 +719,20 @@ input[type=range] { width:100%; accent-color:var(--accent); }
     </div>
 
     <div class="card">
-      <h3>Positions</h3>
-      <div id="d-positions"><span style="color:#555;font-size:0.85rem">No open positions</span></div>
-      <div class="edu-tip"><b>Positions</b> show your current open trades. LONG = betting price goes up, SHORT = betting price goes down. Unrealised P&L updates in real-time until you close.</div>
+      <h3>Positions <button class="edu-toggle" onclick="toggleEdu(this)" title="What are positions?">?</button></h3>
+      <div id="d-positions"><span style="color:var(--muted);font-size:0.85rem">No open positions</span></div>
+      <div class="edu-tip"><b>Positions</b> show your current open trades. LONG = betting price goes up, SHORT = betting price goes down. Unrealised P&amp;L updates in real-time until you close.</div>
     </div>
 
     <div class="card full-width">
-      <h3>Strategy Signals</h3>
-      <div id="d-signals"><span style="color:#555;font-size:0.85rem">Waiting for data...</span></div>
+      <h3>Strategy Signals <button class="edu-toggle" onclick="toggleEdu(this)" title="How do signals work?">?</button></h3>
+      <div id="d-signals"><span style="color:var(--muted);font-size:0.85rem">Waiting for data...</span></div>
       <div class="edu-tip"><b>How signals work:</b> Each strategy scans the market every 15 seconds using technical indicators (SMA, Bollinger Bands, ATR, wick analysis). A BUY/SELL signal fires only when multiple conditions align. Confidence shows how many conditions passed. Below 50% = no trade. SL = stop-loss (where to exit if wrong), TP = take-profit (where to take gains).</div>
     </div>
 
     <div class="card full-width">
-      <h3>Trade Log</h3>
-      <div id="d-trade-log" style="max-height:200px;overflow-y:auto"><span style="color:#555;font-size:0.85rem">No trades yet</span></div>
+      <h3>Trade Log <button class="edu-toggle" onclick="toggleEdu(this)" title="What is the trade log?">?</button></h3>
+      <div id="d-trade-log" style="max-height:220px;overflow-y:auto"><span style="color:var(--muted);font-size:0.85rem">No trades yet</span></div>
       <div class="edu-tip"><b>Trade log</b> records every action: signal detections, orders placed, fills, rejections, and system events like halt. This is your audit trail.</div>
     </div>
   </div>
@@ -884,7 +1001,7 @@ function showCredentialForm() {
       <input class="cred-input" id="cred-key" type="password" placeholder="0x..." oninput="validateCreds()">
       <div class="cred-note">The private key shown when you created the API wallet (starts with 0x, 66 characters). This key can only trade — it cannot withdraw your funds. Stored in macOS Keychain only.</div>
     </div>
-    <div id="cred-error" style="color:var(--red);font-size:0.85rem;margin-top:0.5rem;display:none"></div>
+    <div id="cred-error" style="color:var(--red);font-size:0.85rem;margin-top:1rem;padding:0.75rem;border-radius:8px;background:#2a1515;display:none"></div>
     <div class="btn-row">
       <button class="btn btn-secondary" onclick="prevStep()">Back</button>
       <button class="btn btn-primary" id="cred-next" disabled onclick="saveCreds()">Save & Continue</button>
@@ -913,6 +1030,16 @@ async function saveCreds() {
     const res = await r.json();
     if (res.ok) {
       wizardData.master_address = addr;
+      if (res.verify && res.verify.startsWith('Warning')) {
+        document.getElementById('cred-error').textContent = res.verify;
+        document.getElementById('cred-error').style.display = 'block';
+        document.getElementById('cred-error').style.background = '#3a3a1a';
+        document.getElementById('cred-error').style.color = '#facc15';
+        document.getElementById('cred-next').disabled = false;
+        document.getElementById('cred-next').textContent = 'Continue Anyway';
+        document.getElementById('cred-next').onclick = function(){ nextStep(); };
+        return;
+      }
       nextStep();
     } else {
       document.getElementById('cred-error').textContent = res.error || 'Failed to save';
@@ -1013,7 +1140,7 @@ async function dashPoll() {
 
     // Network
     const netBadge = document.getElementById('d-network');
-    netBadge.textContent = s.network === 'mainnet' ? 'MAINNET' : 'TESTNET';
+    if (netBadge) netBadge.textContent = s.network === 'mainnet' ? 'MAINNET' : 'TESTNET';
 
     // Status
     const badge = document.getElementById('d-status');
@@ -1083,8 +1210,9 @@ async function dashPoll() {
         const conf = (sig.confidence*100).toFixed(0)+'%';
         const sl = sig.stop_loss ? '$'+sig.stop_loss.toFixed(2) : '\u2014';
         const tp = sig.take_profit ? '$'+sig.take_profit.toFixed(2) : '\u2014';
+        const name = humanName(sig.strategy_id);
         return `<div class="signal-row">
-          <div><span class="signal-dir ${dc}">${dt}</span> <span class="signal-name">${sig.strategy_id}</span></div>
+          <div><span class="signal-dir ${dc}">${dt}</span> <span class="signal-name">${name}</span></div>
           <div style="text-align:right">
             <span class="signal-conf">${conf} | SL: ${sl} | TP: ${tp}</span>
             <div class="signal-reasons">${sig.reasons.slice(0,2).join(' \u00b7 ')}</div>
@@ -1093,16 +1221,53 @@ async function dashPoll() {
       }).join('');
     }
 
-    // Trade log
+    // Trade log — formatted with color-coded actions
     const logDiv = document.getElementById('d-trade-log');
     if (s.trade_log.length) {
-      logDiv.innerHTML = s.trade_log.slice().reverse().map(t =>
-        `<div class="log-entry">${t.time} [${t.action}] ${t.strategy} size=${t.size} price=${t.price} ${t.note}</div>`
-      ).join('');
+      logDiv.innerHTML = s.trade_log.slice().reverse().map(t => {
+        const timeShort = t.time.split(' ')[1] || t.time;
+        const actionClass = 'act-' + t.action.toLowerCase();
+        let detail = '';
+        if (t.size > 0) detail += t.size + ' @ $' + t.price.toLocaleString();
+        if (t.note) detail += (detail ? ' — ' : '') + t.note;
+        return `<div class="log-entry"><span class="log-time">${timeShort}</span><span class="log-action ${actionClass}">${t.action}</span><span class="log-detail" title="${(t.strategy + ' ' + t.note).trim()}">${t.strategy !== 'system' && t.strategy !== 'operator' ? t.strategy.replace(/_/g,' ') + ': ' : ''}${detail}</span></div>`;
+      }).join('');
+    }
+
+    // Status indicator
+    const dot = document.querySelector('.status-dot');
+    const label = document.getElementById('d-status-label');
+    if (s.trading_active) {
+      dot.className = 'status-dot active';
+      label.textContent = 'Trading Active';
+      label.style.color = 'var(--green)';
+    } else if (s.setup_complete) {
+      dot.className = 'status-dot scanning';
+      label.textContent = 'Scanning';
+      label.style.color = 'var(--yellow)';
+    } else {
+      dot.className = 'status-dot stopped';
+      label.textContent = 'Setting Up';
+      label.style.color = 'var(--dim)';
     }
   } catch(e) { console.error(e); }
 }
 
+function toggleEdu(btn) {
+  const tip = btn.closest('.card').querySelector('.edu-tip');
+  if (tip) { tip.classList.toggle('show'); btn.textContent = tip.classList.contains('show') ? '\u00d7' : '?'; }
+}
+function copyWallet() {
+  const addr = document.getElementById('d-wallet-addr').textContent;
+  if (addr && addr !== '\u2014') {
+    navigator.clipboard.writeText(addr).then(() => {
+      const toast = document.getElementById('copy-toast');
+      toast.style.opacity = '1';
+      setTimeout(() => toast.style.opacity = '0', 1500);
+    });
+  }
+}
+function humanName(id) { return id.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()); }
 function startDashboardPoll() { setInterval(dashPoll, 3000); dashPoll(); }
 
 async function startTrading() {
@@ -1261,10 +1426,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     if len(pk) != 64 or not all(c in "0123456789abcdefABCDEF" for c in pk):
                         raise ValueError("Invalid private key format")
                     store_credential("agent_private_key", agent_pk)
-                    print(f"  API key saved", flush=True)
+                    # Derive and log the agent address for verification
+                    try:
+                        from eth_account import Account
+                        agent_wallet = Account.from_key(agent_pk)
+                        print(f"  API key saved (agent address: {agent_wallet.address})", flush=True)
+                    except Exception:
+                        print(f"  API key saved", flush=True)
                 if not master and not agent_pk:
                     raise ValueError("No credentials provided")
-                self._json({"ok": True})
+                # Verify master address has an account on Hyperliquid
+                verify_msg = ""
+                if master:
+                    try:
+                        ch = hl_client.get_clearinghouse_state(master)
+                        equity = float(ch.get("marginSummary", {}).get("accountValue", 0))
+                        if equity > 0:
+                            verify_msg = f"Verified: account has ${equity:.2f}"
+                            print(f"  {verify_msg}", flush=True)
+                        else:
+                            verify_msg = "Warning: account shows $0 equity. Make sure this is your MAIN wallet address (the one with funds), not the API wallet address."
+                            print(f"  WARNING: {verify_msg}", flush=True)
+                    except Exception as e:
+                        verify_msg = f"Could not verify account: {e}"
+                        print(f"  {verify_msg}", flush=True)
+                self._json({"ok": True, "verify": verify_msg})
             except Exception as e:
                 self._json({"ok": False, "error": str(e)}, 400)
 
@@ -1318,26 +1504,47 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if not price:
                     self._json({"ok": False, "error": f"Cannot get price for {coin}"})
                     return
-                # Minimum size: $10 notional
-                min_size = round(10.0 / price, 6)
+
+                # Look up asset metadata for proper minimum size
+                import math as _math
+                asset_info = hl_client.get_asset_info(coin)
+                sz_decimals = asset_info.get("szDecimals", 3) if asset_info else 3
+
+                # Minimum size: must exceed $10 notional (HL minimum)
+                # Round UP to the next valid size step to guarantee ≥ $10
+                raw_min = 11.0 / price  # aim for $11 to leave margin
+                step = 1 / (10 ** sz_decimals) if sz_decimals > 0 else 1
+                min_size = _math.ceil(raw_min / step) * step
                 if min_size <= 0:
-                    min_size = 0.001
-                log_trade("TEST_BUY", "test", min_size, price, "connectivity test")
+                    min_size = step
+                notional = min_size * price
+                log_trade("TEST_BUY", "test", min_size, price,
+                          f"connectivity test — ${notional:.2f} notional, szDecimals={sz_decimals}")
                 buy_result = hl_client.place_order(coin, True, min_size, order_type="market")
                 if not buy_result.ok:
-                    self._json({"ok": False, "error": f"Buy failed: {buy_result.error}"})
+                    log_trade("TEST_BUY_FAIL", "test", min_size, price,
+                              f"error={buy_result.error}")
+                    self._json({"ok": False, "error": f"Buy failed: {buy_result.error}",
+                                "raw": buy_result.raw})
                     return
                 log_trade("TEST_BUY_OK", "test", min_size, price, f"oid={buy_result.order_id}")
                 # Brief pause then close
-                time.sleep(1)
+                time.sleep(2)
                 log_trade("TEST_SELL", "test", min_size, price, "closing test position")
                 sell_result = hl_client.place_order(coin, False, min_size, order_type="market", reduce_only=True)
                 if sell_result.ok:
                     log_trade("TEST_SELL_OK", "test", min_size, price, f"oid={sell_result.order_id}")
-                    self._json({"ok": True, "message": f"Test complete: bought and sold {min_size} {coin}"})
+                    self._json({"ok": True, "message": f"Test complete: bought and sold {min_size} {coin}",
+                                "buy_raw": buy_result.raw, "sell_raw": sell_result.raw})
                 else:
-                    self._json({"ok": False, "error": f"Buy OK but sell failed: {sell_result.error}"})
+                    log_trade("TEST_SELL_FAIL", "test", min_size, price,
+                              f"error={sell_result.error}")
+                    self._json({"ok": False,
+                                "error": f"Buy filled but sell failed: {sell_result.error}",
+                                "buy_raw": buy_result.raw, "sell_raw": sell_result.raw})
             except Exception as e:
+                import traceback
+                traceback.print_exc()
                 self._json({"ok": False, "error": str(e)})
 
         else:

@@ -97,7 +97,12 @@ def launch_dashboard(args: argparse.Namespace) -> int:
     if args.workspace_path:
         workspace = Path(args.workspace_path).expanduser().resolve()
     else:
+        # Check for any existing hyperbot-* workspace first
         workspace = ROOT.parent / "hyperbot-workspace"
+        for candidate in sorted(ROOT.parent.glob("hyperbot-*")):
+            if candidate.is_dir() and (candidate / "hyperbot.workspace.json").exists():
+                workspace = candidate
+                break
 
     # Step 1: Ensure SDK is available
     ensure_sdk()
@@ -105,6 +110,7 @@ def launch_dashboard(args: argparse.Namespace) -> int:
     # Step 2: Generate workspace if it doesn't exist
     # The wizard handles pair selection, strategy, risk, and credentials
     # so we create a generic workspace with all packs and a placeholder symbol
+    # (the dashboard build step will rename it to hyperbot-{COIN})
     if not workspace.exists():
         log(f"[dashboard] Creating workspace at {workspace}...")
         output_dir = str(workspace.parent)

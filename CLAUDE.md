@@ -47,4 +47,22 @@ When proposing changes, prioritize:
 3. risk controls that keep live trading opt-in
 4. ways to remove approval friction without weakening safety
 
-Start from [`docs/local-first-roadmap.md`](/Users/gaston/Library/CloudStorage/Dropbox/--%20PROJECTS/Plugins/hyperbot/docs/local-first-roadmap.md).
+Start from [`docs/local-first-roadmap.md`](/Users/gaston/Library/CloudStorage/Dropbox/--%20PROJECTS/hyperbot/docs/local-first-roadmap.md).
+
+## Repo Location & CLI Commands
+
+The repo lives at `~/Library/CloudStorage/Dropbox/-- PROJECTS/hyperbot`.
+
+When giving the user bash commands to run, ALWAYS provide the full command
+including `cd` into the repo directory. The user's terminal does not default
+to the repo directory. Use this pattern:
+
+```bash
+cd ~/Library/CloudStorage/Dropbox/--\ PROJECTS/hyperbot && <command>
+```
+
+Examples:
+```bash
+cd ~/Library/CloudStorage/Dropbox/--\ PROJECTS/hyperbot && python3 scripts/hyperbot.py dashboard --live --confirm-risk
+cd ~/Library/CloudStorage/Dropbox/--\ PROJECTS/hyperbot && git status
+```

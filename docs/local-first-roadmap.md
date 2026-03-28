@@ -16,16 +16,29 @@ Target:
 ## Current State
 
 Already local:
-- `scripts/create_workspace.py`
-- strategy-pack templates under `strategy-packs/`
+- `scripts/create_workspace.py` — workspace generation
+- `scripts/hyperbot.py` — CLI entrypoint with `dashboard`, `run`, `validate` commands
+- strategy-pack templates under `strategy-packs/` (all include `pack_id` for signal dispatch)
 - workspace template material under `templates/workspace/`
-- `templates/workspace/scripts/apply_revision.py`
-- most of `templates/workspace/scripts/profile_symbol_strategy.py`
+- `templates/workspace/scripts/apply_revision.py` — revision adoption
+- `templates/workspace/scripts/profile_symbol_strategy.py` — 90-day symbol profiling
+- `templates/workspace/scripts/hl_client.py` — full Hyperliquid API client (orders, portfolio, candles)
+- `templates/workspace/scripts/signals.py` — deterministic signal detection (SMA, Bollinger, ATR, wick)
+- `templates/workspace/scripts/dashboard.py` — single-page web dashboard (wizard + live trading)
+
+Phase 4 (web dashboard) completed:
+- 5-step onboarding wizard: pair → strategies → risk → credentials → build
+- Live dashboard with real-time price, equity (perps+spot), signals, positions, trade log
+- Order execution with proper `szDecimals` rounding and 5-sig-fig price formatting
+- macOS Keychain credential storage
+- Workspace auto-rename to `hyperbot-{COIN}`
+- Strategy config installation with `pack_id` for signal dispatcher routing
+- Daily loss limit enforcement, position sizing, leverage caps
+- Thinking ticker showing system status
 
 Still external or approval-heavy:
-- market data fetch in `profile_symbol_strategy.py`
-- explicit operator merge/apply decision for revisions
-- future live-trading enablement decisions
+- market data fetch (Hyperliquid API — no alternative for live candles)
+- live trading enablement (`--live --confirm-risk` required)
 
 ## Design Direction
 
@@ -106,20 +119,22 @@ Do not make them required for:
 3. ~~Add a single local command that runs scaffold -> validate -> review -> safe-apply.~~ **Done** — `hyperbot run` pipeline command.
 4. ~~Cache market data snapshots locally so repeated runs do not require refetch.~~ **Done** — `research/cache/` with configurable max age.
 5. ~~Add an optional local-only mode flag that disables any future model-dependent features.~~ **Done** — `hyperbot --local-only` and `--offline` on the profiler.
+6. ~~Add web dashboard with onboarding wizard and live trading.~~ **Done** — `hyperbot dashboard` launches single-page app.
+7. ~~Fix order execution (szDecimals rounding, price formatting, error handling).~~ **Done** — orders confirmed on mainnet.
+8. ~~Fix portfolio value (perps + spot combined).~~ **Done** — full equity displayed correctly.
+9. ~~Fix signal detection (pack_id routing in strategy configs).~~ **Done** — all three strategies returning real analysis.
 
-## Questions For Claude To Push On
+## Next Priorities
 
-1. Which current approval points are actually safety-critical, and which are just workflow friction?
-2. What deterministic rules can replace human confirmation for routine revision adoption?
-3. What minimum policy schema would let Hyperbot auto-run safely for setup and revision work?
-4. How should local market-data caching work so the repo is practical even without external model services?
-5. What repo changes would make the plugin optional and the CLI primary?
-5. What remaining non-local dependencies should be isolated so the local CLI stays the default product path?
+1. Multi-pair support — run multiple `hyperbot-{COIN}` workspaces simultaneously with a unified dashboard
+2. Backtesting — local replay of signal detection against historical candle data
+3. Notifications — optional alerts (local push, webhook) when signals fire or positions change
+4. Performance tracking — trade history with win rate, R-multiple, drawdown metrics
+5. Strategy tuning UI — adjust strategy parameters from the dashboard without editing JSON
 
-## Expected Outcome
+## Design Principles
 
-Claude should propose a repo plan that:
-- preserves safety boundaries
-- removes most routine human approvals
-- keeps assistant usage optional
-- makes the trading workspace usable as a local deterministic system
+- Preserve safety boundaries: live trading is always opt-in (`--live --confirm-risk`)
+- Remove routine human approvals: policy-driven auto-apply for safe parameter ranges
+- Keep assistant usage optional: all core logic is deterministic local Python
+- Make the trading workspace usable as a local deterministic system

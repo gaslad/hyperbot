@@ -13,6 +13,7 @@ for EIP-712 phantom agent signing.
 from __future__ import annotations
 
 import json
+import math
 import platform
 import subprocess
 import time
@@ -112,8 +113,78 @@ def get_candles(coin: str, interval: str, lookback_days: int, base_url: str = HL
 
 
 def get_clearinghouse_state(address: str, base_url: str = HL_MAINNET) -> dict:
-    """Get positions and margin summary for an address."""
+    """Get perps positions and margin summary for an address."""
     return _info_post({"type": "clearinghouseState", "user": address}, base_url)
+
+
+def get_spot_clearinghouse_state(address: str, base_url: str = HL_MAINNET) -> dict:
+    """Get spot balances for an address."""
+    return _info_post({"type": "spotClearinghouseState", "user": address}, base_url)
+
+
+def get_portfolio_value(address: str, base_url: str = HL_MAINNET) -> dict:
+    """Get full portfolio: perps equity + spot balances combined.
+
+    Returns: {
+        "perps_equity": float,    # perps margin account value
+        "spot_usdc": float,       # USDC in spot
+        "spot_total_usd": float,  # all spot balances in USD
+        "total_equity": float,    # perps + spot
+        "unrealized_pnl": float,
+        "positions": list[dict],
+    }
+    """
+    result = {
+        "perps_equity": 0.0,
+        "spot_usdc": 0.0,
+        "spot_total_usd": 0.0,
+        "total_equity": 0.0,
+        "unrealized_pnl": 0.0,
+        "positions": [],
+    }
+
+    # Perps clearinghouse
+    try:
+        ch = get_clearinghouse_state(address, base_url)
+        margin = ch.get("marginSummary", {})
+        result["perps_equity"] = float(margin.get("accountValue", 0))
+        result["unrealized_pnl"] = float(margin.get("totalUnrealizedPnl", 0))
+        result["positions"] = [
+            {
+                "coin": p["position"]["coin"],
+                "size": p["position"]["szi"],
+                "entry_price": p["position"]["entryPx"],
+                "unrealized_pnl": p["position"]["unrealizedPnl"],
+                "leverage": p["position"].get("leverage", {}).get("value", "?"),
+            }
+            for p in ch.get("assetPositions", [])
+            if float(p["position"]["szi"]) != 0
+        ]
+    except Exception as e:
+        print(f"  [portfolio] Perps query error: {e}", flush=True)
+
+    # Spot clearinghouse
+    try:
+        spot = get_spot_clearinghouse_state(address, base_url)
+        for bal in spot.get("balances", []):
+            token = bal.get("coin", "")
+            amount = float(bal.get("total", 0))
+            if token == "USDC":
+                result["spot_usdc"] = amount
+                result["spot_total_usd"] += amount
+            elif amount > 0:
+                # Estimate USD value from mid price
+                try:
+                    mid = get_mid_price(token, base_url)
+                    if mid:
+                        result["spot_total_usd"] += amount * mid
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"  [portfolio] Spot query error: {e}", flush=True)
+
+    result["total_equity"] = result["perps_equity"] + result["spot_total_usd"]
+    return result
 
 
 def get_open_orders(address: str, base_url: str = HL_MAINNET) -> list[dict]:
@@ -138,6 +209,33 @@ def get_asset_id(coin: str, base_url: str = HL_MAINNET) -> int | None:
     return None
 
 
+def get_asset_info(coin: str, base_url: str = HL_MAINNET) -> dict | None:
+    """Get asset metadata: szDecimals, maxLeverage, name, etc."""
+    meta = get_meta(base_url)
+    for asset in meta.get("universe", []):
+        if asset.get("name") == coin:
+            return asset
+    return None
+
+
+def round_size(size: float, sz_decimals: int) -> float:
+    """Round order size to valid decimals for this asset."""
+    if sz_decimals <= 0:
+        return round(size)
+    return round(size, sz_decimals)
+
+
+def round_price(price: float, coin: str, base_url: str = HL_MAINNET) -> float:
+    """Round price to a valid tick size. HL uses 5 significant figures."""
+    # Hyperliquid uses 5 significant figures for prices
+    if price <= 0:
+        return price
+    sig_figs = 5
+    magnitude = math.floor(math.log10(abs(price)))
+    factor = 10 ** (sig_figs - 1 - magnitude)
+    return round(price * factor) / factor
+
+
 # ---------------------------------------------------------------------------
 # Exchange API (requires hyperliquid SDK for signing)
 # ---------------------------------------------------------------------------
@@ -151,10 +249,10 @@ class OrderResult:
 
 
 def _get_exchange_client(base_url: str = HL_MAINNET):
-    """Lazy-load the Hyperliquid SDK exchange client."""
+    """Create an Exchange client with the stored API wallet credentials."""
     try:
         from hyperliquid.exchange import Exchange
-        from hyperliquid.utils import constants
+        from eth_account import Account
     except ImportError:
         raise RuntimeError(
             "hyperliquid SDK not installed. Run: pip install hyperliquid-python-sdk"
@@ -164,18 +262,12 @@ def _get_exchange_client(base_url: str = HL_MAINNET):
     if not creds["master_address"] or not creds["agent_private_key"]:
         raise RuntimeError("Wallet not connected. Run: hyperbot connect")
 
-    api_url = base_url
-    if base_url == HL_MAINNET:
-        api_url = constants.MAINNET_API_URL
-    elif base_url == HL_TESTNET:
-        api_url = constants.TESTNET_API_URL
-
+    wallet = Account.from_key(creds["agent_private_key"])
     return Exchange(
-        wallet=None,
-        base_url=api_url,
+        wallet=wallet,
+        base_url=base_url,
         account_address=creds["master_address"],
-        vault_address=None,
-    ), creds["agent_private_key"]
+    )
 
 
 def place_order(
@@ -187,18 +279,43 @@ def place_order(
     order_type: str = "market",
     base_url: str = HL_MAINNET,
 ) -> OrderResult:
-    """Place an order. order_type: 'market', 'limit', 'post_only'."""
+    """Place an order. order_type: 'market', 'limit', 'post_only'.
+
+    Automatically looks up asset metadata for proper size/price rounding.
+    """
     try:
         from hyperliquid.exchange import Exchange
-        from hyperliquid.utils.signing import get_timestamp_ms
         from eth_account import Account
 
         creds = get_credentials()
         if not creds["master_address"] or not creds["agent_private_key"]:
             return OrderResult(ok=False, error="Wallet not connected")
 
-        wallet = Account.from_key(creds["agent_private_key"])
-        exchange = Exchange(wallet, base_url, account_address=creds["master_address"])
+        # Log credentials being used (addresses only, never keys)
+        master = creds["master_address"]
+        pk = creds["agent_private_key"]
+        wallet = Account.from_key(pk)
+        agent_addr = wallet.address
+        print(f"  [order] master_address: {master}", flush=True)
+        print(f"  [order] agent_address (derived from key): {agent_addr}", flush=True)
+
+        exchange = Exchange(wallet, base_url, account_address=master)
+
+        # Look up asset metadata for proper rounding
+        asset_info = get_asset_info(coin, base_url)
+        sz_decimals = 3  # safe default
+        if asset_info:
+            sz_decimals = asset_info.get("szDecimals", 3)
+            print(f"  [order] {coin} szDecimals={sz_decimals} maxLeverage={asset_info.get('maxLeverage')}", flush=True)
+        else:
+            print(f"  [order] WARNING: No asset info for {coin}, using szDecimals={sz_decimals}", flush=True)
+
+        # Round size to valid decimals
+        rounded_size = round_size(size, sz_decimals)
+        if rounded_size <= 0:
+            return OrderResult(ok=False, error=f"Order size {size} rounds to 0 with {sz_decimals} decimals")
+
+        print(f"  [order] {coin} {'BUY' if is_buy else 'SELL'} size={rounded_size} (raw={size}) type={order_type} reduce_only={reduce_only}", flush=True)
 
         if order_type == "market":
             # Market order: use aggressive limit with IOC
@@ -208,34 +325,58 @@ def place_order(
             # 0.5% slippage for market orders
             slippage = 0.005
             limit_price = mid * (1 + slippage) if is_buy else mid * (1 - slippage)
-            result = exchange.order(coin, is_buy, size, limit_price, {"limit": {"tif": "Ioc"}}, reduce_only=reduce_only)
+            limit_price = round_price(limit_price, coin, base_url)
+            print(f"  [order] market IOC: mid={mid}, limit_price={limit_price} (slippage={slippage})", flush=True)
+            result = exchange.order(coin, is_buy, rounded_size, limit_price, {"limit": {"tif": "Ioc"}}, reduce_only=reduce_only)
         elif order_type == "limit":
             if price is None:
                 return OrderResult(ok=False, error="Limit orders require a price")
-            result = exchange.order(coin, is_buy, size, price, {"limit": {"tif": "Gtc"}}, reduce_only=reduce_only)
+            rp = round_price(price, coin, base_url)
+            result = exchange.order(coin, is_buy, rounded_size, rp, {"limit": {"tif": "Gtc"}}, reduce_only=reduce_only)
         elif order_type == "post_only":
             if price is None:
                 return OrderResult(ok=False, error="Post-only orders require a price")
-            result = exchange.order(coin, is_buy, size, price, {"limit": {"tif": "Alo"}}, reduce_only=reduce_only)
+            rp = round_price(price, coin, base_url)
+            result = exchange.order(coin, is_buy, rounded_size, rp, {"limit": {"tif": "Alo"}}, reduce_only=reduce_only)
         else:
             return OrderResult(ok=False, error=f"Unknown order type: {order_type}")
+
+        # Log the full raw response for debugging
+        print(f"  [order] RAW RESPONSE: {json.dumps(result)}", flush=True)
 
         # Parse response
         if result.get("status") == "ok":
             statuses = result.get("response", {}).get("data", {}).get("statuses", [])
             oid = None
+            errors = []
             for s in statuses:
-                if isinstance(s, dict) and "resting" in s:
-                    oid = s["resting"].get("oid")
-                elif isinstance(s, dict) and "filled" in s:
-                    oid = s["filled"].get("oid")
-            return OrderResult(ok=True, order_id=oid, raw=result)
+                if isinstance(s, dict):
+                    if "resting" in s:
+                        oid = s["resting"].get("oid")
+                    elif "filled" in s:
+                        oid = s["filled"].get("oid")
+                    elif "error" in s:
+                        errors.append(s["error"])
+                elif isinstance(s, str):
+                    # String statuses like "WouldCrossMakerOrder" indicate issues
+                    errors.append(s)
+            if errors:
+                err_msg = "; ".join(errors)
+                print(f"  [order] STATUS ERRORS: {err_msg}", flush=True)
+                return OrderResult(ok=False, error=err_msg, raw=result)
+            if oid is None and not errors:
+                print(f"  [order] WARNING: status=ok but no oid and no errors. Statuses: {statuses}", flush=True)
+            return OrderResult(ok=oid is not None, order_id=oid, raw=result)
         else:
-            return OrderResult(ok=False, error=str(result), raw=result)
+            err = result.get("response", str(result))
+            print(f"  [order] REJECTED: {err}", flush=True)
+            return OrderResult(ok=False, error=str(err), raw=result)
 
     except ImportError:
         return OrderResult(ok=False, error="hyperliquid SDK not installed. Run: pip install hyperliquid-python-sdk")
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return OrderResult(ok=False, error=str(e))
 
 
