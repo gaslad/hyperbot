@@ -49,16 +49,21 @@ def load_strategy_config(strategy_id: str) -> dict:
 # Candle helpers
 # ---------------------------------------------------------------------------
 
+def _sf(v) -> float:
+    """Safe float: handles None and explicit JSON nulls."""
+    return float(v) if v is not None else 0.0
+
+
 def closes(candles: list[dict]) -> list[float]:
-    return [float(c.get("c", c.get("close", 0))) for c in candles]
+    return [_sf(c.get("c") or c.get("close") or 0) for c in candles]
 
 
 def highs(candles: list[dict]) -> list[float]:
-    return [float(c.get("h", c.get("high", 0))) for c in candles]
+    return [_sf(c.get("h") or c.get("high") or 0) for c in candles]
 
 
 def lows(candles: list[dict]) -> list[float]:
-    return [float(c.get("l", c.get("low", 0))) for c in candles]
+    return [_sf(c.get("l") or c.get("low") or 0) for c in candles]
 
 
 def sma(values: list[float], period: int) -> float | None:
@@ -335,6 +340,7 @@ def detect_all_signals(candles_1d: list[dict], candles_4h: list[dict], current_p
             if detector:
                 sig = detector(config, candles_1d, candles_4h, current_price)
                 signals.append(sig)
-        except Exception:
+        except Exception as e:
+            print(f"  [signals] Strategy {config_path.name} crashed: {e}", flush=True)
             continue
     return signals

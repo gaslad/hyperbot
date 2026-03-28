@@ -134,6 +134,15 @@ def get_portfolio_value(address: str, base_url: str = HL_MAINNET) -> dict:
         "positions": list[dict],
     }
     """
+    def _sfloat(v) -> float:
+        """Safe float: handles None, missing keys, and explicit JSON nulls."""
+        if v is None:
+            return 0.0
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return 0.0
+
     result = {
         "perps_equity": 0.0,
         "spot_usdc": 0.0,
@@ -141,34 +150,40 @@ def get_portfolio_value(address: str, base_url: str = HL_MAINNET) -> dict:
         "total_equity": 0.0,
         "unrealized_pnl": 0.0,
         "positions": [],
+        "error": None,
     }
 
-    # Perps clearinghouse
+    # Perps clearinghouse — let network errors bubble up so the caller
+    # (trading loop) can surface them in the UI instead of showing $0.
     try:
         ch = get_clearinghouse_state(address, base_url)
-        margin = ch.get("marginSummary", {})
-        result["perps_equity"] = float(margin.get("accountValue", 0))
-        result["unrealized_pnl"] = float(margin.get("totalUnrealizedPnl", 0))
+        margin = ch.get("marginSummary") or {}
+        result["perps_equity"] = _sfloat(margin.get("accountValue"))
+        result["unrealized_pnl"] = _sfloat(margin.get("totalUnrealizedPnl"))
         result["positions"] = [
             {
                 "coin": p["position"]["coin"],
                 "size": p["position"]["szi"],
                 "entry_price": p["position"]["entryPx"],
                 "unrealized_pnl": p["position"]["unrealizedPnl"],
-                "leverage": p["position"].get("leverage", {}).get("value", "?"),
+                "leverage": (p["position"].get("leverage") or {}).get("value", "?"),
             }
             for p in ch.get("assetPositions", [])
-            if float(p["position"]["szi"]) != 0
+            if _sfloat(p.get("position", {}).get("szi")) != 0
         ]
+    except (ConnectionError, TimeoutError, OSError) as e:
+        # Network errors bubble up — caller should surface in UI
+        raise
     except Exception as e:
-        print(f"  [portfolio] Perps query error: {e}", flush=True)
+        print(f"  [portfolio] Perps parse error: {e}", flush=True)
+        result["error"] = f"Perps: {e}"
 
     # Spot clearinghouse
     try:
         spot = get_spot_clearinghouse_state(address, base_url)
-        for bal in spot.get("balances", []):
+        for bal in (spot.get("balances") or []):
             token = bal.get("coin", "")
-            amount = float(bal.get("total", 0))
+            amount = _sfloat(bal.get("total"))
             if token == "USDC":
                 result["spot_usdc"] = amount
                 result["spot_total_usd"] += amount
@@ -178,10 +193,13 @@ def get_portfolio_value(address: str, base_url: str = HL_MAINNET) -> dict:
                     mid = get_mid_price(token, base_url)
                     if mid:
                         result["spot_total_usd"] += amount * mid
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"  [portfolio] Spot price lookup failed for {token}: {e}", flush=True)
+    except (ConnectionError, TimeoutError, OSError):
+        raise
     except Exception as e:
-        print(f"  [portfolio] Spot query error: {e}", flush=True)
+        print(f"  [portfolio] Spot parse error: {e}", flush=True)
+        result["error"] = f"Spot: {e}"
 
     result["total_equity"] = result["perps_equity"] + result["spot_total_usd"]
     return result
