@@ -59,11 +59,104 @@ def build_parser() -> argparse.ArgumentParser:
     connect_cmd = subparsers.add_parser("connect", help="Connect your Hyperliquid wallet via browser (one-click)")
     connect_cmd.add_argument("--status", action="store_true", help="Check if a wallet is already connected")
 
+    dash_cmd = subparsers.add_parser("dashboard", help="Launch the web dashboard for a workspace (one command does everything)")
+    dash_cmd.add_argument("workspace_path", help="Path to the workspace directory (will be created if it doesn't exist)")
+    dash_cmd.add_argument("--symbol", default="ETHUSDT", help="Trading pair symbol (default: ETHUSDT)")
+    dash_cmd.add_argument("--live", action="store_true", help="Enable live trading controls in the dashboard")
+    dash_cmd.add_argument("--confirm-risk", action="store_true", help="Confirm you understand live trading risks")
+    dash_cmd.add_argument("--port", type=int, default=0, help="Port to run on (0 = auto)")
+
     return parser
 
 
 def log(msg: str) -> None:
     print(msg, flush=True)
+
+
+def ensure_sdk() -> bool:
+    """Install hyperliquid-python-sdk if missing. Returns True if available."""
+    try:
+        import importlib
+        importlib.import_module("hyperliquid")
+        return True
+    except ImportError:
+        pass
+    log("[dashboard] Installing hyperliquid-python-sdk...")
+    rc = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--quiet", "hyperliquid-python-sdk"],
+    ).returncode
+    if rc != 0:
+        log("[dashboard] WARNING: Could not install hyperliquid-python-sdk.")
+        log("[dashboard]   Live order execution won't work. View-only mode is fine.")
+        return False
+    return True
+
+
+def launch_dashboard(args: argparse.Namespace) -> int:
+    """One-command flow: ensure deps → generate workspace if needed → launch dashboard."""
+    workspace = Path(args.workspace_path).expanduser().resolve()
+
+    # Step 1: Ensure SDK is available
+    ensure_sdk()
+
+    # Step 2: Check wallet credentials
+    from connect.server import read_credential
+    master = read_credential("master_address")
+    if not master:
+        log("[dashboard] No wallet connected. Opening wallet connect flow...")
+        from connect.server import run_server
+        rc = run_server()
+        if rc != 0:
+            log("[dashboard] Wallet connect failed. Cannot continue.")
+            return 1
+        master = read_credential("master_address")
+        if not master:
+            log("[dashboard] Wallet still not connected. Run: hyperbot connect")
+            return 1
+        log("[dashboard] Wallet connected.")
+
+    # Step 3: Generate workspace if it doesn't exist
+    if not workspace.exists():
+        log(f"[dashboard] Workspace not found at {workspace}. Creating...")
+        output_dir = str(workspace.parent)
+        workspace_name = workspace.name
+        packs = ["trend_pullback", "compression_breakout", "liquidity_sweep_reversal"]
+        create_cmd = [
+            sys.executable,
+            str(ROOT / "scripts" / "create_workspace.py"),
+            workspace_name,
+            "--output-dir", output_dir,
+            "--symbol", args.symbol,
+            "--account-mode", "test",
+            "--skip-profile",
+        ]
+        for pack in packs:
+            create_cmd.extend(["--strategy-pack", pack])
+        rc = subprocess.run(create_cmd).returncode
+        if rc != 0:
+            log("[dashboard] Workspace creation failed.")
+            return rc
+        log(f"[dashboard] Workspace created at {workspace}")
+    else:
+        log(f"[dashboard] Using existing workspace: {workspace}")
+
+    # Step 4: Launch dashboard
+    dash_script = workspace / "scripts" / "dashboard.py"
+    if not dash_script.exists():
+        log(f"[dashboard] ERROR: {dash_script} not found. Re-generate the workspace with --force.")
+        return 1
+
+    dash_cmd = [sys.executable, str(dash_script)]
+    if args.live:
+        if not args.confirm_risk:
+            log("[dashboard] ERROR: --live requires --confirm-risk. Real money at stake.")
+            return 1
+        dash_cmd.extend(["--live", "--confirm-risk"])
+    if args.port:
+        dash_cmd.extend(["--port", str(args.port)])
+
+    log(f"[dashboard] Launching {'LIVE' if args.live else 'view-only'} dashboard...")
+    return subprocess.run(dash_cmd, cwd=workspace).returncode
 
 
 def main() -> int:
@@ -121,6 +214,9 @@ def main() -> int:
                 log("Not connected. Run: hyperbot connect")
             return 0
         return run_server()
+
+    if args.command == "dashboard":
+        return launch_dashboard(args)
 
     parser.error(f"unknown command: {args.command}")
     return 2

@@ -8,7 +8,8 @@
       "risk_per_trade_pct_max": 1.0,
       "stop_loss_may_widen": false,
       "invalidation_below_sma_pct_max": 5.0,
-      "overextension_max_pct_max": 25.0
+      "overextension_max_pct_max": 25.0,
+      "max_daily_loss_usd": 100.0
     },
     "rules": [
       "leverage unchanged or lower",
