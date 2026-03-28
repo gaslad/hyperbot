@@ -1,34 +1,34 @@
 #!/usr/bin/env python3
-"""Hyperbot Workspace Dashboard.
+"""Hyperbot — full onboarding wizard + live trading dashboard.
 
-Local web interface for monitoring and controlling trading.
-Run from a generated workspace directory:
+Single-page web app that takes a user from nothing to automated trading:
 
-    python3 scripts/dashboard.py              # view-only mode
-    python3 scripts/dashboard.py --live --confirm-risk   # live trading
+  Step 1  Pick a trading pair
+  Step 2  Select strategies
+  Step 3  Set risk parameters
+  Step 4  Enter wallet credentials
+  Step 5  Build workspace (loading animation while profiling runs)
+  Step 6  Live dashboard — signals, positions, trades, education
 
-Opens a browser to a local dashboard showing:
-- Live price and chart
-- Strategy signals in real-time
-- Open positions and P&L
-- Trade history
-- Start/Stop controls (when --live is enabled)
+Launch:
+    python3 scripts/dashboard.py                   # starts wizard
+    python3 scripts/dashboard.py --live --confirm-risk   # enables order execution
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import platform
 import socket
+import subprocess
 import sys
 import threading
 import time
 import traceback
 import webbrowser
-from dataclasses import asdict
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
 from typing import Any
 
 # Ensure sibling modules are importable
@@ -38,6 +38,7 @@ import signals
 
 ROOT = Path(__file__).resolve().parents[1]
 POLICY_PATH = ROOT / "config" / "policy" / "operator-policy.json"
+MANIFEST_PATH = ROOT / "hyperbot.workspace.json"
 
 # ---------------------------------------------------------------------------
 # Global state
@@ -58,7 +59,10 @@ class TradingState:
         self.coin: str = ""
         self.symbol: str = ""
         self.daily_loss: float = 0.0
-        self.max_daily_loss: float = 100.0  # USD, from policy
+        self.max_daily_loss: float = 100.0
+        self.setup_complete: bool = False
+        self.build_status: str = ""  # for step 5 progress
+        self.build_log: list[str] = []
 
     def to_dict(self) -> dict:
         return {
@@ -76,31 +80,139 @@ class TradingState:
             "symbol": self.symbol,
             "daily_loss": self.daily_loss,
             "max_daily_loss": self.max_daily_loss,
+            "setup_complete": self.setup_complete,
+            "build_status": self.build_status,
+            "build_log": self.build_log[-30:],
         }
 
 
 STATE = TradingState()
 STOP_EVENT = threading.Event()
+BUILD_THREAD: threading.Thread | None = None
 
 
 # ---------------------------------------------------------------------------
-# Trading loop
+# Credential storage (same as connect/server.py — duplicated so dashboard
+# is self-contained in generated workspaces)
 # ---------------------------------------------------------------------------
 
-def load_policy() -> dict:
-    if POLICY_PATH.exists():
-        return json.loads(POLICY_PATH.read_text(encoding="utf-8"))
-    return {}
+SERVICE_NAME = "hyperbot"
 
+def store_credential(key: str, value: str) -> None:
+    if platform.system() == "Darwin":
+        account = f"{SERVICE_NAME}.{key}"
+        subprocess.run(["security", "delete-generic-password", "-s", SERVICE_NAME, "-a", account], capture_output=True)
+        subprocess.run(["security", "add-generic-password", "-s", SERVICE_NAME, "-a", account, "-w", value, "-U"], check=True, capture_output=True)
+    else:
+        cred_dir = Path.home() / ".hyperbot" / "credentials"
+        cred_dir.mkdir(parents=True, exist_ok=True)
+        f = cred_dir / f"{key}.secret"
+        f.write_text(value, encoding="utf-8")
+        f.chmod(0o600)
+
+def read_credential(key: str) -> str | None:
+    if platform.system() == "Darwin":
+        account = f"{SERVICE_NAME}.{key}"
+        r = subprocess.run(["security", "find-generic-password", "-s", SERVICE_NAME, "-a", account, "-w"], capture_output=True, text=True)
+        return r.stdout.strip() if r.returncode == 0 else None
+    f = Path.home() / ".hyperbot" / "credentials" / f"{key}.secret"
+    return f.read_text(encoding="utf-8").strip() if f.exists() else None
+
+
+# ---------------------------------------------------------------------------
+# Build workspace (Step 5 background task)
+# ---------------------------------------------------------------------------
+
+def build_workspace_background(config: dict) -> None:
+    """Run in a background thread: profile + auto-apply revisions."""
+    global BUILD_THREAD
+    try:
+        symbol = config["symbol"]
+        coin = hl_client.infer_coin(symbol)
+        strategies = config.get("strategies", [])
+        STATE.build_status = "building"
+        STATE.build_log = []
+
+        def blog(msg: str) -> None:
+            STATE.build_log.append(msg)
+            print(f"  [build] {msg}", flush=True)
+
+        blog(f"Setting up {symbol} workspace with {len(strategies)} strategies...")
+
+        # Update workspace manifest with chosen symbol
+        if MANIFEST_PATH.exists():
+            manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+            manifest["symbol"] = symbol
+            MANIFEST_PATH.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+            blog(f"Workspace manifest updated for {symbol}")
+
+        # Update policy with risk settings
+        if POLICY_PATH.exists():
+            policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+            safe = policy.get("auto_apply", {}).get("safe_bands", {})
+            safe["leverage_max"] = config.get("max_leverage", 4.0)
+            safe["risk_per_trade_pct_max"] = config.get("risk_per_trade_pct", 1.0)
+            safe["max_daily_loss_usd"] = config.get("max_daily_loss", 100.0)
+            POLICY_PATH.write_text(json.dumps(policy, indent=2), encoding="utf-8")
+            blog(f"Risk policy updated: leverage={safe['leverage_max']}x, risk/trade={safe['risk_per_trade_pct_max']}%, daily limit=${safe['max_daily_loss_usd']}")
+
+        # Fetch and cache 90-day candle data for profiling
+        blog(f"Fetching 90-day price history for {coin}...")
+        try:
+            candles_1d = hl_client.get_candles(coin, "1d", 90)
+            blog(f"Got {len(candles_1d)} daily candles")
+            candles_4h = hl_client.get_candles(coin, "4h", 14)
+            blog(f"Got {len(candles_4h)} 4H candles")
+        except Exception as e:
+            blog(f"WARNING: Could not fetch candles — {e}")
+            candles_1d = []
+            candles_4h = []
+
+        # Run signal detection as a smoke test
+        blog("Running initial signal scan...")
+        try:
+            price = hl_client.get_mid_price(coin)
+            if price and candles_1d:
+                sigs = signals.detect_all_signals(candles_1d, candles_4h, price)
+                for s in sigs:
+                    status = f"{s.direction.value.upper()}" if s.direction != signals.Direction.NONE else "NO SIGNAL"
+                    blog(f"  {s.strategy_id}: {status} (confidence {s.confidence:.0%})")
+            blog(f"Current price: ${price:,.2f}" if price else "Could not fetch price")
+        except Exception as e:
+            blog(f"Signal scan failed: {e}")
+
+        blog("Workspace build complete.")
+        STATE.build_status = "done"
+
+        # Now kick off the trading loop
+        STATE.coin = coin
+        STATE.symbol = symbol
+        STATE.setup_complete = True
+        STATE.max_daily_loss = config.get("max_daily_loss", 100.0)
+
+    except Exception as e:
+        STATE.build_status = "error"
+        STATE.build_log.append(f"ERROR: {e}")
+        traceback.print_exc()
+
+
+# ---------------------------------------------------------------------------
+# Trading loop (runs after setup)
+# ---------------------------------------------------------------------------
 
 def trading_loop() -> None:
-    """Main loop: fetch data, detect signals, optionally execute trades."""
-    workspace = hl_client.load_workspace()
-    STATE.symbol = workspace.get("symbol", "BTCUSDT")
-    STATE.coin = hl_client.infer_coin(STATE.symbol)
+    """Background loop: fetch data, detect signals, optionally execute trades."""
+    # Wait for setup to complete
+    while not STATE.setup_complete and not STOP_EVENT.is_set():
+        STOP_EVENT.wait(1)
 
-    policy = load_policy()
-    STATE.max_daily_loss = policy.get("auto_apply", {}).get("safe_bands", {}).get("max_daily_loss_usd", 100.0)
+    if STOP_EVENT.is_set():
+        return
+
+    policy = {}
+    if POLICY_PATH.exists():
+        policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+
     max_leverage = policy.get("auto_apply", {}).get("safe_bands", {}).get("leverage_max", 4.0)
     risk_per_trade_pct = policy.get("auto_apply", {}).get("safe_bands", {}).get("risk_per_trade_pct_max", 1.0)
 
@@ -112,16 +224,13 @@ def trading_loop() -> None:
 
     while not STOP_EVENT.is_set():
         try:
-            # Fetch current price
             price = hl_client.get_mid_price(STATE.coin)
             if price:
                 STATE.last_price = price
 
-            # Fetch candles for signal detection
             candles_1d = hl_client.get_candles(STATE.coin, "1d", 30)
             candles_4h = hl_client.get_candles(STATE.coin, "4h", 14)
 
-            # Detect signals
             sigs = signals.detect_all_signals(candles_1d, candles_4h, price or 0.0)
             STATE.last_signals = [
                 {
@@ -137,7 +246,6 @@ def trading_loop() -> None:
                 for s in sigs
             ]
 
-            # Fetch account state
             if master_address:
                 try:
                     ch_state = hl_client.get_clearinghouse_state(master_address)
@@ -163,7 +271,6 @@ def trading_loop() -> None:
 
             # Execute trades if live and active
             if STATE.live_enabled and STATE.trading_active:
-                # Daily loss circuit breaker
                 if STATE.daily_loss >= STATE.max_daily_loss:
                     STATE.trading_active = False
                     STATE.error = f"Daily loss limit reached (${STATE.daily_loss:.2f} >= ${STATE.max_daily_loss:.2f}). Trading halted."
@@ -175,8 +282,6 @@ def trading_loop() -> None:
                         continue
                     if sig_obj.confidence < 0.5:
                         continue
-
-                    # Position sizing: risk_per_trade_pct of equity
                     if STATE.equity <= 0 or not sig_obj.stop_loss:
                         continue
 
@@ -186,27 +291,17 @@ def trading_loop() -> None:
                         continue
 
                     size = risk_amount / price_risk
-                    # Cap by leverage
                     max_notional = STATE.equity * max_leverage
                     max_size = max_notional / price if price else 0
                     size = min(size, max_size)
-
                     if size <= 0:
                         continue
 
                     is_buy = sig_obj.direction == signals.Direction.BUY
-                    log_trade(
-                        "BUY" if is_buy else "SELL",
-                        sig_obj.strategy_id,
-                        size, price or 0,
-                        f"confidence={sig_obj.confidence:.2f}, SL={sig_obj.stop_loss:.2f}",
-                    )
+                    log_trade("BUY" if is_buy else "SELL", sig_obj.strategy_id, size, price or 0,
+                              f"confidence={sig_obj.confidence:.2f}, SL={sig_obj.stop_loss:.2f}")
 
-                    result = hl_client.place_order(
-                        STATE.coin, is_buy, size,
-                        order_type="market",
-                    )
-
+                    result = hl_client.place_order(STATE.coin, is_buy, size, order_type="market")
                     if result.ok:
                         log_trade("FILLED", sig_obj.strategy_id, size, price or 0, f"oid={result.order_id}")
                     else:
@@ -216,7 +311,6 @@ def trading_loop() -> None:
             STATE.error = str(e)
             traceback.print_exc()
 
-        # Poll interval: 15 seconds
         STOP_EVENT.wait(15)
 
 
@@ -234,220 +328,641 @@ def log_trade(action: str, strategy: str, size: float, price: float, note: str =
 
 
 # ---------------------------------------------------------------------------
-# Dashboard HTML
+# Embedded HTML — single-page app with wizard + dashboard
 # ---------------------------------------------------------------------------
 
-DASHBOARD_HTML = """<!DOCTYPE html>
+DASHBOARD_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Hyperbot Dashboard</title>
+<title>Hyperbot</title>
 <style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0f; color: #e0e0e0; }
-.header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 2rem; border-bottom: 1px solid #1a1a2a; }
-.logo { font-size: 1.3rem; font-weight: 700; color: #4ade80; }
-.price-display { font-size: 1.8rem; font-weight: 700; font-family: 'SF Mono', monospace; }
-.price-up { color: #4ade80; }
-.price-down { color: #f87171; }
-.status-badge { padding: 0.3rem 0.8rem; border-radius: 20px; font-size: 0.75rem; font-weight: 600; }
-.status-live { background: #1a3a1a; color: #4ade80; border: 1px solid #2a5a2a; }
-.status-view { background: #1a1a3a; color: #60a5fa; border: 1px solid #2a2a5a; }
-.status-halted { background: #3a1a1a; color: #f87171; border: 1px solid #5a2a2a; }
-.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; padding: 1.5rem 2rem; }
-.card { background: #14141f; border: 1px solid #2a2a3a; border-radius: 10px; padding: 1.25rem; }
-.card h3 { font-size: 0.85rem; color: #888; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 1rem; }
-.full-width { grid-column: 1 / -1; }
-.signal-row { display: flex; justify-content: space-between; align-items: center; padding: 0.6rem 0; border-bottom: 1px solid #1a1a2a; }
-.signal-row:last-child { border: none; }
-.signal-dir { font-weight: 700; font-size: 0.85rem; padding: 0.2rem 0.6rem; border-radius: 4px; }
-.dir-buy { color: #4ade80; background: #1a3a1a; }
-.dir-sell { color: #f87171; background: #3a1a1a; }
-.dir-none { color: #888; background: #1a1a1a; }
-.signal-name { font-size: 0.85rem; color: #ccc; }
-.signal-conf { font-size: 0.8rem; color: #888; font-family: monospace; }
-.signal-reasons { font-size: 0.75rem; color: #666; margin-top: 0.3rem; }
-.pos-row { display: flex; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid #1a1a2a; font-size: 0.85rem; }
-.pos-row:last-child { border: none; }
-.equity-big { font-size: 2rem; font-weight: 700; font-family: monospace; color: #fff; }
-.pnl { font-size: 1rem; margin-top: 0.25rem; }
-.pnl-pos { color: #4ade80; }
-.pnl-neg { color: #f87171; }
-.log-entry { font-size: 0.8rem; font-family: monospace; padding: 0.3rem 0; color: #aaa; border-bottom: 1px solid #0a0a15; }
-.controls { display: flex; gap: 0.75rem; align-items: center; }
-.btn { padding: 0.5rem 1.2rem; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 0.85rem; }
-.btn-start { background: #4ade80; color: #0a0a0f; }
-.btn-start:hover { background: #22c55e; }
-.btn-stop { background: #f87171; color: #fff; }
-.btn-stop:hover { background: #ef4444; }
-.btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.error-bar { background: #2a1515; border: 1px solid #5a2020; color: #f87171; padding: 0.75rem 2rem; font-size: 0.85rem; }
-.updated { font-size: 0.75rem; color: #555; }
-.metric { display: flex; justify-content: space-between; padding: 0.4rem 0; font-size: 0.85rem; }
-.metric-label { color: #888; }
-.metric-value { color: #ccc; font-family: monospace; }
+:root {
+  --bg: #0a0a0f; --bg2: #14141f; --border: #2a2a3a; --text: #e0e0e0;
+  --dim: #888; --green: #4ade80; --red: #f87171; --blue: #60a5fa;
+  --accent: #4ade80; --accent-dim: #1a3a1a;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; }
+a { color:var(--blue); }
+
+/* --- Wizard container --- */
+.wizard { max-width:640px; margin:0 auto; padding:2rem 1.5rem; min-height:100vh; display:flex; flex-direction:column; justify-content:center; }
+.wizard-hide { display:none !important; }
+.step-title { font-size:1.6rem; font-weight:700; margin-bottom:0.3rem; }
+.step-sub { color:var(--dim); font-size:0.9rem; margin-bottom:2rem; line-height:1.5; }
+
+/* Progress bar */
+.progress { display:flex; gap:0.5rem; margin-bottom:2.5rem; }
+.progress-dot { flex:1; height:4px; border-radius:2px; background:var(--border); transition:background 0.3s; }
+.progress-dot.done { background:var(--accent); }
+.progress-dot.active { background:var(--accent); opacity:0.6; }
+
+/* Pair picker */
+.pair-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:0.75rem; margin-bottom:1.5rem; }
+.pair-card { background:var(--bg2); border:2px solid var(--border); border-radius:10px; padding:1rem 0.75rem; text-align:center; cursor:pointer; transition:all 0.2s; }
+.pair-card:hover { border-color:var(--accent); }
+.pair-card.selected { border-color:var(--accent); background:var(--accent-dim); }
+.pair-card .pair-name { font-weight:700; font-size:1rem; }
+.pair-card .pair-price { font-size:0.8rem; color:var(--dim); margin-top:0.3rem; font-family:monospace; }
+.pair-search { width:100%; padding:0.75rem 1rem; background:var(--bg2); border:1px solid var(--border); border-radius:8px; color:var(--text); font-size:0.9rem; margin-bottom:1rem; outline:none; }
+.pair-search:focus { border-color:var(--accent); }
+.pair-search::placeholder { color:#555; }
+
+/* Strategy cards */
+.strat-card { background:var(--bg2); border:2px solid var(--border); border-radius:10px; padding:1.25rem; margin-bottom:0.75rem; cursor:pointer; transition:all 0.2s; }
+.strat-card:hover { border-color:var(--accent); }
+.strat-card.selected { border-color:var(--accent); background:var(--accent-dim); }
+.strat-name { font-weight:700; font-size:1rem; display:flex; align-items:center; gap:0.5rem; }
+.strat-tag { font-size:0.7rem; padding:0.15rem 0.5rem; border-radius:10px; font-weight:600; }
+.tag-high { background:#1a3a1a; color:var(--green); }
+.tag-med { background:#3a3a1a; color:#facc15; }
+.strat-desc { color:var(--dim); font-size:0.85rem; margin-top:0.5rem; line-height:1.5; }
+.strat-meta { display:flex; gap:1.5rem; margin-top:0.6rem; font-size:0.8rem; color:#666; }
+
+/* Risk sliders */
+.risk-group { margin-bottom:1.75rem; }
+.risk-label { display:flex; justify-content:space-between; margin-bottom:0.5rem; font-size:0.9rem; }
+.risk-label .val { color:var(--accent); font-weight:600; font-family:monospace; }
+input[type=range] { width:100%; accent-color:var(--accent); }
+.risk-help { font-size:0.75rem; color:#555; margin-top:0.3rem; }
+
+/* Credential input */
+.cred-group { margin-bottom:1.25rem; }
+.cred-group label { display:block; font-size:0.85rem; color:var(--dim); margin-bottom:0.4rem; }
+.cred-input { width:100%; padding:0.7rem 1rem; background:var(--bg2); border:1px solid var(--border); border-radius:8px; color:var(--text); font-family:monospace; font-size:0.85rem; outline:none; }
+.cred-input:focus { border-color:var(--accent); }
+.cred-note { font-size:0.75rem; color:#555; margin-top:0.3rem; }
+.cred-skip { font-size:0.8rem; color:var(--dim); margin-top:1rem; }
+.cred-connected { background:var(--accent-dim); border:1px solid #2a5a2a; border-radius:8px; padding:0.75rem 1rem; font-size:0.85rem; color:var(--green); margin-bottom:1.5rem; }
+
+/* Build / loading step */
+.build-container { text-align:center; padding:2rem 0; }
+.spinner { width:48px; height:48px; border:4px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin 0.8s linear infinite; margin:0 auto 1.5rem; }
+@keyframes spin { to { transform:rotate(360deg); } }
+.build-log { text-align:left; background:var(--bg2); border:1px solid var(--border); border-radius:8px; padding:1rem; max-height:220px; overflow-y:auto; font-family:monospace; font-size:0.8rem; color:#aaa; margin-top:1.5rem; }
+.build-log div { padding:0.15rem 0; }
+
+/* Buttons */
+.btn { padding:0.7rem 1.5rem; border:none; border-radius:8px; font-weight:600; cursor:pointer; font-size:0.9rem; transition:all 0.2s; }
+.btn-primary { background:var(--accent); color:var(--bg); }
+.btn-primary:hover { background:#22c55e; }
+.btn-primary:disabled { opacity:0.3; cursor:not-allowed; }
+.btn-secondary { background:transparent; color:var(--dim); border:1px solid var(--border); }
+.btn-secondary:hover { border-color:var(--dim); }
+.btn-row { display:flex; justify-content:space-between; margin-top:2rem; }
+
+/* --- Dashboard --- */
+.dashboard { display:none; }
+.dashboard.active { display:block; }
+.header { display:flex; justify-content:space-between; align-items:center; padding:1rem 2rem; border-bottom:1px solid var(--border); }
+.logo { font-size:1.3rem; font-weight:700; color:var(--accent); }
+.price-display { font-size:1.8rem; font-weight:700; font-family:'SF Mono',monospace; }
+.price-up { color:var(--green); }
+.price-down { color:var(--red); }
+.status-badge { padding:0.3rem 0.8rem; border-radius:20px; font-size:0.75rem; font-weight:600; }
+.status-live { background:#1a3a1a; color:var(--green); border:1px solid #2a5a2a; }
+.status-view { background:#1a1a3a; color:var(--blue); border:1px solid #2a2a5a; }
+.grid { display:grid; grid-template-columns:1fr 1fr; gap:1rem; padding:1.5rem 2rem; }
+.card { background:var(--bg2); border:1px solid var(--border); border-radius:10px; padding:1.25rem; }
+.card h3 { font-size:0.85rem; color:var(--dim); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:1rem; }
+.full-width { grid-column:1/-1; }
+.equity-big { font-size:2rem; font-weight:700; font-family:monospace; color:#fff; }
+.pnl { font-size:1rem; margin-top:0.25rem; }
+.pnl-pos { color:var(--green); }
+.pnl-neg { color:var(--red); }
+.metric { display:flex; justify-content:space-between; padding:0.4rem 0; font-size:0.85rem; }
+.metric-label { color:var(--dim); }
+.metric-value { color:#ccc; font-family:monospace; }
+.signal-row { display:flex; justify-content:space-between; align-items:center; padding:0.6rem 0; border-bottom:1px solid #1a1a2a; }
+.signal-row:last-child { border:none; }
+.signal-dir { font-weight:700; font-size:0.85rem; padding:0.2rem 0.6rem; border-radius:4px; }
+.dir-buy { color:var(--green); background:#1a3a1a; }
+.dir-sell { color:var(--red); background:#3a1a1a; }
+.dir-none { color:#888; background:#1a1a1a; }
+.signal-name { font-size:0.85rem; color:#ccc; }
+.signal-conf { font-size:0.8rem; color:#888; font-family:monospace; }
+.signal-reasons { font-size:0.75rem; color:#666; margin-top:0.3rem; }
+/* Education tooltip */
+.edu-tip { font-size:0.75rem; color:#555; padding:0.6rem 0.8rem; background:#0f0f18; border:1px solid #1f1f2f; border-radius:6px; margin-top:0.75rem; line-height:1.5; }
+.edu-tip b { color:var(--dim); }
+.pos-row { display:flex; justify-content:space-between; padding:0.5rem 0; border-bottom:1px solid #1a1a2a; font-size:0.85rem; }
+.pos-row:last-child { border:none; }
+.log-entry { font-size:0.8rem; font-family:monospace; padding:0.3rem 0; color:#aaa; border-bottom:1px solid #0a0a15; }
+.controls { display:flex; gap:0.75rem; align-items:center; }
+.btn-start { background:var(--accent); color:var(--bg); padding:0.5rem 1.2rem; border:none; border-radius:6px; font-weight:600; cursor:pointer; font-size:0.85rem; }
+.btn-start:hover { background:#22c55e; }
+.btn-stop { background:var(--red); color:#fff; padding:0.5rem 1.2rem; border:none; border-radius:6px; font-weight:600; cursor:pointer; font-size:0.85rem; }
+.btn-stop:hover { background:#ef4444; }
+.btn-start:disabled,.btn-stop:disabled { opacity:0.4; cursor:not-allowed; }
+.error-bar { background:#2a1515; border:1px solid #5a2020; color:var(--red); padding:0.75rem 2rem; font-size:0.85rem; }
+.updated { font-size:0.75rem; color:#555; }
 </style>
 </head>
 <body>
-<div class="header">
-  <div style="display:flex;align-items:center;gap:1rem">
-    <span class="logo">Hyperbot</span>
-    <span id="symbol" style="color:#888;font-size:0.9rem"></span>
-    <span id="status-badge" class="status-badge status-view">VIEW ONLY</span>
-  </div>
-  <div style="display:flex;align-items:center;gap:1.5rem">
-    <div id="controls" class="controls" style="display:none">
-      <button id="btn-start" class="btn btn-start" onclick="startTrading()">Start Trading</button>
-      <button id="btn-stop" class="btn btn-stop" onclick="stopTrading()" disabled>Stop</button>
-    </div>
-    <div>
-      <div id="price" class="price-display">—</div>
-      <div id="updated" class="updated"></div>
-    </div>
-  </div>
+
+<!-- ======================== WIZARD ======================== -->
+<div id="wizard" class="wizard">
+  <div class="progress" id="progress"></div>
+  <div id="wizard-content"></div>
 </div>
-<div id="error-bar" class="error-bar" style="display:none"></div>
 
-<div class="grid">
-  <div class="card">
-    <h3>Account</h3>
-    <div id="equity" class="equity-big">$—</div>
-    <div id="pnl" class="pnl">—</div>
-    <div style="margin-top:1rem">
-      <div class="metric"><span class="metric-label">Daily P&L Limit</span><span id="daily-limit" class="metric-value">—</span></div>
-      <div class="metric"><span class="metric-label">Daily Loss</span><span id="daily-loss" class="metric-value">—</span></div>
+<!-- ======================== DASHBOARD ======================== -->
+<div id="dashboard" class="dashboard">
+  <div class="header">
+    <div style="display:flex;align-items:center;gap:1rem">
+      <span class="logo">Hyperbot</span>
+      <span id="d-symbol" style="color:var(--dim);font-size:0.9rem"></span>
+      <span id="d-status" class="status-badge status-view">VIEW ONLY</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:1.5rem">
+      <div id="d-controls" class="controls" style="display:none">
+        <button id="d-btn-start" class="btn-start" onclick="startTrading()">Start Trading</button>
+        <button id="d-btn-stop" class="btn-stop" onclick="stopTrading()" disabled>Stop</button>
+      </div>
+      <div>
+        <div id="d-price" class="price-display">&mdash;</div>
+        <div id="d-updated" class="updated"></div>
+      </div>
     </div>
   </div>
+  <div id="d-error" class="error-bar" style="display:none"></div>
 
-  <div class="card">
-    <h3>Positions</h3>
-    <div id="positions"><span style="color:#555;font-size:0.85rem">No open positions</span></div>
-  </div>
+  <div class="grid">
+    <div class="card">
+      <h3>Account</h3>
+      <div id="d-equity" class="equity-big">$&mdash;</div>
+      <div id="d-pnl" class="pnl">&mdash;</div>
+      <div style="margin-top:1rem">
+        <div class="metric"><span class="metric-label">Daily P&L Limit</span><span id="d-daily-limit" class="metric-value">&mdash;</span></div>
+        <div class="metric"><span class="metric-label">Daily Loss</span><span id="d-daily-loss" class="metric-value">&mdash;</span></div>
+      </div>
+      <div class="edu-tip"><b>What this means:</b> Your account equity is your total deposited balance plus unrealised gains/losses. The daily loss limit is a circuit breaker — if hit, trading auto-stops to protect your capital.</div>
+    </div>
 
-  <div class="card full-width">
-    <h3>Strategy Signals</h3>
-    <div id="signals"><span style="color:#555;font-size:0.85rem">Waiting for data...</span></div>
-  </div>
+    <div class="card">
+      <h3>Positions</h3>
+      <div id="d-positions"><span style="color:#555;font-size:0.85rem">No open positions</span></div>
+      <div class="edu-tip"><b>Positions</b> show your current open trades. LONG = betting price goes up, SHORT = betting price goes down. Unrealised P&L updates in real-time until you close.</div>
+    </div>
 
-  <div class="card full-width">
-    <h3>Trade Log</h3>
-    <div id="trade-log" style="max-height:200px;overflow-y:auto"><span style="color:#555;font-size:0.85rem">No trades yet</span></div>
+    <div class="card full-width">
+      <h3>Strategy Signals</h3>
+      <div id="d-signals"><span style="color:#555;font-size:0.85rem">Waiting for data...</span></div>
+      <div class="edu-tip"><b>How signals work:</b> Each strategy scans the market every 15 seconds using technical indicators (SMA, Bollinger Bands, ATR, wick analysis). A BUY/SELL signal fires only when multiple conditions align. Confidence shows how many conditions passed. Below 50% = no trade. SL = stop-loss (where to exit if wrong), TP = take-profit (where to take gains).</div>
+    </div>
+
+    <div class="card full-width">
+      <h3>Trade Log</h3>
+      <div id="d-trade-log" style="max-height:200px;overflow-y:auto"><span style="color:#555;font-size:0.85rem">No trades yet</span></div>
+      <div class="edu-tip"><b>Trade log</b> records every action: signal detections, orders placed, fills, rejections, and system events like halt. This is your audit trail.</div>
+    </div>
   </div>
 </div>
 
 <script>
+// ============================================================
+// WIZARD STATE
+// ============================================================
+const STEPS = ['pair','strategies','risk','credentials','build'];
+let currentStep = 0;
+let wizardData = {
+  symbol: '', coin: '', price: null,
+  strategies: [],
+  max_leverage: 4, risk_per_trade_pct: 1.0, max_daily_loss: 100,
+  master_address: '', agent_private_key: '',
+};
+
+// Top traded pairs to show by default
+const TOP_PAIRS = [
+  {coin:'BTC',symbol:'BTCUSDT'}, {coin:'ETH',symbol:'ETHUSDT'},
+  {coin:'SOL',symbol:'SOLUSDT'}, {coin:'DOGE',symbol:'DOGEUSDT'},
+  {coin:'ARB',symbol:'ARBUSDT'}, {coin:'AVAX',symbol:'AVAXUSDT'},
+  {coin:'LINK',symbol:'LINKUSDT'}, {coin:'OP',symbol:'OPUSDT'},
+  {coin:'WIF',symbol:'WIFUSDT'},
+];
+
+const STRATEGIES = [
+  {
+    id:'trend_pullback', name:'Trend Pullback', family:'Continuation',
+    confidence:'High', suitability:'High',
+    desc:'Buys dips in an uptrend. Waits for price to pull back toward the moving average, then enters when trend confirmation holds. Low-frequency, high-probability.',
+    timeframes:'1D, 4H, 1H', risk:'1.5% per trade, 4x max leverage',
+  },
+  {
+    id:'compression_breakout', name:'Compression Breakout', family:'Breakout',
+    confidence:'High', suitability:'High',
+    desc:'Detects tight Bollinger Band squeezes, then enters when price breaks out with volume expansion. Catches the start of big moves.',
+    timeframes:'4H, 1H, 15M', risk:'1.0% per trade, 4x max leverage',
+  },
+  {
+    id:'liquidity_sweep_reversal', name:'Liquidity Sweep Reversal', family:'Reversal',
+    confidence:'Medium', suitability:'Medium',
+    desc:'Watches for stop-hunts below support or above resistance. Enters the reversal after a sweep-and-reject candle pattern. Higher reward, lower frequency.',
+    timeframes:'4H, 1H, 15M', risk:'0.75% per trade, 3x max leverage',
+  },
+];
+
+let pairPrices = {};  // coin -> price
+
+// ============================================================
+// RENDER WIZARD
+// ============================================================
+function renderProgress() {
+  const el = document.getElementById('progress');
+  el.innerHTML = STEPS.map((s,i) =>
+    `<div class="progress-dot ${i < currentStep ? 'done' : ''} ${i === currentStep ? 'active' : ''}"></div>`
+  ).join('');
+}
+
+function renderStep() {
+  renderProgress();
+  const el = document.getElementById('wizard-content');
+  switch(STEPS[currentStep]) {
+    case 'pair': return renderPairStep(el);
+    case 'strategies': return renderStrategyStep(el);
+    case 'risk': return renderRiskStep(el);
+    case 'credentials': return renderCredentialStep(el);
+    case 'build': return renderBuildStep(el);
+  }
+}
+
+// --- STEP 1: Pick Pair ---
+function renderPairStep(el) {
+  el.innerHTML = `
+    <div class="step-title">Pick a trading pair</div>
+    <div class="step-sub">Choose the asset you want to trade on Hyperliquid. Prices are live.</div>
+    <input class="pair-search" id="pair-search" type="text" placeholder="Search pairs... (BTC, ETH, SOL...)" oninput="filterPairs()">
+    <div class="pair-grid" id="pair-grid"></div>
+    <div class="btn-row">
+      <div></div>
+      <button class="btn btn-primary" id="pair-next" disabled onclick="nextStep()">Continue</button>
+    </div>
+  `;
+  fetchPrices();
+  renderPairGrid();
+}
+
+async function fetchPrices() {
+  try {
+    const r = await fetch('/api/pairs');
+    pairPrices = await r.json();
+    renderPairGrid();
+  } catch(e) { console.error(e); }
+}
+
+function renderPairGrid() {
+  const search = (document.getElementById('pair-search')?.value || '').toUpperCase();
+  let pairs = TOP_PAIRS;
+  if (search) {
+    // Search all known pairs from the server
+    const allCoins = Object.keys(pairPrices);
+    const filtered = allCoins.filter(c => c.toUpperCase().includes(search)).slice(0,9);
+    pairs = filtered.map(c => ({coin:c, symbol:c+'USDT'}));
+  }
+  const grid = document.getElementById('pair-grid');
+  if (!grid) return;
+  grid.innerHTML = pairs.map(p => {
+    const price = pairPrices[p.coin];
+    const priceStr = price ? '$' + parseFloat(price).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}) : '...';
+    const sel = wizardData.coin === p.coin ? 'selected' : '';
+    return `<div class="pair-card ${sel}" onclick="selectPair('${p.coin}','${p.symbol}')">
+      <div class="pair-name">${p.coin}</div>
+      <div class="pair-price">${priceStr}</div>
+    </div>`;
+  }).join('');
+}
+function filterPairs() { renderPairGrid(); }
+
+function selectPair(coin, symbol) {
+  wizardData.coin = coin;
+  wizardData.symbol = symbol;
+  wizardData.price = pairPrices[coin] ? parseFloat(pairPrices[coin]) : null;
+  renderPairGrid();
+  document.getElementById('pair-next').disabled = false;
+}
+
+// --- STEP 2: Select Strategies ---
+function renderStrategyStep(el) {
+  el.innerHTML = `
+    <div class="step-title">Select your strategies</div>
+    <div class="step-sub">Pick one or more. Each strategy watches for different market conditions. Running multiple gives broader coverage.</div>
+    <div id="strat-list"></div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="prevStep()">Back</button>
+      <button class="btn btn-primary" id="strat-next" disabled onclick="nextStep()">Continue</button>
+    </div>
+  `;
+  renderStratList();
+}
+
+function renderStratList() {
+  const el = document.getElementById('strat-list');
+  el.innerHTML = STRATEGIES.map(s => {
+    const sel = wizardData.strategies.includes(s.id) ? 'selected' : '';
+    const tagClass = s.confidence === 'High' ? 'tag-high' : 'tag-med';
+    return `<div class="strat-card ${sel}" onclick="toggleStrategy('${s.id}')">
+      <div class="strat-name">${s.name} <span class="strat-tag ${tagClass}">${s.confidence} confidence</span></div>
+      <div class="strat-desc">${s.desc}</div>
+      <div class="strat-meta">
+        <span>${s.family}</span>
+        <span>Timeframes: ${s.timeframes}</span>
+        <span>Default: ${s.risk}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function toggleStrategy(id) {
+  const idx = wizardData.strategies.indexOf(id);
+  if (idx >= 0) wizardData.strategies.splice(idx,1);
+  else wizardData.strategies.push(id);
+  renderStratList();
+  document.getElementById('strat-next').disabled = wizardData.strategies.length === 0;
+}
+
+// --- STEP 3: Risk ---
+function renderRiskStep(el) {
+  el.innerHTML = `
+    <div class="step-title">Set your risk parameters</div>
+    <div class="step-sub">These limits protect your capital. You can always change them later in operator-policy.json.</div>
+    <div class="risk-group">
+      <div class="risk-label"><span>Max leverage</span><span class="val" id="lev-val">${wizardData.max_leverage}x</span></div>
+      <input type="range" min="1" max="10" step="0.5" value="${wizardData.max_leverage}" oninput="wizardData.max_leverage=parseFloat(this.value);document.getElementById('lev-val').textContent=this.value+'x'">
+      <div class="risk-help">How much your position size can be multiplied. 1x = no leverage. Higher leverage = higher risk and reward.</div>
+    </div>
+    <div class="risk-group">
+      <div class="risk-label"><span>Risk per trade</span><span class="val" id="rpt-val">${wizardData.risk_per_trade_pct}%</span></div>
+      <input type="range" min="0.25" max="3" step="0.25" value="${wizardData.risk_per_trade_pct}" oninput="wizardData.risk_per_trade_pct=parseFloat(this.value);document.getElementById('rpt-val').textContent=this.value+'%'">
+      <div class="risk-help">Percentage of your account risked on each trade. 1% means a losing trade costs 1% of your equity.</div>
+    </div>
+    <div class="risk-group">
+      <div class="risk-label"><span>Daily loss limit</span><span class="val" id="dll-val">$${wizardData.max_daily_loss}</span></div>
+      <input type="range" min="25" max="1000" step="25" value="${wizardData.max_daily_loss}" oninput="wizardData.max_daily_loss=parseFloat(this.value);document.getElementById('dll-val').textContent='$'+this.value">
+      <div class="risk-help">Circuit breaker. If daily losses hit this amount, trading automatically halts until next day.</div>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="prevStep()">Back</button>
+      <button class="btn btn-primary" onclick="nextStep()">Continue</button>
+    </div>
+  `;
+}
+
+// --- STEP 4: Credentials ---
+function renderCredentialStep(el) {
+  // Check if already connected
+  fetch('/api/credential-status').then(r=>r.json()).then(s => {
+    if (s.connected) {
+      el.innerHTML = `
+        <div class="step-title">Wallet connected</div>
+        <div class="step-sub">Your Hyperliquid API wallet is already configured.</div>
+        <div class="cred-connected">Connected: ${s.master_address}</div>
+        <div class="btn-row">
+          <button class="btn btn-secondary" onclick="prevStep()">Back</button>
+          <button class="btn btn-primary" onclick="nextStep()">Continue with this wallet</button>
+        </div>
+        <div class="cred-skip" style="margin-top:1.5rem"><a href="#" onclick="showCredentialForm();return false">Use a different wallet</a></div>
+      `;
+    } else {
+      showCredentialForm();
+    }
+  }).catch(() => showCredentialForm());
+}
+
+function showCredentialForm() {
+  const el = document.getElementById('wizard-content');
+  el.innerHTML = `
+    <div class="step-title">Connect your wallet</div>
+    <div class="step-sub">
+      Create an API wallet at <a href="https://app.hyperliquid.xyz/API" target="_blank">app.hyperliquid.xyz/API</a>.
+      This is a trade-only key — it cannot withdraw funds.
+    </div>
+    <div class="cred-group">
+      <label>Wallet address</label>
+      <input class="cred-input" id="cred-addr" type="text" placeholder="0x..." oninput="validateCreds()">
+      <div class="cred-note">Your main Hyperliquid wallet address (starts with 0x, 42 characters)</div>
+    </div>
+    <div class="cred-group">
+      <label>API private key</label>
+      <input class="cred-input" id="cred-key" type="password" placeholder="0x..." oninput="validateCreds()">
+      <div class="cred-note">The private key of the API wallet you created (starts with 0x, 66 characters). Stored in your macOS Keychain — never sent anywhere.</div>
+    </div>
+    <div id="cred-error" style="color:var(--red);font-size:0.85rem;margin-top:0.5rem;display:none"></div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="prevStep()">Back</button>
+      <button class="btn btn-primary" id="cred-next" disabled onclick="saveCreds()">Save & Continue</button>
+    </div>
+  `;
+}
+
+function validateCreds() {
+  const addr = document.getElementById('cred-addr').value.trim();
+  const key = document.getElementById('cred-key').value.trim();
+  const addrOk = addr.startsWith('0x') && addr.length === 42;
+  const keyOk = key.startsWith('0x') && key.length === 66;
+  document.getElementById('cred-next').disabled = !(addrOk && keyOk);
+}
+
+async function saveCreds() {
+  const addr = document.getElementById('cred-addr').value.trim();
+  const key = document.getElementById('cred-key').value.trim();
+  document.getElementById('cred-next').disabled = true;
+  document.getElementById('cred-next').textContent = 'Saving...';
+  try {
+    const r = await fetch('/api/save-credentials', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({master_address:addr, agent_private_key:key})
+    });
+    const res = await r.json();
+    if (res.ok) {
+      wizardData.master_address = addr;
+      nextStep();
+    } else {
+      document.getElementById('cred-error').textContent = res.error || 'Failed to save';
+      document.getElementById('cred-error').style.display = 'block';
+      document.getElementById('cred-next').disabled = false;
+      document.getElementById('cred-next').textContent = 'Save & Continue';
+    }
+  } catch(e) {
+    document.getElementById('cred-error').textContent = 'Connection error';
+    document.getElementById('cred-error').style.display = 'block';
+    document.getElementById('cred-next').disabled = false;
+    document.getElementById('cred-next').textContent = 'Save & Continue';
+  }
+}
+
+// --- STEP 5: Build ---
+function renderBuildStep(el) {
+  el.innerHTML = `
+    <div class="build-container">
+      <div class="spinner" id="build-spinner"></div>
+      <div class="step-title" id="build-title">Building your workspace</div>
+      <div class="step-sub" id="build-sub">Fetching 90-day price data, profiling strategies, and setting up your ${wizardData.coin} trading workspace...</div>
+      <div class="build-log" id="build-log"></div>
+    </div>
+  `;
+  // Start build
+  fetch('/api/build', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      symbol: wizardData.symbol,
+      coin: wizardData.coin,
+      strategies: wizardData.strategies,
+      max_leverage: wizardData.max_leverage,
+      risk_per_trade_pct: wizardData.risk_per_trade_pct,
+      max_daily_loss: wizardData.max_daily_loss,
+    })
+  });
+  pollBuild();
+}
+
+async function pollBuild() {
+  try {
+    const r = await fetch('/api/build-status');
+    const s = await r.json();
+    const logEl = document.getElementById('build-log');
+    if (logEl) {
+      logEl.innerHTML = s.log.map(l => `<div>${l}</div>`).join('');
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+    if (s.status === 'done') {
+      document.getElementById('build-spinner').style.display = 'none';
+      document.getElementById('build-title').textContent = 'Workspace ready';
+      document.getElementById('build-sub').textContent = `Your ${wizardData.coin} trading bot is configured and monitoring the market.`;
+      setTimeout(() => {
+        document.getElementById('wizard').classList.add('wizard-hide');
+        document.getElementById('dashboard').classList.add('active');
+        startDashboardPoll();
+      }, 1500);
+      return;
+    }
+    if (s.status === 'error') {
+      document.getElementById('build-spinner').style.display = 'none';
+      document.getElementById('build-title').textContent = 'Build failed';
+      document.getElementById('build-sub').innerHTML = 'Check the log below. <a href="#" onclick="renderBuildStep(document.getElementById(\'wizard-content\'));return false">Retry</a>';
+      return;
+    }
+  } catch(e) { console.error(e); }
+  setTimeout(pollBuild, 1000);
+}
+
+// ============================================================
+// WIZARD NAV
+// ============================================================
+function nextStep() {
+  if (currentStep < STEPS.length - 1) { currentStep++; renderStep(); }
+}
+function prevStep() {
+  if (currentStep > 0) { currentStep--; renderStep(); }
+}
+
+// ============================================================
+// DASHBOARD POLL (same as before but with edu-tips)
+// ============================================================
 let prevPrice = null;
 
-async function poll() {
+async function dashPoll() {
   try {
-    const resp = await fetch('/api/state');
-    const s = await resp.json();
+    const r = await fetch('/api/state');
+    const s = await r.json();
+    document.getElementById('d-symbol').textContent = s.symbol;
 
-    // Symbol
-    document.getElementById('symbol').textContent = s.symbol;
-
-    // Status badge
-    const badge = document.getElementById('status-badge');
-    const controls = document.getElementById('controls');
+    // Status
+    const badge = document.getElementById('d-status');
+    const ctrl = document.getElementById('d-controls');
     if (s.live_enabled) {
-      controls.style.display = 'flex';
+      ctrl.style.display = 'flex';
       if (s.trading_active) {
-        badge.className = 'status-badge status-live';
-        badge.textContent = 'LIVE';
-        document.getElementById('btn-start').disabled = true;
-        document.getElementById('btn-stop').disabled = false;
+        badge.className = 'status-badge status-live'; badge.textContent = 'LIVE';
+        document.getElementById('d-btn-start').disabled = true;
+        document.getElementById('d-btn-stop').disabled = false;
       } else {
-        badge.className = 'status-badge status-view';
-        badge.textContent = 'READY';
-        document.getElementById('btn-start').disabled = false;
-        document.getElementById('btn-stop').disabled = true;
+        badge.className = 'status-badge status-view'; badge.textContent = 'READY';
+        document.getElementById('d-btn-start').disabled = false;
+        document.getElementById('d-btn-stop').disabled = true;
       }
     }
 
     // Price
     if (s.last_price) {
-      const el = document.getElementById('price');
-      el.textContent = '$' + s.last_price.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+      const el = document.getElementById('d-price');
+      el.textContent = '$' + s.last_price.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
       el.className = 'price-display ' + (prevPrice && s.last_price >= prevPrice ? 'price-up' : 'price-down');
       prevPrice = s.last_price;
     }
-    document.getElementById('updated').textContent = s.last_update ? 'Updated ' + s.last_update : '';
+    document.getElementById('d-updated').textContent = s.last_update ? 'Updated ' + s.last_update : '';
 
     // Error
-    const errBar = document.getElementById('error-bar');
+    const errBar = document.getElementById('d-error');
     if (s.error) { errBar.textContent = s.error; errBar.style.display = 'block'; }
     else { errBar.style.display = 'none'; }
 
     // Account
-    document.getElementById('equity').textContent = '$' + s.equity.toLocaleString(undefined, {minimumFractionDigits: 2});
-    const pnlEl = document.getElementById('pnl');
+    document.getElementById('d-equity').textContent = '$' + s.equity.toLocaleString(undefined,{minimumFractionDigits:2});
+    const pnlEl = document.getElementById('d-pnl');
     pnlEl.textContent = 'Unrealized P&L: ' + (s.pnl >= 0 ? '+' : '') + '$' + s.pnl.toFixed(2);
     pnlEl.className = 'pnl ' + (s.pnl >= 0 ? 'pnl-pos' : 'pnl-neg');
-    document.getElementById('daily-limit').textContent = '$' + s.max_daily_loss.toFixed(2);
-    document.getElementById('daily-loss').textContent = '$' + s.daily_loss.toFixed(2);
+    document.getElementById('d-daily-limit').textContent = '$' + s.max_daily_loss.toFixed(2);
+    document.getElementById('d-daily-loss').textContent = '$' + s.daily_loss.toFixed(2);
 
     // Positions
-    const posDiv = document.getElementById('positions');
-    if (s.positions.length === 0) {
+    const posDiv = document.getElementById('d-positions');
+    if (!s.positions.length) {
       posDiv.innerHTML = '<span style="color:#555;font-size:0.85rem">No open positions</span>';
     } else {
       posDiv.innerHTML = s.positions.map(p =>
         `<div class="pos-row">
-          <span>${p.coin} <span style="color:${parseFloat(p.size)>0?'#4ade80':'#f87171'}">${parseFloat(p.size)>0?'LONG':'SHORT'}</span></span>
+          <span>${p.coin} <span style="color:${parseFloat(p.size)>0?'var(--green)':'var(--red)'}">${parseFloat(p.size)>0?'LONG':'SHORT'}</span></span>
           <span style="font-family:monospace">${p.size} @ ${p.entry_price}</span>
-          <span style="color:${parseFloat(p.unrealized_pnl)>=0?'#4ade80':'#f87171'};font-family:monospace">$${parseFloat(p.unrealized_pnl).toFixed(2)}</span>
+          <span style="color:${parseFloat(p.unrealized_pnl)>=0?'var(--green)':'var(--red)'};font-family:monospace">$${parseFloat(p.unrealized_pnl).toFixed(2)}</span>
         </div>`
       ).join('');
     }
 
     // Signals
-    const sigDiv = document.getElementById('signals');
-    if (s.last_signals.length === 0) {
+    const sigDiv = document.getElementById('d-signals');
+    if (!s.last_signals.length) {
       sigDiv.innerHTML = '<span style="color:#555;font-size:0.85rem">Waiting for data...</span>';
     } else {
       sigDiv.innerHTML = s.last_signals.map(sig => {
-        const dirClass = sig.direction === 'buy' ? 'dir-buy' : sig.direction === 'sell' ? 'dir-sell' : 'dir-none';
-        const dirText = sig.direction.toUpperCase();
-        const conf = (sig.confidence * 100).toFixed(0) + '%';
-        const sl = sig.stop_loss ? '$' + sig.stop_loss.toFixed(2) : '—';
-        const tp = sig.take_profit ? '$' + sig.take_profit.toFixed(2) : '—';
+        const dc = sig.direction==='buy'?'dir-buy':sig.direction==='sell'?'dir-sell':'dir-none';
+        const dt = sig.direction.toUpperCase();
+        const conf = (sig.confidence*100).toFixed(0)+'%';
+        const sl = sig.stop_loss ? '$'+sig.stop_loss.toFixed(2) : '\u2014';
+        const tp = sig.take_profit ? '$'+sig.take_profit.toFixed(2) : '\u2014';
         return `<div class="signal-row">
-          <div>
-            <span class="signal-dir ${dirClass}">${dirText}</span>
-            <span class="signal-name">${sig.strategy_id}</span>
-          </div>
+          <div><span class="signal-dir ${dc}">${dt}</span> <span class="signal-name">${sig.strategy_id}</span></div>
           <div style="text-align:right">
             <span class="signal-conf">${conf} | SL: ${sl} | TP: ${tp}</span>
-            <div class="signal-reasons">${sig.reasons.slice(0,2).join(' · ')}</div>
+            <div class="signal-reasons">${sig.reasons.slice(0,2).join(' \u00b7 ')}</div>
           </div>
         </div>`;
       }).join('');
     }
 
     // Trade log
-    const logDiv = document.getElementById('trade-log');
-    if (s.trade_log.length > 0) {
+    const logDiv = document.getElementById('d-trade-log');
+    if (s.trade_log.length) {
       logDiv.innerHTML = s.trade_log.slice().reverse().map(t =>
         `<div class="log-entry">${t.time} [${t.action}] ${t.strategy} size=${t.size} price=${t.price} ${t.note}</div>`
       ).join('');
     }
-  } catch (e) { console.error(e); }
+  } catch(e) { console.error(e); }
 }
+
+function startDashboardPoll() { setInterval(dashPoll, 3000); dashPoll(); }
 
 async function startTrading() {
-  if (!confirm('Start live trading? Real orders will be placed.')) return;
-  await fetch('/api/start', {method: 'POST'});
-  poll();
+  if (!confirm('Start live trading? Real orders will be placed with real money.')) return;
+  await fetch('/api/start',{method:'POST'}); dashPoll();
 }
+async function stopTrading() { await fetch('/api/stop',{method:'POST'}); dashPoll(); }
 
-async function stopTrading() {
-  await fetch('/api/stop', {method: 'POST'});
-  poll();
-}
-
-setInterval(poll, 3000);
-poll();
+// ============================================================
+// INIT
+// ============================================================
+renderStep();
 </script>
 </body>
 </html>"""
@@ -470,28 +985,76 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:
-        if self.path == "/" or self.path == "/index.html":
+        path = self.path.split("?")[0]
+
+        if path == "/" or path == "/index.html":
             body = DASHBOARD_HTML.encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
-        elif self.path == "/api/state":
+
+        elif path == "/api/state":
             self._json(STATE.to_dict())
+
+        elif path == "/api/pairs":
+            # Return live mid prices for all pairs
+            try:
+                mids = hl_client.get_all_mids()
+                self._json(mids)
+            except Exception as e:
+                self._json({"error": str(e)}, 500)
+
+        elif path == "/api/credential-status":
+            master = read_credential("master_address")
+            self._json({"connected": master is not None, "master_address": master or ""})
+
+        elif path == "/api/build-status":
+            self._json({"status": STATE.build_status, "log": STATE.build_log[-30:]})
+
         else:
             self.send_error(404)
 
     def do_POST(self) -> None:
-        if self.path == "/api/start":
+        length = int(self.headers.get("Content-Length", 0))
+        body = json.loads(self.rfile.read(length)) if length > 0 else {}
+        path = self.path.split("?")[0]
+
+        if path == "/api/save-credentials":
+            try:
+                master = body["master_address"].strip()
+                agent_pk = body["agent_private_key"].strip()
+                pk = agent_pk.removeprefix("0x")
+                if len(pk) != 64 or not all(c in "0123456789abcdefABCDEF" for c in pk):
+                    raise ValueError("Invalid private key format")
+                store_credential("master_address", master)
+                store_credential("agent_private_key", agent_pk)
+                print(f"  Credentials saved for {master}", flush=True)
+                self._json({"ok": True})
+            except Exception as e:
+                self._json({"ok": False, "error": str(e)}, 400)
+
+        elif path == "/api/build":
+            global BUILD_THREAD
+            if STATE.build_status == "building":
+                self._json({"ok": False, "error": "Build already in progress"})
+                return
+            BUILD_THREAD = threading.Thread(target=build_workspace_background, args=(body,), daemon=True)
+            BUILD_THREAD.start()
+            self._json({"ok": True})
+
+        elif path == "/api/start":
             if STATE.live_enabled:
                 STATE.trading_active = True
                 log_trade("START", "operator", 0, STATE.last_price or 0, "live trading activated")
             self._json({"ok": True, "trading_active": STATE.trading_active})
-        elif self.path == "/api/stop":
+
+        elif path == "/api/stop":
             STATE.trading_active = False
             log_trade("STOP", "operator", 0, STATE.last_price or 0, "trading stopped by operator")
             self._json({"ok": True, "trading_active": False})
+
         else:
             self.send_error(404)
 
@@ -521,7 +1084,7 @@ def main() -> int:
 
     STATE.live_enabled = args.live
 
-    # Start trading loop in background
+    # Start trading loop in background (waits for setup_complete)
     thread = threading.Thread(target=trading_loop, daemon=True)
     thread.start()
 
@@ -530,14 +1093,14 @@ def main() -> int:
 
     url = f"http://127.0.0.1:{port}"
     mode = "LIVE TRADING" if args.live else "VIEW ONLY"
-    print(f"[dashboard] {mode} — {url}", flush=True)
+    print(f"[hyperbot] {mode} — {url}", flush=True)
     webbrowser.open(url)
 
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         STOP_EVENT.set()
-        print("\n[dashboard] Shutting down.", flush=True)
+        print("\n[hyperbot] Shutting down.", flush=True)
         server.server_close()
 
     return 0
