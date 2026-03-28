@@ -59,10 +59,18 @@ class TradingState:
         self.coin: str = ""
         self.symbol: str = ""
         self.daily_loss: float = 0.0
-        self.max_daily_loss: float = 100.0
+        self.max_daily_loss_pct: float = 5.0  # % of account equity
         self.setup_complete: bool = False
         self.build_status: str = ""  # for step 5 progress
         self.build_log: list[str] = []
+        self.thinking: str = ""  # rotating system status message
+        self.max_leverage: float = 4.0
+        self.risk_per_trade_pct: float = 1.0
+        self.start_of_day_equity: float = 0.0
+
+    def daily_loss_limit_usd(self) -> float:
+        base = self.start_of_day_equity if self.start_of_day_equity > 0 else self.equity
+        return base * (self.max_daily_loss_pct / 100)
 
     def to_dict(self) -> dict:
         return {
@@ -79,10 +87,14 @@ class TradingState:
             "coin": self.coin,
             "symbol": self.symbol,
             "daily_loss": self.daily_loss,
-            "max_daily_loss": self.max_daily_loss,
+            "max_daily_loss_pct": self.max_daily_loss_pct,
+            "max_daily_loss_usd": self.daily_loss_limit_usd(),
             "setup_complete": self.setup_complete,
             "build_status": self.build_status,
             "build_log": self.build_log[-30:],
+            "thinking": self.thinking,
+            "max_leverage": self.max_leverage,
+            "risk_per_trade_pct": self.risk_per_trade_pct,
         }
 
 
@@ -152,9 +164,9 @@ def build_workspace_background(config: dict) -> None:
             safe = policy.get("auto_apply", {}).get("safe_bands", {})
             safe["leverage_max"] = config.get("max_leverage", 4.0)
             safe["risk_per_trade_pct_max"] = config.get("risk_per_trade_pct", 1.0)
-            safe["max_daily_loss_usd"] = config.get("max_daily_loss", 100.0)
+            safe["max_daily_loss_pct"] = config.get("max_daily_loss_pct", 5.0)
             POLICY_PATH.write_text(json.dumps(policy, indent=2), encoding="utf-8")
-            blog(f"Risk policy updated: leverage={safe['leverage_max']}x, risk/trade={safe['risk_per_trade_pct_max']}%, daily limit=${safe['max_daily_loss_usd']}")
+            blog(f"Risk policy updated: leverage={safe['leverage_max']}x, risk/trade={safe['risk_per_trade_pct_max']}%, daily limit={safe['max_daily_loss_pct']}% of equity")
 
         # Fetch and cache 90-day candle data for profiling
         blog(f"Fetching 90-day price history for {coin}...")
@@ -188,7 +200,9 @@ def build_workspace_background(config: dict) -> None:
         STATE.coin = coin
         STATE.symbol = symbol
         STATE.setup_complete = True
-        STATE.max_daily_loss = config.get("max_daily_loss", 100.0)
+        STATE.max_daily_loss_pct = config.get("max_daily_loss_pct", 5.0)
+        STATE.max_leverage = config.get("max_leverage", 4.0)
+        STATE.risk_per_trade_pct = config.get("risk_per_trade_pct", 1.0)
 
     except Exception as e:
         STATE.build_status = "error"
@@ -200,6 +214,53 @@ def build_workspace_background(config: dict) -> None:
 # Trading loop (runs after setup)
 # ---------------------------------------------------------------------------
 
+def _thinking_message(cycle: int, state: TradingState) -> str:
+    """Generate a rotating system status message."""
+    msgs: list[str] = []
+    price = state.last_price
+    coin = state.coin
+
+    # Always-available messages
+    msgs.append(f"Scanning {coin} across all strategy timeframes...")
+    msgs.append(f"Fetching latest {coin} candles from Hyperliquid...")
+    msgs.append(f"Checking 1D and 4H charts for signal conditions...")
+
+    # Signal-aware messages
+    if state.last_signals:
+        active = [s for s in state.last_signals if s.get("direction") != "none"]
+        inactive = [s for s in state.last_signals if s.get("direction") == "none"]
+        if active:
+            best = max(active, key=lambda s: s.get("confidence", 0))
+            msgs.append(f"Signal detected: {best['strategy_id']} at {best['confidence']*100:.0f}% confidence. Evaluating entry...")
+            msgs.append(f"{best['strategy_id']} sees a {best['direction'].upper()} setup. Checking risk parameters...")
+            if best.get("stop_loss") and price:
+                risk_dist = abs(price - best["stop_loss"]) / price * 100
+                msgs.append(f"Potential entry: stop-loss is {risk_dist:.1f}% away. Sizing position...")
+        if inactive:
+            names = [s["strategy_id"].replace("_", " ").title() for s in inactive[:2]]
+            msgs.append(f"{' and '.join(names)}: conditions not met yet. Waiting for setup...")
+        if len(inactive) == len(state.last_signals):
+            msgs.append(f"No signals firing. All strategies are waiting for the right conditions.")
+            msgs.append(f"Market is quiet for {coin}. Patience is part of the strategy.")
+
+    # Position-aware messages
+    if state.positions:
+        for p in state.positions[:1]:
+            pnl = float(p.get("unrealized_pnl", 0))
+            direction = "long" if float(p["size"]) > 0 else "short"
+            msgs.append(f"Monitoring open {direction} position. Unrealised P&L: ${pnl:+.2f}")
+    elif state.trading_active:
+        msgs.append(f"No open positions. Waiting for a high-confidence signal to enter...")
+
+    # Trading state messages
+    if not state.live_enabled:
+        msgs.append(f"View-only mode. Signals are live but no orders will be placed.")
+    elif not state.trading_active:
+        msgs.append(f"Trading engine ready. Press Start Trading to begin execution.")
+
+    return msgs[cycle % len(msgs)]
+
+
 def trading_loop() -> None:
     """Background loop: fetch data, detect signals, optionally execute trades."""
     # Wait for setup to complete
@@ -209,21 +270,19 @@ def trading_loop() -> None:
     if STOP_EVENT.is_set():
         return
 
-    policy = {}
-    if POLICY_PATH.exists():
-        policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
-
-    max_leverage = policy.get("auto_apply", {}).get("safe_bands", {}).get("leverage_max", 4.0)
-    risk_per_trade_pct = policy.get("auto_apply", {}).get("safe_bands", {}).get("risk_per_trade_pct_max", 1.0)
-
     creds = hl_client.get_credentials()
     master_address = creds.get("master_address")
 
     print(f"[dashboard] Monitoring {STATE.coin} ({STATE.symbol})", flush=True)
     print(f"[dashboard] Live trading: {'ENABLED' if STATE.live_enabled else 'disabled (view-only)'}", flush=True)
 
+    cycle = 0
     while not STOP_EVENT.is_set():
         try:
+            # Thinking message — rotate each cycle
+            STATE.thinking = _thinking_message(cycle, STATE)
+            cycle += 1
+
             price = hl_client.get_mid_price(STATE.coin)
             if price:
                 STATE.last_price = price
@@ -252,6 +311,9 @@ def trading_loop() -> None:
                     margin = ch_state.get("marginSummary", {})
                     STATE.equity = float(margin.get("accountValue", 0))
                     STATE.pnl = float(margin.get("totalUnrealizedPnl", 0))
+                    # Set start-of-day equity on first fetch
+                    if STATE.start_of_day_equity <= 0 and STATE.equity > 0:
+                        STATE.start_of_day_equity = STATE.equity
                     STATE.positions = [
                         {
                             "coin": p["position"]["coin"],
@@ -271,11 +333,15 @@ def trading_loop() -> None:
 
             # Execute trades if live and active
             if STATE.live_enabled and STATE.trading_active:
-                if STATE.daily_loss >= STATE.max_daily_loss:
+                loss_limit = STATE.daily_loss_limit_usd()
+                if loss_limit > 0 and STATE.daily_loss >= loss_limit:
                     STATE.trading_active = False
-                    STATE.error = f"Daily loss limit reached (${STATE.daily_loss:.2f} >= ${STATE.max_daily_loss:.2f}). Trading halted."
+                    STATE.error = f"Daily loss limit reached (${STATE.daily_loss:.2f} >= ${loss_limit:.2f} = {STATE.max_daily_loss_pct}% of equity). Trading halted."
                     log_trade("HALT", "system", 0, 0, "daily loss limit reached")
                     continue
+
+                max_leverage = STATE.max_leverage
+                risk_per_trade_pct = STATE.risk_per_trade_pct
 
                 for sig_data, sig_obj in zip(STATE.last_signals, sigs):
                     if sig_obj.direction == signals.Direction.NONE:
@@ -458,6 +524,21 @@ input[type=range] { width:100%; accent-color:var(--accent); }
 .btn-start:disabled,.btn-stop:disabled { opacity:0.4; cursor:not-allowed; }
 .error-bar { background:#2a1515; border:1px solid #5a2020; color:var(--red); padding:0.75rem 2rem; font-size:0.85rem; }
 .updated { font-size:0.75rem; color:#555; }
+/* Thinking ticker */
+.thinking-bar { padding:0.5rem 2rem; font-size:0.8rem; color:#666; border-bottom:1px solid var(--border); font-style:italic; transition:opacity 0.4s; min-height:2rem; }
+/* Settings overlay */
+.settings-overlay { display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.7); z-index:100; justify-content:center; align-items:center; }
+.settings-overlay.open { display:flex; }
+.settings-panel { background:var(--bg2); border:1px solid var(--border); border-radius:12px; padding:2rem; max-width:480px; width:90%; }
+.settings-panel h2 { font-size:1.2rem; margin-bottom:1.5rem; }
+.settings-close { float:right; background:none; border:none; color:var(--dim); font-size:1.2rem; cursor:pointer; }
+.settings-close:hover { color:var(--text); }
+/* Icon buttons */
+.icon-btn { background:none; border:1px solid var(--border); color:var(--dim); padding:0.4rem 0.8rem; border-radius:6px; cursor:pointer; font-size:0.8rem; }
+.icon-btn:hover { border-color:var(--dim); color:var(--text); }
+.test-btn { background:#1a1a3a; border:1px solid #2a2a5a; color:var(--blue); }
+.test-btn:hover { background:#2a2a4a; }
+.test-btn:disabled { opacity:0.3; cursor:not-allowed; }
 </style>
 </head>
 <body>
@@ -476,7 +557,9 @@ input[type=range] { width:100%; accent-color:var(--accent); }
       <span id="d-symbol" style="color:var(--dim);font-size:0.9rem"></span>
       <span id="d-status" class="status-badge status-view">VIEW ONLY</span>
     </div>
-    <div style="display:flex;align-items:center;gap:1.5rem">
+    <div style="display:flex;align-items:center;gap:1rem">
+      <button class="icon-btn test-btn" id="d-test-btn" onclick="testTrade()">Test Trade</button>
+      <button class="icon-btn" onclick="openSettings()">Settings</button>
       <div id="d-controls" class="controls" style="display:none">
         <button id="d-btn-start" class="btn-start" onclick="startTrading()">Start Trading</button>
         <button id="d-btn-stop" class="btn-stop" onclick="stopTrading()" disabled>Stop</button>
@@ -487,6 +570,7 @@ input[type=range] { width:100%; accent-color:var(--accent); }
       </div>
     </div>
   </div>
+  <div id="d-thinking" class="thinking-bar"></div>
   <div id="d-error" class="error-bar" style="display:none"></div>
 
   <div class="grid">
@@ -495,10 +579,11 @@ input[type=range] { width:100%; accent-color:var(--accent); }
       <div id="d-equity" class="equity-big">$&mdash;</div>
       <div id="d-pnl" class="pnl">&mdash;</div>
       <div style="margin-top:1rem">
-        <div class="metric"><span class="metric-label">Daily P&L Limit</span><span id="d-daily-limit" class="metric-value">&mdash;</span></div>
-        <div class="metric"><span class="metric-label">Daily Loss</span><span id="d-daily-loss" class="metric-value">&mdash;</span></div>
+        <div class="metric"><span class="metric-label">Daily Loss Limit</span><span id="d-daily-limit" class="metric-value">&mdash;</span></div>
+        <div class="metric"><span class="metric-label">Daily Loss Used</span><span id="d-daily-loss" class="metric-value">&mdash;</span></div>
+        <div class="metric"><span class="metric-label">Leverage / Risk</span><span id="d-lev-risk" class="metric-value">&mdash;</span></div>
       </div>
-      <div class="edu-tip"><b>What this means:</b> Your account equity is your total deposited balance plus unrealised gains/losses. The daily loss limit is a circuit breaker — if hit, trading auto-stops to protect your capital.</div>
+      <div class="edu-tip"><b>What this means:</b> Your account equity is your total deposited balance plus unrealised gains/losses. The daily loss limit is a % of your equity — if hit, trading auto-stops to protect your capital.</div>
     </div>
 
     <div class="card">
@@ -521,6 +606,31 @@ input[type=range] { width:100%; accent-color:var(--accent); }
   </div>
 </div>
 
+<!-- Settings overlay -->
+<div id="settings-overlay" class="settings-overlay" onclick="if(event.target===this)closeSettings()">
+  <div class="settings-panel">
+    <button class="settings-close" onclick="closeSettings()">&times;</button>
+    <h2>Settings</h2>
+    <div class="risk-group">
+      <div class="risk-label"><span>Max leverage</span><span class="val" id="s-lev-val">4x</span></div>
+      <input type="range" id="s-leverage" min="1" max="10" step="0.5" value="4" oninput="document.getElementById('s-lev-val').textContent=this.value+'x'">
+    </div>
+    <div class="risk-group">
+      <div class="risk-label"><span>Risk per trade</span><span class="val" id="s-rpt-val">1%</span></div>
+      <input type="range" id="s-risk" min="0.25" max="3" step="0.25" value="1" oninput="document.getElementById('s-rpt-val').textContent=this.value+'%'">
+    </div>
+    <div class="risk-group">
+      <div class="risk-label"><span>Daily loss limit</span><span class="val" id="s-dll-val">5%</span></div>
+      <input type="range" id="s-daily" min="1" max="20" step="0.5" value="5" oninput="document.getElementById('s-dll-val').textContent=this.value+'%'">
+      <div class="risk-help">Percentage of your perps account equity. Circuit breaker halts all trading if hit.</div>
+    </div>
+    <div class="btn-row" style="margin-top:1.5rem">
+      <button class="btn btn-secondary" onclick="closeSettings()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveSettings()">Save Changes</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ============================================================
 // WIZARD STATE
@@ -530,7 +640,7 @@ let currentStep = 0;
 let wizardData = {
   symbol: '', coin: '', price: null,
   strategies: [],
-  max_leverage: 4, risk_per_trade_pct: 1.0, max_daily_loss: 100,
+  max_leverage: 4, risk_per_trade_pct: 1.0, max_daily_loss_pct: 5,
   master_address: '', agent_private_key: '',
 };
 
@@ -698,9 +808,9 @@ function renderRiskStep(el) {
       <div class="risk-help">Percentage of your account risked on each trade. 1% means a losing trade costs 1% of your equity.</div>
     </div>
     <div class="risk-group">
-      <div class="risk-label"><span>Daily loss limit</span><span class="val" id="dll-val">$${wizardData.max_daily_loss}</span></div>
-      <input type="range" min="25" max="1000" step="25" value="${wizardData.max_daily_loss}" oninput="wizardData.max_daily_loss=parseFloat(this.value);document.getElementById('dll-val').textContent='$'+this.value">
-      <div class="risk-help">Circuit breaker. If daily losses hit this amount, trading automatically halts until next day.</div>
+      <div class="risk-label"><span>Daily loss limit</span><span class="val" id="dll-val">${wizardData.max_daily_loss_pct}%</span></div>
+      <input type="range" min="1" max="20" step="0.5" value="${wizardData.max_daily_loss_pct}" oninput="wizardData.max_daily_loss_pct=parseFloat(this.value);document.getElementById('dll-val').textContent=this.value+'%'">
+      <div class="risk-help">Percentage of your perps account equity. Circuit breaker halts all trading if daily losses reach this %.</div>
     </div>
     <div class="btn-row">
       <button class="btn btn-secondary" onclick="prevStep()">Back</button>
@@ -811,7 +921,7 @@ function renderBuildStep(el) {
       strategies: wizardData.strategies,
       max_leverage: wizardData.max_leverage,
       risk_per_trade_pct: wizardData.risk_per_trade_pct,
-      max_daily_loss: wizardData.max_daily_loss,
+      max_daily_loss_pct: wizardData.max_daily_loss_pct,
     })
   });
   pollBuild();
@@ -898,13 +1008,18 @@ async function dashPoll() {
     if (s.error) { errBar.textContent = s.error; errBar.style.display = 'block'; }
     else { errBar.style.display = 'none'; }
 
+    // Thinking ticker
+    const thinkEl = document.getElementById('d-thinking');
+    if (s.thinking) thinkEl.textContent = s.thinking;
+
     // Account
     document.getElementById('d-equity').textContent = '$' + s.equity.toLocaleString(undefined,{minimumFractionDigits:2});
     const pnlEl = document.getElementById('d-pnl');
     pnlEl.textContent = 'Unrealized P&L: ' + (s.pnl >= 0 ? '+' : '') + '$' + s.pnl.toFixed(2);
     pnlEl.className = 'pnl ' + (s.pnl >= 0 ? 'pnl-pos' : 'pnl-neg');
-    document.getElementById('d-daily-limit').textContent = '$' + s.max_daily_loss.toFixed(2);
+    document.getElementById('d-daily-limit').textContent = s.max_daily_loss_pct.toFixed(1) + '% ($' + s.max_daily_loss_usd.toFixed(2) + ')';
     document.getElementById('d-daily-loss').textContent = '$' + s.daily_loss.toFixed(2);
+    document.getElementById('d-lev-risk').textContent = s.max_leverage + 'x / ' + s.risk_per_trade_pct + '%';
 
     // Positions
     const posDiv = document.getElementById('d-positions');
@@ -958,6 +1073,67 @@ async function startTrading() {
   await fetch('/api/start',{method:'POST'}); dashPoll();
 }
 async function stopTrading() { await fetch('/api/stop',{method:'POST'}); dashPoll(); }
+
+// ============================================================
+// SETTINGS
+// ============================================================
+function openSettings() {
+  fetch('/api/state').then(r=>r.json()).then(s => {
+    document.getElementById('s-leverage').value = s.max_leverage;
+    document.getElementById('s-lev-val').textContent = s.max_leverage + 'x';
+    document.getElementById('s-risk').value = s.risk_per_trade_pct;
+    document.getElementById('s-rpt-val').textContent = s.risk_per_trade_pct + '%';
+    document.getElementById('s-daily').value = s.max_daily_loss_pct;
+    document.getElementById('s-dll-val').textContent = s.max_daily_loss_pct + '%';
+    document.getElementById('settings-overlay').classList.add('open');
+  });
+}
+function closeSettings() {
+  document.getElementById('settings-overlay').classList.remove('open');
+}
+async function saveSettings() {
+  const data = {
+    max_leverage: parseFloat(document.getElementById('s-leverage').value),
+    risk_per_trade_pct: parseFloat(document.getElementById('s-risk').value),
+    max_daily_loss_pct: parseFloat(document.getElementById('s-daily').value),
+  };
+  await fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)});
+  closeSettings();
+  dashPoll();
+}
+
+// ============================================================
+// TEST TRADE
+// ============================================================
+async function testTrade() {
+  const btn = document.getElementById('d-test-btn');
+  btn.disabled = true;
+  btn.textContent = 'Testing...';
+  try {
+    const r = await fetch('/api/test-trade', {method:'POST'});
+    const res = await r.json();
+    if (res.ok) {
+      btn.textContent = res.message || 'Test OK';
+      btn.style.borderColor = 'var(--green)';
+      btn.style.color = 'var(--green)';
+    } else {
+      btn.textContent = res.error || 'Failed';
+      btn.style.borderColor = 'var(--red)';
+      btn.style.color = 'var(--red)';
+    }
+  } catch(e) {
+    btn.textContent = 'Error';
+    btn.style.borderColor = 'var(--red)';
+    btn.style.color = 'var(--red)';
+  }
+  setTimeout(() => {
+    btn.disabled = false;
+    btn.textContent = 'Test Trade';
+    btn.style.borderColor = '';
+    btn.style.color = '';
+  }, 4000);
+  dashPoll();
+}
 
 // ============================================================
 // INIT
@@ -1054,6 +1230,58 @@ class DashboardHandler(BaseHTTPRequestHandler):
             STATE.trading_active = False
             log_trade("STOP", "operator", 0, STATE.last_price or 0, "trading stopped by operator")
             self._json({"ok": True, "trading_active": False})
+
+        elif path == "/api/settings":
+            try:
+                STATE.max_leverage = body.get("max_leverage", STATE.max_leverage)
+                STATE.risk_per_trade_pct = body.get("risk_per_trade_pct", STATE.risk_per_trade_pct)
+                STATE.max_daily_loss_pct = body.get("max_daily_loss_pct", STATE.max_daily_loss_pct)
+                # Persist to policy file
+                if POLICY_PATH.exists():
+                    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+                    safe = policy.get("auto_apply", {}).get("safe_bands", {})
+                    safe["leverage_max"] = STATE.max_leverage
+                    safe["risk_per_trade_pct_max"] = STATE.risk_per_trade_pct
+                    safe["max_daily_loss_pct"] = STATE.max_daily_loss_pct
+                    POLICY_PATH.write_text(json.dumps(policy, indent=2), encoding="utf-8")
+                log_trade("SETTINGS", "operator", 0, STATE.last_price or 0,
+                          f"lev={STATE.max_leverage}x risk={STATE.risk_per_trade_pct}% daily={STATE.max_daily_loss_pct}%")
+                self._json({"ok": True})
+            except Exception as e:
+                self._json({"ok": False, "error": str(e)}, 400)
+
+        elif path == "/api/test-trade":
+            # Tiny buy then immediate sell to verify connectivity + credentials
+            try:
+                coin = STATE.coin
+                if not coin:
+                    self._json({"ok": False, "error": "No coin configured yet"})
+                    return
+                price = hl_client.get_mid_price(coin)
+                if not price:
+                    self._json({"ok": False, "error": f"Cannot get price for {coin}"})
+                    return
+                # Minimum size: $10 notional
+                min_size = round(10.0 / price, 6)
+                if min_size <= 0:
+                    min_size = 0.001
+                log_trade("TEST_BUY", "test", min_size, price, "connectivity test")
+                buy_result = hl_client.place_order(coin, True, min_size, order_type="market")
+                if not buy_result.ok:
+                    self._json({"ok": False, "error": f"Buy failed: {buy_result.error}"})
+                    return
+                log_trade("TEST_BUY_OK", "test", min_size, price, f"oid={buy_result.order_id}")
+                # Brief pause then close
+                time.sleep(1)
+                log_trade("TEST_SELL", "test", min_size, price, "closing test position")
+                sell_result = hl_client.place_order(coin, False, min_size, order_type="market", reduce_only=True)
+                if sell_result.ok:
+                    log_trade("TEST_SELL_OK", "test", min_size, price, f"oid={sell_result.order_id}")
+                    self._json({"ok": True, "message": f"Test complete: bought and sold {min_size} {coin}"})
+                else:
+                    self._json({"ok": False, "error": f"Buy OK but sell failed: {sell_result.error}"})
+            except Exception as e:
+                self._json({"ok": False, "error": str(e)})
 
         else:
             self.send_error(404)
