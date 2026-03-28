@@ -66,3 +66,17 @@ Examples:
 cd ~/Library/CloudStorage/Dropbox/--\ PROJECTS/hyperbot && python3 scripts/hyperbot.py dashboard --live --confirm-risk
 cd ~/Library/CloudStorage/Dropbox/--\ PROJECTS/hyperbot && git status
 ```
+
+## Multi-Assistant Task Queue
+
+This repo is worked on by multiple AI assistants (Claude, Codex, Gemini).
+Coordination happens through `.tasks/` — read `.tasks/PROTOCOL.md` for the full spec.
+
+**On every session start:**
+1. Read `.tasks/claude.md` for any pending tasks assigned to you
+2. Complete pending tasks before starting new work (unless the user overrides)
+3. When done, mark tasks `[x]`, fill in the `Result:` line, and log in `_log.md`
+
+**After completing work:**
+If your changes need verification, testing, or follow-up by another assistant,
+append a task to their inbox (`.tasks/codex.md` or `.tasks/gemini.md`).
