@@ -1,0 +1,79 @@
+name: "Gemini: Check Inbox"
+
+on:
+  schedule:
+    - cron: "0 10 * * *"   # daily at 10am UTC (1h after Codex)
+  workflow_dispatch:         # manual trigger from Actions tab
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check-inbox:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for pending tasks
+        id: check
+        run: |
+          if grep -q '^\- \[ \]' .tasks/gemini.md; then
+            echo "has_tasks=true" >> "$GITHUB_OUTPUT"
+            echo "Found pending tasks in gemini inbox"
+          else
+            echo "has_tasks=false" >> "$GITHUB_OUTPUT"
+            echo "No pending tasks — skipping"
+          fi
+
+      - name: Setup Node.js
+        if: steps.check.outputs.has_tasks == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Gemini CLI
+        if: steps.check.outputs.has_tasks == 'true'
+        run: npm install -g @google/gemini-cli
+
+      - name: Run Gemini on pending tasks
+        if: steps.check.outputs.has_tasks == 'true'
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        run: |
+          gemini --non-interactive --yolo <<'PROMPT'
+          Read .tasks/PROTOCOL.md for the task protocol.
+          Read .tasks/gemini.md for your pending tasks.
+          Read GEMINI.md for repo context.
+
+          For each unchecked task (- [ ]):
+          1. Read the referenced files for context
+          2. Implement the task as described
+          3. Mark the task [x] in .tasks/gemini.md
+          4. Fill in the Result: line with a one-line summary
+          5. Append a row to .tasks/_log.md
+
+          If your work creates follow-up tasks for another assistant,
+          append them to .tasks/claude.md or .tasks/codex.md.
+          PROMPT
+
+      - name: Create PR with changes
+        if: steps.check.outputs.has_tasks == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "gemini-bot"
+          git config user.email "gemini-bot@users.noreply.github.com"
+          BRANCH="gemini/inbox-$(date +%Y%m%d-%H%M%S)"
+          git checkout -b "$BRANCH"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git commit -m "Gemini: complete inbox tasks $(date +%Y-%m-%d)"
+          git push origin "$BRANCH"
+          gh pr create \
+            --title "Gemini: completed inbox tasks" \
+            --body "Automated run from gemini-inbox workflow. Review changes before merging." \
+            --base main
