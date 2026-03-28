@@ -1,16 +1,38 @@
 # Hyperbot
 
-Hyperbot is a standalone Codex plugin project for generating and configuring Hyperliquid-native automated trading workspaces.
+Hyperbot is a local-first repository for generating and configuring Hyperliquid-native automated trading workspaces.
+
+## Quick Install
+
+Install Hyperbot from GitHub with one command:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/gaslad/hyperbot/main/install.sh)
+```
+
+That installs a local `hyperbot` CLI under `~/.local/bin`.
+
+## Quick Start
+
+```bash
+hyperbot list-packs
+hyperbot create-workspace btc-workspace --output-dir ~/Documents/Codex --symbol BTCUSDT --strategy-pack trend_pullback
+hyperbot validate
+```
+
+To update an existing install, run the same install command again.
 
 ## Scope
 
 Hyperbot is not the live trading workspace itself.
-It is the product layer that should:
+It should:
 - scaffold a clean trading repo
 - install selected strategy packs
 - configure Hyperliquid connectivity
 - prepare automation, notifications, and operator commands
 - validate the path to unattended trading
+
+The primary interface is the local CLI installed from GitHub.
 
 ## Strategy Packs
 
@@ -37,12 +59,13 @@ This is tied to the actual selected pair, not a hardcoded token label. Artifacts
 
 ## Current Layout
 
-- `skills/bootstrap-trading-workspace/`: primary Codex skill for using Hyperbot
 - `strategy-packs/`: installable strategy-pack definitions and templates
 - `templates/workspace/`: starter Hyperliquid-only workspace skeleton
+- `scripts/hyperbot.py`: local CLI entrypoint
 - `scripts/create_workspace.py`: generator entry point
 - `scripts/validate_apply_revision.py`: local end-to-end validation for revision preview/apply flows
-- `scripts/release_readiness.py`: plugin release-readiness check
+- `scripts/release_readiness.py`: repo and workspace readiness checks
+- `install.sh`: one-command GitHub installer
 - `docs/`: product architecture and generation plan
 
 ## Validation
@@ -53,7 +76,7 @@ Validate the revision-adoption path locally:
 python3 scripts/validate_apply_revision.py
 ```
 
-Run the plugin release-readiness check:
+Run the repo/workspace readiness check:
 
 ```bash
 python3 scripts/release_readiness.py
@@ -62,4 +85,12 @@ python3 scripts/release_readiness.py
 This verifies:
 - Python scripts compile
 - `apply_revision.py` passes its generated-workspace validation flow
-- plugin metadata and required release files are present
+- required repo files are present
+
+## Local-First Direction
+
+The core workspace generator is intended to stay deterministic and local-first.
+
+Planning artifacts for reducing approval friction and avoiding mandatory model-token usage live in:
+- [`CLAUDE.md`](/Users/gaston/Library/CloudStorage/Dropbox/--%20PROJECTS/Plugins/hyperbot/CLAUDE.md)
+- [`docs/local-first-roadmap.md`](/Users/gaston/Library/CloudStorage/Dropbox/--%20PROJECTS/Plugins/hyperbot/docs/local-first-roadmap.md)

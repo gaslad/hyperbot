@@ -8,16 +8,19 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN_MANIFEST = ROOT / ".codex-plugin" / "plugin.json"
 REQUIRED_FILES = [
     ROOT / "README.md",
+    ROOT / "CLAUDE.md",
     ROOT / "docs" / "architecture.md",
+    ROOT / "docs" / "local-first-roadmap.md",
+    ROOT / "docs" / "release-readiness.md",
+    ROOT / "install.sh",
+    ROOT / "scripts" / "hyperbot.py",
     ROOT / "scripts" / "create_workspace.py",
     ROOT / "scripts" / "validate_apply_revision.py",
+    ROOT / "scripts" / "release_readiness.py",
     ROOT / "templates" / "workspace" / "scripts" / "apply_revision.py",
 ]
-SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
-URL_RE = re.compile(r"^https://")
 WORKSPACE_TEXT_EXTENSIONS = {".md", ".json", ".py", ".yaml", ".yml", ".example"}
 WORKSPACE_FORBIDDEN_TERMS = ("Codex", "codex", "LLM", "OpenAI")
 
@@ -46,7 +49,6 @@ def add_issue(issues: list[str], message: str) -> None:
 def add_warning(warnings: list[str], message: str) -> None:
     warnings.append(message)
 
-
 def validate_workspace_agnostic(issues: list[str]) -> None:
     workspace_root = ROOT / "templates" / "workspace"
     for path in workspace_root.rglob("*"):
@@ -61,65 +63,6 @@ def validate_workspace_agnostic(issues: list[str]) -> None:
                 )
 
 
-def validate_manifest(manifest: dict, issues: list[str], warnings: list[str]) -> None:
-    for key in ("name", "version", "description", "homepage", "repository", "license", "skills", "interface"):
-        if not manifest.get(key):
-            add_issue(issues, f"plugin.json missing required top-level field: {key}")
-
-    version = manifest.get("version", "")
-    if version and not SEMVER_RE.match(version):
-        add_issue(issues, f"plugin.json version is not semver: {version}")
-
-    homepage = manifest.get("homepage", "")
-    repository = manifest.get("repository", "")
-    for label, value in (("homepage", homepage), ("repository", repository)):
-        if value and not URL_RE.match(value):
-            add_issue(issues, f"plugin.json {label} must be an https URL: {value}")
-
-    interface = manifest.get("interface", {})
-    for key in (
-        "displayName",
-        "shortDescription",
-        "longDescription",
-        "developerName",
-        "category",
-        "capabilities",
-        "websiteURL",
-        "privacyPolicyURL",
-        "termsOfServiceURL",
-        "defaultPrompt",
-        "brandColor",
-    ):
-        if not interface.get(key):
-            add_issue(issues, f"plugin.json interface missing required field: {key}")
-
-    for key in ("websiteURL", "privacyPolicyURL", "termsOfServiceURL"):
-        value = interface.get(key, "")
-        if value and not URL_RE.match(value):
-            add_issue(issues, f"plugin.json interface {key} must be an https URL: {value}")
-
-    if homepage and repository and homepage == repository:
-        add_issue(issues, "plugin.json homepage and repository should not be the same URL for release")
-
-    website_url = interface.get("websiteURL", "")
-    privacy_url = interface.get("privacyPolicyURL", "")
-    terms_url = interface.get("termsOfServiceURL", "")
-    if website_url and privacy_url and website_url == privacy_url:
-        add_issue(issues, "plugin.json interface privacyPolicyURL should not reuse websiteURL for release")
-    if website_url and terms_url and website_url == terms_url:
-        add_issue(issues, "plugin.json interface termsOfServiceURL should not reuse websiteURL for release")
-
-    skills_path = ROOT / str(manifest.get("skills", "")).strip()
-    if not skills_path.exists():
-        add_issue(issues, f"plugin.json skills path does not exist: {skills_path}")
-    elif not any(skills_path.rglob("SKILL.md")):
-        add_issue(issues, f"plugin.json skills path has no SKILL.md files: {skills_path}")
-
-    prompts = interface.get("defaultPrompt", [])
-    if isinstance(prompts, list) and len(prompts) < 3:
-        add_warning(warnings, "plugin.json defaultPrompt has fewer than 3 examples")
-
-
 def main() -> int:
     issues: list[str] = []
     warnings: list[str] = []
@@ -128,8 +71,6 @@ def main() -> int:
         if not path.exists():
             add_issue(issues, f"missing required release file: {path.relative_to(ROOT)}")
 
-    manifest = load_json(PLUGIN_MANIFEST)
-    validate_manifest(manifest, issues, warnings)
     validate_workspace_agnostic(issues)
 
     run(
@@ -137,6 +78,7 @@ def main() -> int:
             sys.executable,
             "-m",
             "py_compile",
+            "scripts/hyperbot.py",
             "scripts/release_readiness.py",
             "scripts/validate_apply_revision.py",
             "scripts/create_workspace.py",
