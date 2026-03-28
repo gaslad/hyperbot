@@ -60,8 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
     connect_cmd.add_argument("--status", action="store_true", help="Check if a wallet is already connected")
 
     dash_cmd = subparsers.add_parser("dashboard", help="Launch the web dashboard for a workspace (one command does everything)")
-    dash_cmd.add_argument("workspace_path", help="Path to the workspace directory (will be created if it doesn't exist)")
-    dash_cmd.add_argument("--symbol", default="ETHUSDT", help="Trading pair symbol (default: ETHUSDT)")
+    dash_cmd.add_argument("workspace_path", nargs="?", default=None, help="Path to workspace directory (default: ./hyperbot-workspace)")
     dash_cmd.add_argument("--live", action="store_true", help="Enable live trading controls in the dashboard")
     dash_cmd.add_argument("--confirm-risk", action="store_true", help="Confirm you understand live trading risks")
     dash_cmd.add_argument("--port", type=int, default=0, help="Port to run on (0 = auto)")
@@ -83,7 +82,7 @@ def ensure_sdk() -> bool:
         pass
     log("[dashboard] Installing hyperliquid-python-sdk...")
     rc = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "--quiet", "hyperliquid-python-sdk"],
+        [sys.executable, "-m", "pip", "install", "--quiet", "--break-system-packages", "hyperliquid-python-sdk"],
     ).returncode
     if rc != 0:
         log("[dashboard] WARNING: Could not install hyperliquid-python-sdk.")
@@ -94,30 +93,20 @@ def ensure_sdk() -> bool:
 
 def launch_dashboard(args: argparse.Namespace) -> int:
     """One-command flow: ensure deps → generate workspace if needed → launch dashboard."""
-    workspace = Path(args.workspace_path).expanduser().resolve()
+    # Default workspace path: next to the repo
+    if args.workspace_path:
+        workspace = Path(args.workspace_path).expanduser().resolve()
+    else:
+        workspace = ROOT.parent / "hyperbot-workspace"
 
     # Step 1: Ensure SDK is available
     ensure_sdk()
 
-    # Step 2: Check wallet credentials
-    from connect.server import read_credential
-    master = read_credential("master_address")
-    if not master:
-        log("[dashboard] No wallet connected. Opening wallet connect flow...")
-        from connect.server import run_server
-        rc = run_server()
-        if rc != 0:
-            log("[dashboard] Wallet connect failed. Cannot continue.")
-            return 1
-        master = read_credential("master_address")
-        if not master:
-            log("[dashboard] Wallet still not connected. Run: hyperbot connect")
-            return 1
-        log("[dashboard] Wallet connected.")
-
-    # Step 3: Generate workspace if it doesn't exist
+    # Step 2: Generate workspace if it doesn't exist
+    # The wizard handles pair selection, strategy, risk, and credentials
+    # so we create a generic workspace with all packs and a placeholder symbol
     if not workspace.exists():
-        log(f"[dashboard] Workspace not found at {workspace}. Creating...")
+        log(f"[dashboard] Creating workspace at {workspace}...")
         output_dir = str(workspace.parent)
         workspace_name = workspace.name
         packs = ["trend_pullback", "compression_breakout", "liquidity_sweep_reversal"]
@@ -126,7 +115,7 @@ def launch_dashboard(args: argparse.Namespace) -> int:
             str(ROOT / "scripts" / "create_workspace.py"),
             workspace_name,
             "--output-dir", output_dir,
-            "--symbol", args.symbol,
+            "--symbol", "BTCUSDT",  # placeholder — wizard will override
             "--account-mode", "test",
             "--skip-profile",
         ]

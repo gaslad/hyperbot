@@ -67,6 +67,8 @@ class TradingState:
         self.max_leverage: float = 4.0
         self.risk_per_trade_pct: float = 1.0
         self.start_of_day_equity: float = 0.0
+        self.master_address: str = ""
+        self.network: str = "mainnet"
 
     def daily_loss_limit_usd(self) -> float:
         base = self.start_of_day_equity if self.start_of_day_equity > 0 else self.equity
@@ -95,6 +97,8 @@ class TradingState:
             "thinking": self.thinking,
             "max_leverage": self.max_leverage,
             "risk_per_trade_pct": self.risk_per_trade_pct,
+            "master_address": self.master_address,
+            "network": self.network,
         }
 
 
@@ -272,8 +276,11 @@ def trading_loop() -> None:
 
     creds = hl_client.get_credentials()
     master_address = creds.get("master_address")
+    STATE.master_address = master_address or ""
 
     print(f"[dashboard] Monitoring {STATE.coin} ({STATE.symbol})", flush=True)
+    print(f"[dashboard] Wallet: {master_address or 'NOT CONNECTED'}", flush=True)
+    print(f"[dashboard] Network: MAINNET (real funds)", flush=True)
     print(f"[dashboard] Live trading: {'ENABLED' if STATE.live_enabled else 'disabled (view-only)'}", flush=True)
 
     cycle = 0
@@ -325,8 +332,11 @@ def trading_loop() -> None:
                         for p in ch_state.get("assetPositions", [])
                         if float(p["position"]["szi"]) != 0
                     ]
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[dashboard] Account fetch error: {e}", flush=True)
+            else:
+                if cycle <= 1:
+                    print("[dashboard] WARNING: No master_address in Keychain. Account data unavailable.", flush=True)
 
             STATE.last_update = time.strftime("%H:%M:%S")
             STATE.error = None
@@ -556,6 +566,7 @@ input[type=range] { width:100%; accent-color:var(--accent); }
       <span class="logo">Hyperbot</span>
       <span id="d-symbol" style="color:var(--dim);font-size:0.9rem"></span>
       <span id="d-status" class="status-badge status-view">VIEW ONLY</span>
+      <span id="d-network" class="status-badge" style="background:#3a2a1a;color:#facc15;border:1px solid #5a4a2a;font-size:0.65rem">MAINNET</span>
     </div>
     <div style="display:flex;align-items:center;gap:1rem">
       <button class="icon-btn test-btn" id="d-test-btn" onclick="testTrade()">Test Trade</button>
@@ -571,6 +582,10 @@ input[type=range] { width:100%; accent-color:var(--accent); }
     </div>
   </div>
   <div id="d-thinking" class="thinking-bar"></div>
+  <div id="d-wallet-bar" style="padding:0.4rem 2rem;font-size:0.75rem;color:#555;border-bottom:1px solid var(--border);display:flex;justify-content:space-between">
+    <span>Wallet: <span id="d-wallet-addr" style="font-family:monospace;color:#777">—</span></span>
+    <span style="color:#555">API wallet (trade-only, no withdrawals)</span>
+  </div>
   <div id="d-error" class="error-bar" style="display:none"></div>
 
   <div class="grid">
@@ -977,6 +992,17 @@ async function dashPoll() {
     const r = await fetch('/api/state');
     const s = await r.json();
     document.getElementById('d-symbol').textContent = s.symbol;
+
+    // Wallet
+    if (s.master_address) {
+      const addr = s.master_address;
+      document.getElementById('d-wallet-addr').textContent = addr.slice(0,6) + '...' + addr.slice(-4);
+      document.getElementById('d-wallet-addr').title = addr;
+    }
+
+    // Network
+    const netBadge = document.getElementById('d-network');
+    netBadge.textContent = s.network === 'mainnet' ? 'MAINNET' : 'TESTNET';
 
     // Status
     const badge = document.getElementById('d-status');
