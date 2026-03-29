@@ -151,12 +151,17 @@ def validate_revision(workspace: dict[str, Any], config: dict[str, Any], revisio
 
     config_symbol = config.get("market", {}).get("symbol")
     profile_symbol = revision.get("profile_summary", {}).get("symbol")
-    workspace_symbol = workspace.get("symbol")
-    for label, symbol in (("config", config_symbol), ("workspace", workspace_symbol), ("revision", profile_symbol)):
+    workspace_pairs = workspace.get("pairs", [])
+    workspace_symbols = [p.get("symbol") for p in workspace_pairs] if workspace_pairs else [workspace.get("symbol")]
+
+    for label, symbol in (("config", config_symbol), ("revision", profile_symbol)):
         if not symbol:
             raise SystemExit(f"missing symbol in {label} for validation: {revision_path}")
-    if not (config_symbol == workspace_symbol == profile_symbol):
-        raise SystemExit("symbol mismatch between config, workspace, and revision")
+    if not workspace_symbols or not workspace_symbols[0]:
+        raise SystemExit(f"missing symbol in workspace for validation: {revision_path}")
+        
+    if config_symbol != profile_symbol or config_symbol not in workspace_symbols:
+        raise SystemExit("symbol mismatch between config, workspace pairs, and revision")
 
     overrides = revision.get("recommended_overrides")
     if not isinstance(overrides, dict) or not overrides:

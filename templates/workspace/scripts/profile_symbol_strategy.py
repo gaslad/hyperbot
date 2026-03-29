@@ -513,7 +513,11 @@ def main() -> int:
     args = parse_args()
     workspace = load_workspace_manifest()
     configs = load_strategy_configs()
-    symbol = args.symbol or workspace.get("symbol", "BTCUSDT")
+    symbol = args.symbol
+    if not symbol and args.strategy_id and args.strategy_id in configs:
+        symbol = configs[args.strategy_id].get("market", {}).get("symbol")
+    if not symbol:
+        symbol = workspace.get("symbol", "BTCUSDT")
     coin = workspace.get("coin") or infer_coin(symbol)
 
     cache_age = args.cache_max_age

@@ -10,11 +10,14 @@
   },
   "runner": {
     "source": "hyperliquid_candles",
-    "anchor_timeframe": "4H",
-    "trigger_timeframe": "1H"
+    "anchor_timeframe": "1D",
+    "trigger_timeframe": "4H"
+  },
+  "entry": {
+    "bb_period": 20,
+    "compression_threshold": 0.04
   },
   "filters": {
-    "compression_lookback_bars": 20,
     "atr_percentile_max": 25,
     "volume_expansion_required": true
   },

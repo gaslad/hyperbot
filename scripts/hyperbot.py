@@ -36,7 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     create = subparsers.add_parser("create-workspace", help="Generate a new trading workspace")
     create.add_argument("workspace_name")
     create.add_argument("--output-dir", required=True)
-    create.add_argument("--symbol", default="BTCUSDT")
+    create.add_argument("--symbol", action="append", default=[], help="Trading pair(s) — can specify multiple times")
     create.add_argument("--strategy-pack", action="append", default=[])
     create.add_argument("--account-mode", choices=("test", "production"), default="test")
     create.add_argument("--max-leverage", type=float, default=4.0)
@@ -48,7 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_cmd = subparsers.add_parser("run", help="Full pipeline: create workspace -> validate -> profile -> safe-apply revisions")
     run_cmd.add_argument("workspace_name")
     run_cmd.add_argument("--output-dir", required=True)
-    run_cmd.add_argument("--symbol", default="BTCUSDT")
+    run_cmd.add_argument("--symbol", action="append", default=[], help="Trading pair(s) — can specify multiple times")
     run_cmd.add_argument("--strategy-pack", action="append", default=[])
     run_cmd.add_argument("--account-mode", choices=("test", "production"), default="test")
     run_cmd.add_argument("--max-leverage", type=float, default=4.0)
@@ -125,8 +125,8 @@ def launch_dashboard(args: argparse.Namespace) -> int:
             "--account-mode", "test",
             "--skip-profile",
         ]
-        for pack in packs:
-            create_cmd.extend(["--strategy-pack", pack])
+        for p in packs:
+            create_cmd.extend(["--strategy-pack", p])
         rc = subprocess.run(create_cmd).returncode
         if rc != 0:
             log("[dashboard] Workspace creation failed.")
@@ -169,14 +169,13 @@ def main() -> int:
         return run([sys.executable, str(ROOT / "scripts" / "release_readiness.py")])
 
     if args.command == "create-workspace":
+        symbols = args.symbol if args.symbol else ["BTCUSDT"]
         cmd = [
             sys.executable,
             str(ROOT / "scripts" / "create_workspace.py"),
             args.workspace_name,
             "--output-dir",
             args.output_dir,
-            "--symbol",
-            args.symbol,
             "--account-mode",
             args.account_mode,
             "--max-leverage",
@@ -186,6 +185,8 @@ def main() -> int:
             "--profile-days",
             str(args.profile_days),
         ]
+        for sym in symbols:
+            cmd.extend(["--symbol", sym])
         for pack in args.strategy_pack:
             cmd.extend(["--strategy-pack", pack])
         if args.enable_unattended:
@@ -233,19 +234,21 @@ def run_pipeline(args: argparse.Namespace, local_only: bool) -> int:
             return 1
 
     # Step 1: Create workspace (skip-profile, we run it ourselves with cache flags)
+    symbols = args.symbol if args.symbol else ["BTCUSDT"]
     log(f"[hyperbot run] Step 1/4: Creating workspace {args.workspace_name}...")
     create_cmd = [
         sys.executable,
         str(ROOT / "scripts" / "create_workspace.py"),
         args.workspace_name,
         "--output-dir", args.output_dir,
-        "--symbol", args.symbol,
         "--account-mode", args.account_mode,
         "--max-leverage", str(args.max_leverage),
         "--notification-email", args.notification_email,
         "--profile-days", str(args.profile_days),
         "--skip-profile",
     ]
+    for sym in symbols:
+        create_cmd.extend(["--symbol", sym])
     for pack in packs:
         create_cmd.extend(["--strategy-pack", pack])
     rc = run(create_cmd)

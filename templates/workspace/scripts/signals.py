@@ -327,14 +327,28 @@ DETECTORS = {
 }
 
 
-def detect_all_signals(candles_1d: list[dict], candles_4h: list[dict], current_price: float) -> list[Signal]:
-    """Run all installed strategy signal detectors."""
+def detect_all_signals(candles_1d: list[dict], candles_4h: list[dict], current_price: float,
+                       coin: str | None = None) -> list[Signal]:
+    """Run installed strategy signal detectors.
+
+    If *coin* is provided, only configs whose strategy_id starts with
+    ``{coin.lower()}_`` (or whose market.coin matches) are evaluated.
+    This prevents running another pair's detectors on the wrong candles
+    in multi-pair workspaces.
+    """
     signals = []
+    coin_prefix = f"{coin.lower()}_" if coin else None
     for config_path in sorted(CONFIG_DIR.glob("*.json")):
         if config_path.name == "README.md":
             continue
         try:
             config = json.loads(config_path.read_text(encoding="utf-8"))
+            # Filter by coin when in multi-pair mode
+            if coin_prefix:
+                sid = config.get("strategy_id", "")
+                cfg_coin = config.get("market", {}).get("coin", "")
+                if not sid.startswith(coin_prefix) and cfg_coin.upper() != coin.upper():
+                    continue
             pack_id = config.get("pack_id", "")
             detector = DETECTORS.get(pack_id)
             if detector:

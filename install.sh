@@ -29,6 +29,11 @@ else
   git clone --depth=1 --branch "$BRANCH" "$REPO_URL" "$INSTALL_ROOT"
 fi
 
+if [ -f "$INSTALL_ROOT/requirements.txt" ]; then
+  echo "Installing Python dependencies"
+  python3 -m pip install -r "$INSTALL_ROOT/requirements.txt"
+fi
+
 cat > "$BIN_DIR/hyperbot" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail

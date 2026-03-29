@@ -10,7 +10,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_FILES = [
     ROOT / "README.md",
+    ROOT / "AGENTS.md",
     ROOT / "CLAUDE.md",
+    ROOT / "GEMINI.md",
+    ROOT / "requirements.txt",
     ROOT / "docs" / "architecture.md",
     ROOT / "docs" / "local-first-roadmap.md",
     ROOT / "docs" / "release-readiness.md",
@@ -49,6 +52,7 @@ def add_issue(issues: list[str], message: str) -> None:
 def add_warning(warnings: list[str], message: str) -> None:
     warnings.append(message)
 
+
 def validate_workspace_agnostic(issues: list[str]) -> None:
     workspace_root = ROOT / "templates" / "workspace"
     for path in workspace_root.rglob("*"):
@@ -63,6 +67,12 @@ def validate_workspace_agnostic(issues: list[str]) -> None:
                 )
 
 
+def validate_repo_hygiene(warnings: list[str]) -> None:
+    for path in ROOT.rglob("__pycache__"):
+        if path.is_dir():
+            add_warning(warnings, f"remove committed cache directory: {path.relative_to(ROOT)}")
+
+
 def main() -> int:
     issues: list[str] = []
     warnings: list[str] = []
@@ -72,6 +82,7 @@ def main() -> int:
             add_issue(issues, f"missing required release file: {path.relative_to(ROOT)}")
 
     validate_workspace_agnostic(issues)
+    validate_repo_hygiene(warnings)
 
     run(
         [
@@ -84,6 +95,8 @@ def main() -> int:
             "scripts/create_workspace.py",
             "templates/workspace/scripts/apply_revision.py",
             "templates/workspace/scripts/profile_symbol_strategy.py",
+            "templates/workspace/tests/test_hl_client.py",
+            "templates/workspace/tests/test_signals.py",
         ],
         cwd=ROOT,
     )

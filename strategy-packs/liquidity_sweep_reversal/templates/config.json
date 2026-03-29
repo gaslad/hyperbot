@@ -10,11 +10,14 @@
   },
   "runner": {
     "source": "hyperliquid_candles",
-    "anchor_timeframe": "4H",
-    "trigger_timeframe": "1H"
+    "anchor_timeframe": "1D",
+    "trigger_timeframe": "4H"
+  },
+  "entry": {
+    "sweep_lookback_bars": 20,
+    "wick_rejection_ratio": 2.0
   },
   "filters": {
-    "swing_lookback_bars": 12,
     "reclaim_required": true,
     "regime_alignment_required": true
   },

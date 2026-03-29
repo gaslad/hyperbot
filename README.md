@@ -32,6 +32,7 @@ After setup, the dashboard shows live price, account equity (perps + spot combin
 ## Quick Start — CLI Only
 
 ```bash
+python3 -m pip install -r requirements.txt
 hyperbot list-packs
 hyperbot create-workspace btc-workspace --output-dir ~/Documents --symbol BTCUSDT --strategy-pack trend_pullback
 hyperbot validate
@@ -92,6 +93,7 @@ Orders use the Hyperliquid Python SDK with proper asset-specific formatting:
 - `scripts/validate_apply_revision.py`: local end-to-end validation
 - `scripts/release_readiness.py`: repo and workspace readiness checks
 - `install.sh`: one-command GitHub installer
+- `requirements.txt`: Python dependency manifest
 - `docs/`: product architecture and roadmap
 
 ## Validation

@@ -1,82 +1,8 @@
 # Claude Brief
 
-Primary objective for this repo:
+Use [AGENTS.md](/Users/gaston/Library/CloudStorage/Dropbox/-- PROJECTS/hyperbot/AGENTS.md) as the single source of truth for repo context, architecture, objectives, and coordination rules.
 
-- reduce required human approvals by at least 95%
-- preserve safe defaults for live trading
-- make the generated workspace runnable 100% local without LLM API tokens when possible
+Claude-specific note:
 
-## What Matters
-
-- the local CLI should be the primary interface
-- the generated trading workspace should stay assistant-agnostic
-- core generation and revision logic should prefer deterministic local code over model calls
-- any model-assisted step should become optional, not required
-
-## Current Reality
-
-- workspace generation is already local Python
-- strategy-pack installation is local file templating
-- token-specific revision is already heuristic code plus market data fetches
-- the repo does not currently require OpenAI or Anthropic API tokens for its main scripts
-
-## What To Look For
-
-1. Places where a human must approve a safe action that could instead be gated by explicit local policy.
-2. Places where a model is doing work that deterministic local code, rules, scoring, or templates can do.
-3. A clean separation between:
-   - local deterministic execution
-   - optional assistant guidance
-   - explicitly high-risk live-trading actions
-4. A path to run the whole workflow from a local CLI without cloud model dependency.
-
-## Preferred Direction
-
-- local-first CLI as the primary execution surface
-- policy files for unattended-safe actions
-- deterministic revisions, scoring, and validations
-- optional model overlay only for explanation, summarization, or operator UX
-- cached or local market-data workflows where practical
-
-## Deliverable Style
-
-When proposing changes, prioritize:
-
-1. concrete architecture changes
-2. repo-level implementation steps
-3. risk controls that keep live trading opt-in
-4. ways to remove approval friction without weakening safety
-
-Start from [`docs/local-first-roadmap.md`](/Users/gaston/Library/CloudStorage/Dropbox/--%20PROJECTS/hyperbot/docs/local-first-roadmap.md).
-
-## Repo Location & CLI Commands
-
-The repo lives at `~/Library/CloudStorage/Dropbox/-- PROJECTS/hyperbot`.
-
-When giving the user bash commands to run, ALWAYS provide the full command
-including `cd` into the repo directory. The user's terminal does not default
-to the repo directory. Use this pattern:
-
-```bash
-cd ~/Library/CloudStorage/Dropbox/--\ PROJECTS/hyperbot && <command>
-```
-
-Examples:
-```bash
-cd ~/Library/CloudStorage/Dropbox/--\ PROJECTS/hyperbot && python3 scripts/hyperbot.py dashboard --live --confirm-risk
-cd ~/Library/CloudStorage/Dropbox/--\ PROJECTS/hyperbot && git status
-```
-
-## Multi-Assistant Task Queue
-
-This repo is worked on by multiple AI assistants (Claude, Codex, Gemini).
-Coordination happens through `.tasks/` — read `.tasks/PROTOCOL.md` for the full spec.
-
-**On every session start:**
-1. Read `.tasks/claude.md` for any pending tasks assigned to you
-2. Complete pending tasks before starting new work (unless the user overrides)
-3. When done, mark tasks `[x]`, fill in the `Result:` line, and log in `_log.md`
-
-**After completing work:**
-If your changes need verification, testing, or follow-up by another assistant,
-append a task to their inbox (`.tasks/codex.md` or `.tasks/gemini.md`).
+- When giving shell commands to the user, include the repo `cd` explicitly:
+  `cd ~/Library/CloudStorage/Dropbox/--\ PROJECTS/hyperbot && <command>`

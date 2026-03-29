@@ -265,6 +265,35 @@ class OrderResult:
     raw: dict | None = None
 
 
+def _parse_order_result(result: dict[str, Any]) -> OrderResult:
+    """Normalize Hyperliquid order responses into OrderResult."""
+    if result.get("status") != "ok":
+        err = result.get("response", str(result))
+        print(f"  [order] REJECTED: {err}", flush=True)
+        return OrderResult(ok=False, error=str(err), raw=result)
+
+    statuses = result.get("response", {}).get("data", {}).get("statuses", [])
+    oid = None
+    errors = []
+    for status in statuses:
+        if isinstance(status, dict):
+            if "resting" in status:
+                oid = status["resting"].get("oid")
+            elif "filled" in status:
+                oid = status["filled"].get("oid")
+            elif "error" in status:
+                errors.append(status["error"])
+        elif isinstance(status, str):
+            errors.append(status)
+    if errors:
+        err_msg = "; ".join(errors)
+        print(f"  [order] STATUS ERRORS: {err_msg}", flush=True)
+        return OrderResult(ok=False, error=err_msg, raw=result)
+    if oid is None:
+        print(f"  [order] WARNING: status=ok but no oid and no errors. Statuses: {statuses}", flush=True)
+    return OrderResult(ok=oid is not None, order_id=oid, raw=result)
+
+
 def _get_exchange_client(base_url: str = HL_MAINNET):
     """Create an Exchange client with the stored API wallet credentials."""
     try:
@@ -361,33 +390,7 @@ def place_order(
         # Log the full raw response for debugging
         print(f"  [order] RAW RESPONSE: {json.dumps(result)}", flush=True)
 
-        # Parse response
-        if result.get("status") == "ok":
-            statuses = result.get("response", {}).get("data", {}).get("statuses", [])
-            oid = None
-            errors = []
-            for s in statuses:
-                if isinstance(s, dict):
-                    if "resting" in s:
-                        oid = s["resting"].get("oid")
-                    elif "filled" in s:
-                        oid = s["filled"].get("oid")
-                    elif "error" in s:
-                        errors.append(s["error"])
-                elif isinstance(s, str):
-                    # String statuses like "WouldCrossMakerOrder" indicate issues
-                    errors.append(s)
-            if errors:
-                err_msg = "; ".join(errors)
-                print(f"  [order] STATUS ERRORS: {err_msg}", flush=True)
-                return OrderResult(ok=False, error=err_msg, raw=result)
-            if oid is None and not errors:
-                print(f"  [order] WARNING: status=ok but no oid and no errors. Statuses: {statuses}", flush=True)
-            return OrderResult(ok=oid is not None, order_id=oid, raw=result)
-        else:
-            err = result.get("response", str(result))
-            print(f"  [order] REJECTED: {err}", flush=True)
-            return OrderResult(ok=False, error=str(err), raw=result)
+        return _parse_order_result(result)
 
     except ImportError:
         return OrderResult(ok=False, error="hyperliquid SDK not installed. Run: pip install hyperliquid-python-sdk")

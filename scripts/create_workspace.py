@@ -129,7 +129,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate a Hyperliquid trading workspace from Hyperbot templates.")
     parser.add_argument("workspace_name", nargs="?")
     parser.add_argument("--output-dir", help="Parent directory where the workspace folder will be created")
-    parser.add_argument("--symbol", default="BTCUSDT")
+    parser.add_argument("--symbol", action="append", default=[], help="Trading pair(s) to include (can specify multiple times)")
     parser.add_argument("--strategy-pack", action="append", default=[], help="Strategy pack ids to install")
     parser.add_argument("--account-mode", choices=("test", "production"), default="test")
     parser.add_argument("--max-leverage", type=float, default=4.0)
@@ -155,33 +155,57 @@ def main() -> int:
     if target.exists():
         raise SystemExit(f"target already exists: {target}")
 
+    # Normalize symbols: default to BTCUSDT if none provided
+    symbols = args.symbol if args.symbol else ["BTCUSDT"]
     selected_packs = args.strategy_pack or ["trend_pullback"]
     shutil.copytree(TEMPLATE_ROOT, target)
 
-    coin = infer_coin(args.symbol)
-    market_payload = {
-        "markets": [
-            {
-                "symbol": args.symbol,
-                "coin": coin,
-                "asset": KNOWN_ASSETS.get(args.symbol),
-                "market_type": "perpetual"
-            }
-        ]
-    }
-    write_json(target / "config" / "markets" / "hyperliquid_perps.json", market_payload)
+    # Build market entries for all symbols
+    market_entries = []
+    for sym in symbols:
+        c = infer_coin(sym)
+        market_entries.append({
+            "symbol": sym,
+            "coin": c,
+            "asset": KNOWN_ASSETS.get(sym),
+            "market_type": "perpetual",
+        })
+    write_json(target / "config" / "markets" / "hyperliquid_perps.json", {"markets": market_entries})
 
-    installed = [install_pack(target, pack_id, args.symbol) for pack_id in selected_packs]
+    # Install strategy packs for every symbol
+    all_installed: list[dict] = []
+    for sym in symbols:
+        for pack_id in selected_packs:
+            all_installed.append(install_pack(target, pack_id, sym))
+
+    # Build pairs array for the manifest (multi-pair support)
+    pairs: list[dict] = []
+    for sym in symbols:
+        c = infer_coin(sym)
+        pair_strategies = [s for s in all_installed if s["strategy_id"].startswith(c.lower() + "_")]
+        pairs.append({
+            "symbol": sym,
+            "coin": c,
+            "enabled": True,
+            "strategies": pair_strategies,
+        })
+
+    # Primary symbol is the first one (backward-compat: keep top-level symbol/coin)
+    primary_symbol = symbols[0]
+    primary_coin = infer_coin(primary_symbol)
 
     workspace_manifest = {
         "workspace_name": args.workspace_name,
-        "symbol": args.symbol,
-        "coin": coin,
+        # Legacy single-pair fields (backward compat)
+        "symbol": primary_symbol,
+        "coin": primary_coin,
+        # Multi-pair array
+        "pairs": pairs,
         "account_mode": args.account_mode,
         "max_leverage": args.max_leverage,
         "notification_email": args.notification_email,
         "enable_unattended": args.enable_unattended,
-        "strategy_packs": installed,
+        "strategy_packs": all_installed,
         "profile_mode": "baseline_pack_defaults",
         "token_specific_revision": {
             "available": True,
@@ -195,14 +219,15 @@ def main() -> int:
     write_json(target / "hyperbot.workspace.json", workspace_manifest)
 
     if not args.skip_profile:
-        results = run_initial_profiles(target, installed, args.profile_days)
+        results = run_initial_profiles(target, all_installed, args.profile_days)
         workspace_manifest["token_specific_revision"]["results"] = results
         workspace_manifest["token_specific_revision"]["status"] = (
             "completed" if all(item["status"] == "completed" for item in results) else "partial_failure"
         )
         write_json(target / "hyperbot.workspace.json", workspace_manifest)
 
-    print(f"Created workspace: {target}")
+    coin_list = ", ".join(infer_coin(s) for s in symbols)
+    print(f"Created workspace: {target} ({coin_list})")
     if not args.skip_profile:
         print("Initial token-specific revision:")
         for item in workspace_manifest["token_specific_revision"]["results"]:

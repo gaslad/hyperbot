@@ -126,7 +126,7 @@ Do not make them required for:
 
 ## Next Priorities
 
-1. Multi-pair support — run multiple `hyperbot-{COIN}` workspaces simultaneously with a unified dashboard
+1. ~~Multi-pair support — run multiple `hyperbot-{COIN}` workspaces simultaneously with a unified dashboard~~ **Done** — single workspace now supports multiple pairs via `--symbol` flag (repeatable), dashboard has pair tabs, trading loop iterates all enabled pairs, manifest includes backward-compatible `pairs` array
 2. Backtesting — local replay of signal detection against historical candle data
 3. Notifications — optional alerts (local push, webhook) when signals fire or positions change
 4. Performance tracking — trade history with win rate, R-multiple, drawdown metrics

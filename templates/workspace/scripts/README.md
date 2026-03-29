@@ -2,6 +2,8 @@
 
 This directory contains runner, validation, and research commands for the generated workspace.
 
+Unit tests for the workspace runtime live under `tests/` so runtime code and test code stay separate.
+
 ## Token-Specific Revision
 
 Workspace creation runs the default token-specific revision automatically for the selected symbol and installed strategy packs.

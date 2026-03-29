@@ -157,7 +157,7 @@ def main() -> int:
         )
         assert_true(rejected.returncode != 0, "invalid revision unexpectedly succeeded")
         assert_true(
-            "symbol mismatch between config, workspace, and revision" in rejected.stderr,
+            "symbol mismatch between config, workspace pairs, and revision" in rejected.stderr,
             "invalid revision did not fail for the expected reason",
         )
 
