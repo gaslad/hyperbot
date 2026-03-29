@@ -68,9 +68,20 @@ def validate_workspace_agnostic(issues: list[str]) -> None:
 
 
 def validate_repo_hygiene(warnings: list[str]) -> None:
-    for path in ROOT.rglob("__pycache__"):
-        if path.is_dir():
-            add_warning(warnings, f"remove committed cache directory: {path.relative_to(ROOT)}")
+    try:
+        proc = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "*/__pycache__/*"],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        if proc.returncode == 0:
+            tracked = {str(Path(p).parent) for p in proc.stdout.strip().splitlines()}
+            for d in sorted(tracked):
+                add_warning(warnings, f"remove committed cache directory: {d}")
+    except FileNotFoundError:
+        # git not available — fall back to filesystem scan
+        for path in ROOT.rglob("__pycache__"):
+            if path.is_dir():
+                add_warning(warnings, f"remove committed cache directory: {path.relative_to(ROOT)}")
 
 
 def main() -> int:
