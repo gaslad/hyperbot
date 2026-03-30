@@ -58,10 +58,26 @@ case ":$PATH:" in
 esac
 
 echo
-echo "Hyperbot installed."
-echo "CLI: $BIN_DIR/hyperbot"
+echo "============================================"
+echo "  Hyperbot installed successfully."
+echo "============================================"
 echo
-echo "Examples:"
-echo "  hyperbot list-packs"
-echo "  hyperbot create-workspace btc-workspace --output-dir \$HOME/Documents/Codex --symbol BTCUSDT --strategy-pack trend_pullback"
-echo "  hyperbot validate"
+echo "  CLI: $BIN_DIR/hyperbot"
+echo
+echo "  Get started:"
+echo "    hyperbot dashboard        Launch the setup wizard (recommended)"
+echo
+echo "  The wizard walks you through:"
+echo "    1. Pick a trading pair"
+echo "    2. Select strategies"
+echo "    3. Set risk parameters"
+echo "    4. Connect your Hyperliquid wallet"
+echo "    5. Build your workspace"
+echo
+echo "  Other commands:"
+echo "    hyperbot list-packs       Show available strategy packs"
+echo "    hyperbot validate         Run readiness checks"
+echo
+echo "  Starts in test mode by default. No real trades"
+echo "  until you explicitly enable live trading."
+echo "============================================"
