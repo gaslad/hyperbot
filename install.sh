@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_URL="${HYPERBOT_REPO_URL:-https://github.com/gaslad/hyperbot.git}"
-INSTALL_ROOT="${HYPERBOT_INSTALL_ROOT:-$HOME/.local/share/hyperbot}"
+INSTALL_ROOT="${HYPERBOT_INSTALL_ROOT:-$HOME/Desktop/Hyperbot}"
 BIN_DIR="${HYPERBOT_BIN_DIR:-$HOME/.local/bin}"
 BRANCH="${HYPERBOT_BRANCH:-main}"
 
