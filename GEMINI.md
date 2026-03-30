@@ -1,6 +1,6 @@
 # Hyperbot — Gemini Agent Instructions
 
-Use [AGENTS.md](/Users/gaston/Library/CloudStorage/Dropbox/-- PROJECTS/hyperbot/AGENTS.md) as the single source of truth for repo context, architecture, objectives, and coordination rules.
+Use [AGENTS.md](/Users/gaston/Projects/hyperbot/AGENTS.md) as the single source of truth for repo context, architecture, objectives, and coordination rules.
 
 Gemini-specific note:
 

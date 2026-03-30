@@ -6,7 +6,7 @@ headers = []
 [functions."*"]
 
 [build]
-publish = "/Users/gaston/Library/CloudStorage/Dropbox/-- PROJECTS/hyperbot"
+publish = "/Users/gaston/Projects/hyperbot"
 publishOrigin = "default"
 
 [build.environment]
