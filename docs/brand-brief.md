@@ -33,9 +33,9 @@ Most trading tools fall into two camps: fully managed platforms where you hand o
 
 ## Target Audience
 
-### Primary: Independent Crypto Traders
+### Primary: Crypto Traders Who Want Automation Without Complexity
 
-Technically literate traders who use Hyperliquid for perps and want more control than a GUI platform offers but don't want to build an entire trading system from scratch. Comfortable with a terminal. Probably already have opinions about leverage and risk management. Value being able to read the code that's managing their money.
+Traders who use Hyperliquid for perps and want bot-assisted trading without needing to understand every technical detail. They want to pick tokens, choose a strategy, and let the bot handle the rest — while being able to understand what it's doing and why. They value transparency and education over raw data density. Comfortable enough with a terminal to run an install command, but not necessarily developers.
 
 ### Secondary: Developer-Traders and Quant Hobbyists
 
@@ -58,7 +58,7 @@ Developers interested in trading infrastructure, Hyperliquid's SDK, or local-fir
 ## Key Messages
 
 ### For traders:
-"One command from zero to a live trading dashboard. Everything runs on your machine. You can read every line of code that touches your money."
+"Pick your tokens, choose a strategy, and let the bot trade. Every action comes with a plain-English explanation of what happened and why — so you learn as you earn."
 
 ### For developers:
 "Hyperbot generates the workspace — you own it from there. Fork a strategy pack, write your own signals, extend the dashboard. It's scaffolding, not a cage."
@@ -87,11 +87,12 @@ Developers interested in trading infrastructure, Hyperliquid's SDK, or local-fir
 
 ## What Success Looks Like
 
-- A trader installs Hyperbot and has a working dashboard with real signals within 5 minutes
+- A trader installs Hyperbot, adds 3 tokens, and understands what the bot is doing within 5 minutes
+- After a week of use, the trader has learned basic trading concepts (entries, stop losses, R-multiples) from the bot's educational explanations — without reading a textbook
 - A developer forks a strategy pack and has a custom signal detector running within an afternoon
 - The README is the primary onboarding surface — no docs site, no video tutorial needed
 - The community contributes strategy packs the way people contribute VS Code extensions
-- "I can read every line of code that manages my money" becomes a repeated sentiment
+- "It's like having a trading mentor that shows its work" becomes a repeated sentiment
 
 ## Current Strategy Packs (v1)
 
@@ -101,8 +102,24 @@ Developers interested in trading infrastructure, Hyperliquid's SDK, or local-fir
 
 These are baseline packs with sensible defaults. Token-specific revision (90-day historical profile) tunes parameters per pair automatically.
 
+## Dashboard Philosophy
+
+The dashboard is the primary interface for non-developer users. Its design follows these principles:
+
+**Simplicity over density.** The dashboard is not a professional trading terminal. It's a card-based interface where each active token is a card and a `+` button adds new ones. No 3-column layouts, no raw signal checklists, no chart-first design.
+
+**Educational transparency.** Every bot action (entry, exit, stop-loss move) comes with a plain-English explanation of *what* happened and *why*. Users learn trading concepts naturally by watching the bot work. The "Activity & Insights" notification center is the primary educational surface.
+
+**Cards, not columns.** The main view is a responsive grid of token cards. Each card shows: token, strategy name, trade status, and P&L. Clicking an active trade card expands it to reveal TP/SL controls and a close button. A dashed `+` card lets users add new tokens with a two-step flow (pick token → pick strategy).
+
+**Unmanaged position awareness.** The dashboard detects positions on the user's Hyperliquid account that weren't opened by Hyperbot. These appear as "Unmanaged" cards with a risk rating, issues list, and suggested actions (add stop loss, reduce leverage, let Hyperbot manage).
+
+**Progressive disclosure.** Simple status on the card surface, controls on click/expand, educational context in the notification panel. Advanced data (charts, raw signals, logs) is available but hidden by default.
+
 ## Roadmap Context (Brand-Relevant)
 
-Completed: workspace generation, CLI, web dashboard, live trading, multi-pair support, policy-driven auto-apply, local-only mode.
+Completed: workspace generation, CLI, web dashboard, live trading, multi-pair support, policy-driven auto-apply, local-only mode, wallet connect (EIP-6963 + WalletConnect), install script.
+
+In progress: dashboard redesign (card-based simplification with educational UX).
 
 Next: backtesting, notifications, performance tracking, strategy tuning UI. Each of these reinforces the core position — more power to the local operator, less dependency on external services.

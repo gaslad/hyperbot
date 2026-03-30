@@ -29,6 +29,7 @@ HTML_PATH = Path(__file__).parent / "wallet_connect.html"
 HL_API_URL = "https://api.hyperliquid.xyz"
 SERVICE_NAME = "hyperbot"
 SHUTDOWN_EVENT = threading.Event()
+LAUNCH_DASHBOARD = threading.Event()  # Signal to launch dashboard after connect
 
 
 # ---------------------------------------------------------------------------
@@ -53,12 +54,14 @@ def submit_approve_agent(master_address: str, agent_address: str, signature: str
         "action": {
             "type": "approveAgent",
             "hyperliquidChain": "Mainnet",
+            "signatureChainId": "0xa4b1",
             "agentAddress": agent_address.lower(),
             "agentName": "hyperbot",
             "nonce": nonce,
         },
         "nonce": nonce,
         "signature": {"r": r, "s": s, "v": v},
+        "vaultAddress": None,
     }
     print(f"  Payload: {json.dumps(payload)}", flush=True)
 
@@ -200,7 +203,7 @@ class ConnectHandler(BaseHTTPRequestHandler):
                 print(f"  Credentials saved to macOS Keychain.", flush=True)
                 self._json_response({"ok": True, "master_address": master})
 
-                threading.Timer(1.0, lambda: SHUTDOWN_EVENT.set()).start()
+                threading.Timer(1.0, lambda: (LAUNCH_DASHBOARD.set(), SHUTDOWN_EVENT.set())).start()
 
             except Exception as e:
                 print(f"  ERROR: {e}", flush=True)
@@ -228,7 +231,8 @@ class ConnectHandler(BaseHTTPRequestHandler):
                 print(f"  Credentials saved to macOS Keychain.", flush=True)
                 self._json_response({"ok": True, "master_address": master, "agent_address": agent_addr})
 
-                threading.Timer(1.0, lambda: SHUTDOWN_EVENT.set()).start()
+                # Signal to launch dashboard, then shut down connect server
+                threading.Timer(1.0, lambda: (LAUNCH_DASHBOARD.set(), SHUTDOWN_EVENT.set())).start()
 
             except Exception as e:
                 print(f"  ERROR: {e}", flush=True)
@@ -261,7 +265,26 @@ def run_server(port: int | None = None) -> int:
 
     server.server_close()
     print("[hyperbot connect] Done.", flush=True)
+
+    if LAUNCH_DASHBOARD.is_set():
+        return _launch_dashboard()
+
     return 0
+
+
+def _launch_dashboard() -> int:
+    """Launch 'hyperbot dashboard' after successful wallet connect."""
+    hyperbot_script = Path(__file__).resolve().parent.parent / "hyperbot.py"
+    if not hyperbot_script.exists():
+        print("[hyperbot connect] Could not find hyperbot.py to launch dashboard.", flush=True)
+        return 0
+
+    print("[hyperbot connect] Launching dashboard...", flush=True)
+    import os
+    os.execv(
+        sys.executable,
+        [sys.executable, str(hyperbot_script), "dashboard"],
+    )
 
 
 if __name__ == "__main__":

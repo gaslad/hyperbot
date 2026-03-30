@@ -137,6 +137,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--enable-unattended", action="store_true")
     parser.add_argument("--profile-days", type=int, default=90, help="Lookback window for automatic token-specific revision")
     parser.add_argument("--skip-profile", action="store_true", help="Skip the automatic token-specific revision step")
+    parser.add_argument("--empty", action="store_true", help="Create a bare workspace with no pairs or strategies (for dashboard-first flow)")
     parser.add_argument("--list-packs", action="store_true")
     return parser.parse_args()
 
@@ -155,10 +156,36 @@ def main() -> int:
     if target.exists():
         raise SystemExit(f"target already exists: {target}")
 
+    shutil.copytree(TEMPLATE_ROOT, target)
+
+    # --empty: bare workspace with no pairs or strategies (dashboard-first flow)
+    if args.empty:
+        workspace_manifest = {
+            "workspace_name": args.workspace_name,
+            "pairs": [],
+            "account_mode": args.account_mode,
+            "max_leverage": args.max_leverage,
+            "notification_email": args.notification_email,
+            "enable_unattended": args.enable_unattended,
+            "strategy_packs": [],
+            "profile_mode": "baseline_pack_defaults",
+            "token_specific_revision": {
+                "available": True,
+                "auto_run_on_create": False,
+                "days": args.profile_days,
+                "status": "skipped",
+                "results": [],
+            },
+            "generated_by": "hyperbot",
+        }
+        write_json(target / "hyperbot.workspace.json", workspace_manifest)
+        write_json(target / "config" / "markets" / "hyperliquid_perps.json", {"markets": []})
+        print(f"Created empty workspace: {target}")
+        return 0
+
     # Normalize symbols: default to BTCUSDT if none provided
     symbols = args.symbol if args.symbol else ["BTCUSDT"]
     selected_packs = args.strategy_pack or ["trend_pullback"]
-    shutil.copytree(TEMPLATE_ROOT, target)
 
     # Build market entries for all symbols
     market_entries = []

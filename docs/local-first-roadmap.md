@@ -19,12 +19,12 @@ Already local:
 - `scripts/create_workspace.py` — workspace generation
 - `scripts/hyperbot.py` — CLI entrypoint with `dashboard`, `run`, `validate` commands
 - strategy-pack templates under `strategy-packs/` (all include `pack_id` for signal dispatch)
-- workspace template material under `templates/workspace/`
-- `templates/workspace/scripts/apply_revision.py` — revision adoption
-- `templates/workspace/scripts/profile_symbol_strategy.py` — 90-day symbol profiling
-- `templates/workspace/scripts/hl_client.py` — full Hyperliquid API client (orders, portfolio, candles)
-- `templates/workspace/scripts/signals.py` — deterministic signal detection (SMA, Bollinger, ATR, wick)
-- `templates/workspace/scripts/dashboard.py` — single-page web dashboard (wizard + live trading)
+- workspace template material under `templates/hyperbot-multi/`
+- `templates/hyperbot-multi/scripts/apply_revision.py` — revision adoption
+- `templates/hyperbot-multi/scripts/profile_symbol_strategy.py` — 90-day symbol profiling
+- `templates/hyperbot-multi/scripts/hl_client.py` — full Hyperliquid API client (orders, portfolio, candles)
+- `templates/hyperbot-multi/scripts/signals.py` — deterministic signal detection (SMA, Bollinger, ATR, wick)
+- `templates/hyperbot-multi/scripts/dashboard.py` — single-page web dashboard (wizard + live trading)
 
 Phase 4 (web dashboard) completed:
 - 5-step onboarding wizard: pair → strategies → risk → credentials → build
@@ -127,10 +127,17 @@ Do not make them required for:
 ## Next Priorities
 
 1. ~~Multi-pair support — run multiple `hyperbot-{COIN}` workspaces simultaneously with a unified dashboard~~ **Done** — single workspace now supports multiple pairs via `--symbol` flag (repeatable), dashboard has pair tabs, trading loop iterates all enabled pairs, manifest includes backward-compatible `pairs` array
-2. Backtesting — local replay of signal detection against historical candle data
-3. Notifications — optional alerts (local push, webhook) when signals fire or positions change
-4. Performance tracking — trade history with win rate, R-multiple, drawdown metrics
-5. Strategy tuning UI — adjust strategy parameters from the dashboard without editing JSON
+2. **Dashboard v2 redesign** — replace the 3-column trading terminal with a card-based, educational interface:
+   - Token card grid with `+` button (pick token → pick strategy)
+   - Clickable cards expand to reveal TP/SL controls and close-position
+   - Unmanaged position detection: rate existing HL positions, suggest actions
+   - Activity & Insights notification center with "why this happened" educational cards
+   - Remove SVG chart, signal checklist, and risk panel from default view
+   - Prototype: `prototype-dashboard.jsx`
+3. Notifications — the Activity & Insights panel is the in-dashboard notification surface; extend to optional external alerts (local push, webhook) when signals fire or positions change
+4. Performance tracking — trade history with win rate, P&L curve, per-token breakdown
+5. Backtesting — local replay of signal detection against historical candle data
+6. Strategy tuning UI — adjust strategy parameters from the dashboard card expand view
 
 ## Design Principles
 
@@ -138,3 +145,6 @@ Do not make them required for:
 - Remove routine human approvals: policy-driven auto-apply for safe parameter ranges
 - Keep assistant usage optional: all core logic is deterministic local Python
 - Make the trading workspace usable as a local deterministic system
+- Simplicity over density: the dashboard is a card grid, not a trading terminal
+- Educational transparency: every bot action comes with a plain-English explanation of what and why
+- Progressive disclosure: simple on the surface, detailed on expand/drill-down

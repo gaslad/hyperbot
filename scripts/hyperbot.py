@@ -92,65 +92,72 @@ def ensure_sdk() -> bool:
 
 
 def launch_dashboard(args: argparse.Namespace) -> int:
-    """One-command flow: ensure deps → generate workspace if needed → launch dashboard."""
-    # Default workspace path: next to the repo
+    """One-command flow: ensure deps → check credentials → create workspace → launch."""
+    # Step 1: Ensure SDK is available
+    ensure_sdk()
+
+    # Step 2: Check for wallet credentials (from `hyperbot connect`)
+    try:
+        from connect.server import read_credential
+        master = read_credential("master_address")
+        if not master:
+            log("[hyperbot] No wallet connected.")
+            log("[hyperbot] Run:  hyperbot connect")
+            log("[hyperbot] This opens a browser to connect your Hyperliquid wallet.")
+            return 1
+        log(f"[hyperbot] Wallet: {master}")
+    except Exception as e:
+        log(f"[hyperbot] Could not check credentials: {e}")
+        log("[hyperbot] Run:  hyperbot connect")
+        return 1
+
+    # Step 3: Find or create workspace
     if args.workspace_path:
         workspace = Path(args.workspace_path).expanduser().resolve()
     else:
-        # Check for any existing hyperbot-* workspace first
+        # Check for any existing hyperbot-* workspace
         workspace = ROOT.parent / "hyperbot-workspace"
         for candidate in sorted(ROOT.parent.glob("hyperbot-*")):
             if candidate.is_dir() and (candidate / "hyperbot.workspace.json").exists():
                 workspace = candidate
                 break
 
-    # Step 1: Ensure SDK is available
-    ensure_sdk()
-
-    # Step 2: Generate workspace if it doesn't exist
-    # The wizard handles pair selection, strategy, risk, and credentials
-    # so we create a generic workspace with all packs and a placeholder symbol
-    # (the dashboard build step will rename it to hyperbot-{COIN})
     if not workspace.exists():
-        log(f"[dashboard] Creating workspace at {workspace}...")
+        log(f"[hyperbot] Creating workspace at {workspace}...")
         output_dir = str(workspace.parent)
         workspace_name = workspace.name
-        packs = ["trend_pullback", "compression_breakout", "liquidity_sweep_reversal"]
         create_cmd = [
             sys.executable,
             str(ROOT / "scripts" / "create_workspace.py"),
             workspace_name,
             "--output-dir", output_dir,
-            "--symbol", "BTCUSDT",  # placeholder — wizard will override
+            "--empty",
             "--account-mode", "test",
-            "--skip-profile",
         ]
-        for p in packs:
-            create_cmd.extend(["--strategy-pack", p])
         rc = subprocess.run(create_cmd).returncode
         if rc != 0:
-            log("[dashboard] Workspace creation failed.")
+            log("[hyperbot] Workspace creation failed.")
             return rc
-        log(f"[dashboard] Workspace created at {workspace}")
+        log(f"[hyperbot] Workspace ready at {workspace}")
     else:
-        log(f"[dashboard] Using existing workspace: {workspace}")
+        log(f"[hyperbot] Using workspace: {workspace}")
 
     # Step 4: Launch dashboard
     dash_script = workspace / "scripts" / "dashboard.py"
     if not dash_script.exists():
-        log(f"[dashboard] ERROR: {dash_script} not found. Re-generate the workspace with --force.")
+        log(f"[hyperbot] ERROR: {dash_script} not found.")
         return 1
 
     dash_cmd = [sys.executable, str(dash_script)]
     if args.live:
         if not args.confirm_risk:
-            log("[dashboard] ERROR: --live requires --confirm-risk. Real money at stake.")
+            log("[hyperbot] ERROR: --live requires --confirm-risk. Real money at stake.")
             return 1
         dash_cmd.extend(["--live", "--confirm-risk"])
     if args.port:
         dash_cmd.extend(["--port", str(args.port)])
 
-    log(f"[dashboard] Launching {'LIVE' if args.live else 'view-only'} dashboard...")
+    log(f"[hyperbot] Launching {'LIVE' if args.live else 'view-only'} dashboard...")
     return subprocess.run(dash_cmd, cwd=workspace).returncode
 
 

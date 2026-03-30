@@ -1,18 +1,14 @@
 #!/usr/bin/env python3
-"""Hyperbot — full onboarding wizard + live trading dashboard.
+"""Hyperbot — card-based trading dashboard.
 
-Single-page web app that takes a user from nothing to automated trading:
-
-  Step 1  Pick a trading pair
-  Step 2  Select strategies
-  Step 3  Set risk parameters
-  Step 4  Enter wallet credentials
-  Step 5  Build workspace (loading animation while profiling runs)
-  Step 6  Live dashboard — signals, positions, trades, education
+Simplified dashboard where users add tokens via a + button, pick a strategy,
+and the bot trades automatically. Every action comes with an educational
+explanation. Credentials come from wallet connect (EIP-6963 / WalletConnect),
+not manual entry.
 
 Launch:
-    python3 scripts/dashboard.py                   # starts wizard
-    python3 scripts/dashboard.py --live --confirm-risk   # enables order execution
+    python3 scripts/dashboard.py                          # view-only mode
+    python3 scripts/dashboard.py --live --confirm-risk    # enables order execution
 """
 from __future__ import annotations
 
@@ -458,8 +454,13 @@ def trading_loop() -> None:
 
             # Iterate over all registered pairs
             with STATE.lock:
-                coins = STATE.all_coins() or [STATE.coin]
+                coins = STATE.all_coins()
+            if not coins:
+                STOP_EVENT.wait(3)
+                continue
             for coin in coins:
+                if not coin:
+                    continue
                 with STATE.lock:
                     ps = STATE.pairs.get(coin)
                     pair_enabled = ps.enabled if ps else True
@@ -645,1759 +646,760 @@ def log_trade(action: str, strategy: str, size: float, price: float, note: str =
 DASHBOARD_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>Hyperbot</title>
 <style>
-:root {
-  --bg: #050505; --surface: #0a0a0a; --surface2: #0d0d0d; --surface3: #121212;
-  --border: #1a1a1a; --border2: #222;
-  --text: #f5f5f5; --text2: #a3a3a3; --text3: #737373; --text4: #525252;
-  --green: #22c55e; --green-dim: rgba(34,197,94,0.1); --green-glow: rgba(34,197,94,0.4);
-  --red: #ef4444; --red-dim: rgba(239,68,68,0.1);
-  --blue: #3b82f6; --blue-dim: rgba(59,130,246,0.1);
-  --yellow: #eab308; --yellow-dim: rgba(234,179,8,0.05);
-  --font-body: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-mono: 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
-  --radius: 10px; --radius-sm: 6px;
+/* ── Reset & Base ───────────────────────────────────────────── */
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#050505;--surface:#0c0c0c;--border:rgba(255,255,255,0.06);
+  --border-h:rgba(255,255,255,0.12);--text:#fff;--text2:rgba(255,255,255,0.5);
+  --text3:rgba(255,255,255,0.35);--text4:rgba(255,255,255,0.2);
+  --green:#22c55e;--red:#ef4444;--blue:#3b82f6;--yellow:#eab308;
+  --green-bg:rgba(34,197,94,0.1);--red-bg:rgba(239,68,68,0.1);
+  --blue-bg:rgba(59,130,246,0.1);--yellow-bg:rgba(234,179,8,0.1);
+  --radius:12px;--radius-sm:8px;
 }
-* { margin:0; padding:0; box-sizing:border-box; }
-body { font-family:var(--font-body); background:var(--bg); color:var(--text); min-height:100vh; }
-a { color:var(--blue); }
-:focus-visible { outline:2px solid var(--green); outline-offset:2px; }
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;overflow:hidden;height:100vh;display:flex;flex-direction:column}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+.mono{font-family:'SF Mono',Menlo,Consolas,monospace}
 
-/* --- Wizard container (preserved) --- */
-.wizard { max-width:640px; margin:0 auto; padding:2rem 1.5rem; min-height:100vh; display:flex; flex-direction:column; justify-content:center; }
-.wizard-hide { display:none !important; }
-.step-title { font-size:1.6rem; font-weight:700; margin-bottom:0.3rem; }
-.step-sub { color:var(--text3); font-size:0.9rem; margin-bottom:2rem; line-height:1.5; }
+/* ── Header ─────────────────────────────────────────────────── */
+.header{display:flex;align-items:center;justify-content:space-between;padding:10px 20px;border-bottom:1px solid var(--border);background:#070707;flex-shrink:0}
+.header-left{display:flex;align-items:center;gap:12px}
+.logo{width:28px;height:28px;border-radius:8px;background:var(--green);color:#000;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
+.brand{font-size:14px;font-weight:600;opacity:0.9}
+.badge{padding:2px 8px;border-radius:4px;font-size:11px;display:flex;align-items:center;gap:5px}
+.badge-dot{width:6px;height:6px;border-radius:50%}
+.header-right{display:flex;align-items:center;gap:20px}
+.stat-block{text-align:right}
+.stat-label{font-size:11px;color:var(--text3)}
+.stat-value{font-size:13px}
+.icon-btn{padding:8px;border-radius:8px;position:relative;transition:background 0.15s}
+.icon-btn:hover{background:rgba(255,255,255,0.05)}
+.icon-btn svg{width:18px;height:18px;color:var(--text2)}
+.notif-dot{position:absolute;top:2px;right:2px;width:16px;height:16px;border-radius:50%;background:var(--green);color:#000;font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center}
+.btn-power{padding:6px 12px;border-radius:8px;font-size:12px;font-weight:500;display:flex;align-items:center;gap:5px;transition:background 0.15s}
 
-/* Progress bar */
-.progress { display:flex; gap:0.5rem; margin-bottom:2.5rem; }
-.progress-dot { flex:1; height:4px; border-radius:2px; background:var(--border); transition:background 0.3s; }
-.progress-dot.done { background:var(--green); }
-.progress-dot.active { background:var(--green); opacity:0.6; }
+/* ── Summary Bar ────────────────────────────────────────────── */
+.summary{display:flex;align-items:center;gap:16px;padding:8px 20px;border-bottom:1px solid var(--border);background:#080808;font-size:12px;flex-shrink:0}
+.summary-item{display:flex;align-items:center;gap:6px;color:var(--text3)}
+.summary-dot{width:6px;height:6px;border-radius:50%}
+.summary-sep{color:var(--text4)}
 
-/* Pair picker */
-.pair-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:0.75rem; margin-bottom:1.5rem; }
-.pair-card { background:var(--surface2); border:2px solid var(--border); border-radius:var(--radius); padding:1rem 0.75rem; text-align:center; cursor:pointer; transition:all 0.2s; }
-.pair-card:hover { border-color:var(--green); }
-.pair-card.selected { border-color:var(--green); background:var(--green-dim); }
-.pair-card .pair-name { font-weight:700; font-size:1rem; }
-.pair-card .pair-price { font-size:0.8rem; color:var(--text3); margin-top:0.3rem; font-family:var(--font-mono); }
-.pair-search { width:100%; padding:0.75rem 1rem; background:var(--surface2); border:1px solid var(--border); border-radius:8px; color:var(--text); font-size:0.9rem; margin-bottom:1rem; outline:none; }
-.pair-search:focus { border-color:var(--green); }
-.pair-search::placeholder { color:var(--text4); }
+/* ── Card Grid ──────────────────────────────────────────────── */
+.grid-wrap{flex:1;overflow-y:auto;padding:20px}
+.card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px}
+.section-label{display:flex;align-items:center;gap:8px;margin:24px 0 12px;padding:0 4px;font-size:12px;font-weight:500;color:var(--text3)}
+.section-label svg{width:13px;height:13px;opacity:0.6}
 
-/* Strategy cards */
-.strat-card { background:var(--surface2); border:2px solid var(--border); border-radius:var(--radius); padding:1.25rem; margin-bottom:0.75rem; cursor:pointer; transition:all 0.2s; }
-.strat-card:hover { border-color:var(--green); }
-.strat-card.selected { border-color:var(--green); background:var(--green-dim); }
-.strat-name { font-weight:700; font-size:1rem; display:flex; align-items:center; gap:0.5rem; }
-.strat-tag { font-size:0.7rem; padding:0.15rem 0.5rem; border-radius:10px; font-weight:600; }
-.tag-high { background:var(--green-dim); color:var(--green); }
-.tag-med { background:var(--yellow-dim); color:var(--yellow); }
-.strat-desc { color:var(--text3); font-size:0.85rem; margin-top:0.5rem; line-height:1.5; }
-.strat-meta { display:flex; gap:1.5rem; margin-top:0.6rem; font-size:0.8rem; color:var(--text4); }
+/* ── Trade Card ─────────────────────────────────────────────── */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;display:flex;flex-direction:column;gap:12px;transition:border-color 0.15s}
+.card.expanded{border-color:var(--border-h)}
+.card.clickable{cursor:pointer}
+.card-head{display:flex;align-items:center;justify-content:space-between}
+.card-token{display:flex;align-items:center;gap:10px}
+.token-icon{width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,0.06);display:flex;align-items:center;justify-content:center;font-size:16px}
+.token-name{font-size:14px;font-weight:600}
+.token-strategy{font-size:12px;color:var(--text3)}
+.card-actions{display:flex;align-items:center;gap:4px}
+.chevron{width:14px;height:14px;color:var(--text4);transition:transform 0.2s}
+.chevron.open{transform:rotate(180deg)}
+.btn-x{padding:4px;border-radius:4px;color:var(--text4);transition:color 0.15s}
+.btn-x:hover{color:var(--text2)}
+.btn-x svg{width:14px;height:14px}
 
-/* Risk sliders */
-.risk-group { margin-bottom:1.75rem; }
-.risk-label { display:flex; justify-content:space-between; margin-bottom:0.5rem; font-size:0.9rem; }
-.risk-label .val { color:var(--green); font-weight:600; font-family:var(--font-mono); }
-input[type=range] { width:100%; accent-color:var(--green); }
-.risk-help { font-size:0.75rem; color:var(--text4); margin-top:0.3rem; }
+.status-badge{display:inline-flex;align-items:center;gap:5px;padding:3px 8px;border-radius:6px;font-size:12px}
+.pnl-row{display:flex;align-items:center;justify-content:space-between;padding-top:4px;border-top:1px solid var(--border)}
+.pnl-label{font-size:12px;color:var(--text3)}
+.pnl-value{font-size:18px;font-weight:600}
+.pnl-pct{font-size:12px;font-weight:400;margin-left:4px;opacity:0.6}
+.risk-label{font-size:12px;color:var(--text3)}
+.risk-value{font-size:13px;color:var(--text2)}
+.last-trade{font-size:12px;color:var(--text3);display:flex;align-items:center;gap:6px;padding-top:4px;border-top:1px solid var(--border)}
 
-/* Credential input */
-.cred-group { margin-bottom:1.25rem; }
-.cred-group label { display:block; font-size:0.85rem; color:var(--text3); margin-bottom:0.4rem; }
-.cred-input { width:100%; padding:0.7rem 1rem; background:var(--surface2); border:1px solid var(--border); border-radius:8px; color:var(--text); font-family:var(--font-mono); font-size:0.85rem; outline:none; }
-.cred-input:focus { border-color:var(--green); }
-.cred-note { font-size:0.75rem; color:var(--text4); margin-top:0.3rem; }
-.cred-skip { font-size:0.8rem; color:var(--text3); margin-top:1rem; }
-.cred-connected { background:var(--green-dim); border:1px solid #2a5a2a; border-radius:8px; padding:0.75rem 1rem; font-size:0.85rem; color:var(--green); margin-bottom:1.5rem; }
+/* ── Expanded Controls ──────────────────────────────────────── */
+.controls{margin-top:12px;padding-top:12px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:12px}
+.info-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+.info-cell{padding:8px;border-radius:8px;background:rgba(255,255,255,0.03)}
+.info-cell-label{font-size:11px;color:var(--text3);margin-bottom:2px}
+.info-cell-value{font-size:12px;color:var(--text2)}
+.sl-tp-row{display:flex;gap:8px}
+.sl-tp-box{flex:1;padding:10px;border-radius:8px}
+.sl-tp-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+.sl-tp-header span{font-size:12px}
+.sl-tp-value{font-size:14px;margin-bottom:8px}
+.sl-tp-btns{display:flex;gap:4px}
+.sl-tp-btn{flex:1;padding:5px;border-radius:4px;font-size:11px;opacity:0.6;transition:opacity 0.15s}
+.sl-tp-btn:hover{opacity:1}
+.btn-close-position{width:100%;padding:8px;border-radius:8px;font-size:12px;font-weight:500;background:var(--red-bg);color:var(--red);border:1px solid rgba(239,68,68,0.15);transition:background 0.15s}
+.btn-close-position:hover{background:rgba(239,68,68,0.2)}
 
-/* Build / loading step */
-.build-container { text-align:center; padding:2rem 0; }
-.spinner { width:48px; height:48px; border:4px solid var(--border); border-top-color:var(--green); border-radius:50%; animation:spin 0.8s linear infinite; margin:0 auto 1.5rem; }
-@keyframes spin { to { transform:rotate(360deg); } }
-.build-log { text-align:left; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:1rem; max-height:220px; overflow-y:auto; font-family:var(--font-mono); font-size:0.8rem; color:#aaa; margin-top:1.5rem; }
-.build-log div { padding:0.15rem 0; }
+/* ── Unmanaged Card ─────────────────────────────────────────── */
+.card.unmanaged{border-left:3px solid var(--yellow)}
+.card.unmanaged.poor{border-left-color:var(--red)}
+.card.unmanaged.good{border-left-color:var(--green)}
+.rating-badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;font-size:10px}
+.issues-box{padding:12px;border-radius:8px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.05)}
+.issues-title{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:500;color:var(--text2);margin-bottom:8px}
+.issues-title svg{width:11px;height:11px;opacity:0.4}
+.issue-item{font-size:12px;color:var(--text3);line-height:1.5;padding-left:12px;position:relative;margin-bottom:4px}
+.issue-item::before{content:"\2013";position:absolute;left:0;color:var(--text4)}
+.suggestion-btn{width:100%;text-align:left;padding:10px;border-radius:8px;display:flex;align-items:center;justify-content:space-between;transition:filter 0.15s;margin-bottom:6px}
+.suggestion-btn:hover{filter:brightness(1.15)}
+.suggestion-action{font-size:12px;font-weight:500}
+.suggestion-detail{font-size:11px;color:var(--text3);margin-top:2px}
 
-/* Buttons */
-.btn { padding:0.7rem 1.5rem; border:none; border-radius:8px; font-weight:600; cursor:pointer; font-size:0.9rem; transition:all 0.2s; }
-.btn-primary { background:var(--green); color:var(--bg); }
-.btn-primary:hover { background:#16a34a; }
-.btn-primary:disabled { opacity:0.3; cursor:not-allowed; }
-.btn-secondary { background:transparent; color:var(--text3); border:1px solid var(--border); }
-.btn-secondary:hover { border-color:var(--text3); }
-.btn-row { display:flex; justify-content:space-between; margin-top:2rem; }
+/* ── Add Token Card ─────────────────────────────────────────── */
+.card-add{background:transparent;border:1px dashed rgba(255,255,255,0.1);border-radius:var(--radius);min-height:160px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;cursor:pointer;transition:border-color 0.15s}
+.card-add:hover{border-color:rgba(255,255,255,0.2)}
+.add-icon{width:40px;height:40px;border-radius:50%;background:rgba(255,255,255,0.04);display:flex;align-items:center;justify-content:center}
+.add-icon svg{width:20px;height:20px;color:var(--text4)}
+.card-add span{font-size:12px;color:var(--text4)}
 
-/* ============================================================
-   DASHBOARD — 3-column layout
-   ============================================================ */
-.dashboard { display:none; min-height:100vh; flex-direction:column; }
-.dashboard.active { display:flex; }
+/* ── Empty State ────────────────────────────────────────────── */
+.empty-state{text-align:center;padding:64px 20px}
+.empty-icon{width:56px;height:56px;border-radius:16px;background:rgba(255,255,255,0.04);display:flex;align-items:center;justify-content:center;margin:0 auto 12px}
+.empty-icon svg{width:24px;height:24px;color:var(--text4)}
+.empty-title{font-size:14px;color:var(--text2);margin-bottom:4px}
+.empty-desc{font-size:12px;color:var(--text4);max-width:300px;margin:0 auto}
 
-/* -- Top status bar -- */
-.header { height:56px; border-bottom:1px solid var(--border); display:flex; align-items:center; padding:0 16px; background:var(--surface); flex-shrink:0; z-index:50; }
-.header-brand { display:flex; align-items:center; gap:10px; padding-right:20px; border-right:1px solid var(--border); }
-.header-brand .icon { width:28px; height:28px; background:#fff; display:flex; align-items:center; justify-content:center; border-radius:3px; font-weight:900; font-size:14px; color:#000; }
-.header-brand .name { font-weight:700; font-size:18px; letter-spacing:-0.5px; }
-.header-brand .name span { color:var(--text4); }
-.header-mode { display:flex; align-items:center; gap:8px; padding:0 20px; border-right:1px solid var(--border); }
-.mode-badge { padding:2px 10px; border-radius:3px; font-size:10px; font-weight:700; letter-spacing:1.5px; }
-.mode-sim { background:var(--blue-dim); color:var(--blue); border:1px solid rgba(59,130,246,0.3); }
-.mode-live { background:var(--red-dim); color:var(--red); border:1px solid rgba(239,68,68,0.3); }
-.header-stats { display:flex; flex:1; overflow-x:auto; }
-.stat-item { display:flex; flex-direction:column; padding:0 20px; border-right:1px solid var(--border); }
-.stat-item:last-child { border-right:none; }
-.stat-label { font-size:9px; text-transform:uppercase; letter-spacing:1.5px; color:var(--text4); font-weight:500; margin-bottom:2px; }
-.stat-value { font-family:var(--font-mono); font-size:13px; font-weight:700; white-space:nowrap; }
-.stat-sub { font-size:11px; color:var(--text4); font-family:var(--font-mono); margin-left:6px; }
-.header-right { display:flex; align-items:center; gap:12px; padding-left:16px; border-left:1px solid var(--border); }
-.header-controls { display:flex; align-items:center; gap:8px; }
-.btn-start { background:var(--green); color:var(--bg); padding:0.4rem 1rem; border:none; border-radius:var(--radius-sm); font-weight:700; cursor:pointer; font-size:0.8rem; }
-.btn-start:hover { background:#16a34a; }
-.btn-stop { background:var(--red); color:#fff; padding:0.4rem 1rem; border:none; border-radius:var(--radius-sm); font-weight:700; cursor:pointer; font-size:0.8rem; }
-.btn-stop:hover { background:#dc2626; }
-.btn-start:disabled,.btn-stop:disabled { opacity:0.3; cursor:not-allowed; }
-.icon-btn { background:none; border:1px solid var(--border); color:var(--text3); padding:0.35rem 0.75rem; border-radius:var(--radius-sm); cursor:pointer; font-size:0.75rem; }
-.icon-btn:hover { border-color:var(--text3); color:var(--text); }
-.test-btn { background:var(--blue-dim); border:1px solid rgba(59,130,246,0.3); color:var(--blue); }
-.test-btn:hover { background:rgba(59,130,246,0.15); }
-.test-btn:disabled { opacity:0.3; cursor:not-allowed; }
-.latency-box { display:flex; flex-direction:column; align-items:flex-end; }
-.latency-label { font-size:9px; color:var(--text4); font-family:var(--font-mono); letter-spacing:1px; }
-.latency-val { font-size:11px; font-family:var(--font-mono); color:var(--green); }
+/* ── Notification Panel ─────────────────────────────────────── */
+.notif-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:39;opacity:0;pointer-events:none;transition:opacity 0.3s}
+.notif-overlay.open{opacity:1;pointer-events:auto}
+.notif-panel{position:fixed;top:0;right:0;height:100%;width:380px;background:#0a0a0a;border-left:1px solid var(--border);z-index:40;transform:translateX(100%);transition:transform 0.3s ease;display:flex;flex-direction:column}
+.notif-panel.open{transform:translateX(0)}
+.notif-header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)}
+.notif-header-title{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600}
+.notif-header-title svg{width:16px;height:16px;color:var(--text2)}
+.notif-list{flex:1;overflow-y:auto;padding:12px}
+.notif-item{width:100%;text-align:left;padding:12px;border-radius:var(--radius);transition:background 0.15s;display:flex;align-items:flex-start;gap:10px;margin-bottom:4px}
+.notif-item:hover{background:rgba(255,255,255,0.02)}
+.notif-item.expanded{background:var(--green-bg)}
+.notif-item.expanded.type-info{background:var(--blue-bg)}
+.notif-item.expanded.type-system{background:var(--yellow-bg)}
+.notif-item.expanded.type-warning{background:var(--red-bg)}
+.notif-icon{width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:2px}
+.notif-icon svg{width:14px;height:14px}
+.notif-body{flex:1;min-width:0}
+.notif-title{font-size:12px;font-weight:500;color:rgba(255,255,255,0.8);line-height:1.4}
+.notif-meta{font-size:11px;color:var(--text4);margin-top:2px}
+.notif-chevron{width:14px;height:14px;color:var(--text4);flex-shrink:0;margin-top:2px;transition:transform 0.2s}
+.notif-item.expanded .notif-chevron{transform:rotate(90deg)}
+.why-card{margin-top:10px;padding:10px;border-radius:8px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.05)}
+.why-label{display:flex;align-items:center;gap:4px;font-size:11px;font-weight:500;margin-bottom:6px}
+.why-label svg{width:10px;height:10px}
+.why-text{font-size:12px;color:var(--text2);line-height:1.6}
 
-/* -- Error / thinking bars -- */
-.error-bar { background:#2a1515; border:1px solid #5a2020; color:var(--red); padding:0.5rem 16px; font-size:0.8rem; display:none; }
-.thinking-bar { padding:0.4rem 16px; font-size:0.78rem; color:var(--text4); border-bottom:1px solid var(--border); font-style:italic; display:flex; align-items:center; gap:0.5rem; min-height:1.75rem; }
-.thinking-bar::before { content:''; width:6px; height:6px; border-radius:50%; background:var(--yellow); animation:pulse 2s ease-in-out infinite; flex-shrink:0; }
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+/* ── Modal ──────────────────────────────────────────────────── */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.7);backdrop-filter:blur(8px);z-index:50;display:none;align-items:center;justify-content:center}
+.modal-overlay.open{display:flex}
+.modal{background:#111;border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:24px;width:100%;max-width:420px;max-height:80vh;overflow-y:auto}
+.modal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+.modal-head h3{font-size:15px;font-weight:600}
+.modal-subtitle{font-size:12px;color:var(--text3);margin:-8px 0 16px}
+.token-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.token-option{display:flex;align-items:center;gap:12px;padding:12px;border-radius:var(--radius);border:1px solid var(--border);text-align:left;transition:background 0.15s}
+.token-option:hover{background:rgba(255,255,255,0.03)}
+.token-option .token-icon{width:32px;height:32px;font-size:14px}
+.token-sym{font-size:13px;font-weight:500}
+.token-full{font-size:11px;color:var(--text3)}
+.strategy-list{display:flex;flex-direction:column;gap:8px}
+.strategy-option{padding:12px;border-radius:var(--radius);border:1px solid var(--border);text-align:left;transition:background 0.15s}
+.strategy-option:hover{background:rgba(255,255,255,0.03)}
+.strategy-header{display:flex;align-items:center;justify-content:space-between}
+.strategy-name{font-size:13px;font-weight:500}
+.risk-tag{font-size:11px;padding:2px 6px;border-radius:4px}
+.strategy-desc{font-size:12px;color:var(--text3);margin-top:4px;line-height:1.5}
 
-/* -- Main 3-column layout -- */
-.main-grid { display:flex; flex:1; overflow:hidden; }
+/* ── Settings Modal ─────────────────────────────────────────── */
+.settings-group{margin-bottom:16px}
+.settings-label{font-size:12px;color:var(--text3);margin-bottom:6px}
+.settings-slider{width:100%;accent-color:var(--green)}
+.settings-value{font-size:13px;text-align:right}
+.btn-save{width:100%;padding:10px;border-radius:8px;background:var(--green);color:#000;font-weight:600;font-size:13px;transition:opacity 0.15s}
+.btn-save:hover{opacity:0.9}
 
-/* Left panel: signals */
-.panel-left { width:280px; border-right:1px solid var(--border); display:flex; flex-direction:column; background:var(--surface); flex-shrink:0; overflow-y:auto; }
-.panel-header { padding:14px 16px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; }
-.panel-title { font-size:11px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:var(--text4); }
-.panel-dot { width:6px; height:6px; border-radius:50%; }
-.panel-dot.active { background:var(--green); box-shadow:0 0 8px var(--green-glow); }
-.panel-dot.scanning { background:var(--yellow); box-shadow:0 0 6px var(--yellow); animation:pulse 2s ease-in-out infinite; }
-.panel-dot.stopped { background:var(--text4); }
-.panel-body { padding:20px; display:flex; flex-direction:column; gap:20px; }
+/* ── Thinking bar ───────────────────────────────────────────── */
+.thinking-bar{padding:6px 20px;font-size:11px;color:var(--yellow);background:rgba(234,179,8,0.06);border-bottom:1px solid rgba(234,179,8,0.1);display:none;align-items:center;gap:8px;flex-shrink:0}
+.thinking-bar.visible{display:flex}
+.thinking-dot{width:6px;height:6px;border-radius:50%;background:var(--yellow);animation:pulse 1.5s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
 
-.bias-card { background:var(--surface3); padding:16px; border:1px solid var(--border); }
-.bias-label { font-size:10px; color:var(--text4); text-transform:uppercase; margin-bottom:4px; }
-.bias-value { font-size:28px; font-weight:900; letter-spacing:-1px; }
-.bias-meta { display:flex; justify-content:space-between; font-size:11px; color:var(--text3); margin-top:10px; }
-.bias-meta span:last-child { font-family:var(--font-mono); }
+/* ── Error bar ──────────────────────────────────────────────── */
+.error-bar{padding:8px 20px;font-size:12px;color:var(--red);background:rgba(239,68,68,0.06);border-bottom:1px solid rgba(239,68,68,0.1);display:none;flex-shrink:0}
+.error-bar.visible{display:block}
 
-.checklist-title { font-size:10px; font-weight:700; color:var(--text4); text-transform:uppercase; letter-spacing:1.5px; }
-.checklist { display:flex; flex-direction:column; gap:10px; margin-top:8px; }
-.check-item { display:flex; align-items:center; justify-content:space-between; font-size:12px; padding:2px 0; }
-.check-item.fail { color:var(--text4); text-decoration:line-through; }
-.check-item.pass { color:var(--text2); }
-.check-item.pending { color:var(--text3); }
-.dot { width:6px; height:6px; border-radius:50%; flex-shrink:0; }
-.dot-pass { background:var(--green); box-shadow:0 0 8px var(--green-glow); }
-.dot-fail { background:var(--red); }
-.dot-pending { background:var(--text4); animation:pulse 2s ease-in-out infinite; }
-
-.warning-card { padding:12px; background:var(--yellow-dim); border:1px solid rgba(234,179,8,0.15); border-radius:3px; }
-.warning-head { display:flex; align-items:center; gap:6px; margin-bottom:6px; color:rgba(234,179,8,0.7); font-size:10px; font-weight:700; text-transform:uppercase; }
-.warning-text { font-size:10px; line-height:1.5; color:rgba(234,179,8,0.6); font-weight:500; }
-
-/* Center panel: chart + thesis */
-.panel-center { flex:1; display:flex; flex-direction:column; overflow:hidden; min-width:0; }
-.chart-container { flex:1; position:relative; background:#080808; border-bottom:1px solid var(--border); overflow:hidden; min-height:200px; }
-.chart-label { position:absolute; top:16px; left:16px; z-index:10; font-size:12px; font-family:var(--font-mono); color:var(--text3); }
-.chart-label .price { color:#fff; margin-left:6px; }
-.chart-overlay { position:absolute; bottom:16px; right:16px; display:flex; gap:8px; z-index:10; }
-.chart-pill { padding:4px 10px; background:rgba(0,0,0,0.8); backdrop-filter:blur(8px); border:1px solid var(--border2); font-size:11px; font-family:var(--font-mono); border-radius:4px; color:var(--text3); }
-.chart-pill span { color:var(--text2); }
-
-/* Trade thesis card */
-.thesis-card { background:var(--surface); border-bottom:1px solid var(--border); padding:14px 20px; }
-.thesis-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
-.thesis-title { font-size:10px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:var(--text4); }
-.thesis-strategy { font-size:10px; font-family:var(--font-mono); color:var(--blue); background:var(--blue-dim); padding:2px 8px; border-radius:3px; border:1px solid rgba(59,130,246,0.2); }
-.thesis-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; margin-bottom:10px; }
-.thesis-item-label { font-size:9px; text-transform:uppercase; color:var(--text4); letter-spacing:1px; margin-bottom:2px; }
-.thesis-item-value { font-family:var(--font-mono); font-size:13px; font-weight:600; }
-.thesis-empty { font-size:12px; color:var(--text4); font-style:italic; padding:8px 0; }
-
-/* R-progress bar */
-.r-progress { margin-top:8px; }
-.r-bar-container { position:relative; height:20px; background:var(--surface3); border:1px solid var(--border); border-radius:2px; margin-top:6px; overflow:visible; }
-.r-info { display:flex; justify-content:space-between; font-size:9px; color:var(--text4); margin-top:4px; }
-
-.thesis-reasons { display:flex; flex-direction:column; gap:4px; padding-top:8px; border-top:1px solid var(--border); margin-top:8px; }
-.thesis-reasons-label { font-size:9px; text-transform:uppercase; color:var(--text4); letter-spacing:1px; margin-bottom:2px; }
-.reason { font-size:11px; color:var(--text3); padding-left:10px; border-left:2px solid var(--border); line-height:1.4; }
-
-/* Right panel: position & risk */
-.panel-right { width:300px; border-left:1px solid var(--border); display:flex; flex-direction:column; background:var(--surface); flex-shrink:0; overflow-y:auto; }
-.pos-block { padding:20px; }
-.pos-row { display:flex; justify-content:space-between; align-items:flex-end; }
-.pos-col { display:flex; flex-direction:column; gap:2px; }
-.pos-label { font-size:9px; text-transform:uppercase; color:var(--text4); letter-spacing:1px; }
-.pos-big { font-size:20px; font-weight:700; font-family:var(--font-mono); }
-.pos-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; padding:14px 0; border-top:1px solid var(--border); border-bottom:1px solid var(--border); margin-top:14px; }
-.pos-grid-label { font-size:9px; text-transform:uppercase; color:var(--text4); margin-bottom:2px; }
-.pos-grid-val { font-size:12px; font-family:var(--font-mono); color:var(--text2); }
-.risk-section { padding:0 20px 20px; }
-.risk-title { font-size:10px; font-weight:700; color:var(--text4); text-transform:uppercase; letter-spacing:1.5px; margin-bottom:14px; }
-.risk-row { margin-bottom:14px; }
-.risk-row-head { display:flex; justify-content:space-between; font-size:10px; margin-bottom:6px; }
-.risk-row-label { color:var(--text3); }
-.risk-row-val { font-family:var(--font-mono); color:var(--text4); }
-.risk-bar { height:3px; background:var(--border); border-radius:2px; overflow:hidden; }
-.risk-bar-fill { height:100%; background:var(--text4); border-radius:2px; }
-.kill-btn { width:calc(100% - 40px); margin:auto 20px 20px; padding:12px; border:1px solid rgba(239,68,68,0.25); background:rgba(239,68,68,0.06); color:var(--red); font-size:11px; font-weight:700; letter-spacing:2px; text-transform:uppercase; cursor:pointer; border-radius:3px; transition:background 0.2s; }
-.kill-btn:hover { background:rgba(239,68,68,0.12); }
-
-/* Account summary (equity) */
-.account-strip { display:flex; gap:2rem; align-items:baseline; padding:0.6rem 16px; border-bottom:1px solid var(--border); background:var(--bg); }
-.equity-big { font-size:1.4rem; font-weight:700; font-family:var(--font-mono); color:#fff; }
-.metric-inline { font-size:0.78rem; color:var(--text4); }
-.metric-inline span { color:var(--text2); font-family:var(--font-mono); }
-.pnl-pos { color:var(--green); }
-.pnl-neg { color:var(--red); }
-.updated { font-size:0.7rem; color:var(--text4); }
-
-/* Wallet bar */
-.wallet-bar { padding:0.35rem 16px; font-size:0.72rem; color:var(--text4); border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; }
-.wallet-addr { font-family:var(--font-mono); color:var(--text3); cursor:pointer; }
-.wallet-addr:hover { color:var(--text); }
-.copy-toast { font-size:0.65rem; color:var(--green); margin-left:0.5rem; opacity:0; transition:opacity 0.3s; }
-
-/* -- Bottom panel -- */
-.bottom-panel { border-top:1px solid var(--border); background:#080808; display:flex; flex-direction:column; flex-shrink:0; transition:height 0.3s ease; overflow:hidden; }
-.bottom-panel.collapsed { height:40px; }
-.bottom-panel.expanded { height:280px; }
-.bottom-bar { height:40px; padding:0 16px; display:flex; align-items:center; justify-content:space-between; cursor:pointer; flex-shrink:0; }
-.bottom-bar:hover { background:#111; }
-.bottom-left { display:flex; align-items:center; gap:16px; }
-.bottom-label { display:flex; align-items:center; gap:8px; font-size:10px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:var(--text4); }
-.bottom-preview { font-size:10px; font-family:var(--font-mono); color:var(--text4); max-width:400px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.bottom-right { display:flex; align-items:center; gap:16px; }
-.bottom-tabs { display:flex; gap:16px; }
-.bottom-tab { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:1.5px; color:var(--text4); background:none; border:none; cursor:pointer; padding:0; border-bottom:1px solid transparent; }
-.bottom-tab.active { color:#fff; border-bottom-color:#fff; }
-.chevron { font-size:12px; color:var(--text4); }
-.bottom-content { flex:1; overflow-y:auto; padding:12px 16px; font-family:var(--font-mono); font-size:11px; line-height:1.6; }
-.log-entry { display:flex; gap:12px; margin-bottom:2px; }
-.log-entry:hover .log-detail { color:#fff; }
-.log-time { color:var(--text4); flex-shrink:0; min-width:5rem; white-space:nowrap; }
-.log-tag { font-size:9px; text-transform:uppercase; padding:1px 6px; border-radius:2px; flex-shrink:0; border:1px solid; line-height:1.4; }
-.tag-order { color:var(--green); border-color:rgba(34,197,94,0.3); }
-.tag-signal { color:var(--blue); border-color:rgba(59,130,246,0.3); }
-.tag-system { color:var(--text4); border-color:var(--border); }
-.log-action { font-weight:600; min-width:5rem; }
-.log-action.act-buy,.log-action.act-test_buy_ok,.log-action.act-filled,.log-action.act-start { color:var(--green); }
-.log-action.act-sell,.log-action.act-test_sell_ok,.log-action.act-stop,.log-action.act-halt { color:var(--red); }
-.log-action.act-test_buy,.log-action.act-test_sell { color:var(--blue); }
-.log-action.act-rejected,.log-action.act-test_buy_fail,.log-action.act-test_sell_fail { color:var(--red); }
-.log-action.act-settings { color:var(--yellow); }
-.log-detail { color:var(--text4); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; transition:color 0.15s; }
-
-/* Pair switcher in bottom panel */
-.pair-switcher { display:flex; gap:8px; padding:4px 0; flex-wrap:wrap; }
-.pair-pill { display:flex; align-items:center; gap:8px; padding:8px 14px; background:var(--surface3); border:1px solid var(--border); border-radius:3px; cursor:pointer; transition:border-color 0.2s; }
-.pair-pill:hover { border-color:var(--text4); }
-.pair-pill.active { border-color:var(--green); background:var(--green-dim); }
-.pair-pill-name { font-size:12px; font-weight:700; }
-.pair-pill-pnl { font-size:11px; font-family:var(--font-mono); }
-.pair-pill-toggle { width:28px; height:16px; background:var(--border); border-radius:8px; cursor:pointer; border:none; position:relative; transition:background 0.2s; }
-.pair-pill-toggle.on { background:var(--green); }
-.pair-pill-toggle::after { content:''; position:absolute; top:2px; left:2px; width:12px; height:12px; background:#fff; border-radius:50%; transition:transform 0.2s; }
-.pair-pill-toggle.on::after { transform:translateX(12px); }
-
-/* Settings overlay */
-.settings-overlay { display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.7); z-index:100; justify-content:center; align-items:center; }
-.settings-overlay.open { display:flex; }
-.settings-panel { background:var(--surface2); border:1px solid var(--border); border-radius:12px; padding:2rem; max-width:480px; width:90%; max-height:90vh; overflow-y:auto; }
-.settings-panel h2 { font-size:1.2rem; margin-bottom:1.5rem; }
-.settings-close { float:right; background:none; border:none; color:var(--text3); font-size:1.2rem; cursor:pointer; }
-.settings-close:hover { color:var(--text); }
-
-/* Add pair modal */
-.modal-overlay { display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.7); z-index:100; justify-content:center; align-items:center; }
-.modal-overlay.open { display:flex; }
-.modal-panel { background:var(--surface2); border:1px solid var(--border); border-radius:12px; padding:2rem; max-width:440px; width:90%; }
-.modal-panel h2 { font-size:1.1rem; margin-bottom:1rem; }
-.modal-close { float:right; background:none; border:none; color:var(--text3); font-size:1.2rem; cursor:pointer; }
-
-/* Backtest results */
-.bt-results { font-size:0.85rem; margin-top:0.75rem; padding:0.75rem; background:var(--surface3); border:1px solid var(--border); border-radius:var(--radius-sm); }
-.bt-stat { display:flex; justify-content:space-between; padding:0.25rem 0; }
-.bt-stat-label { color:var(--text4); }
-.bt-stat-value { font-family:var(--font-mono); color:#ccc; }
-
-/* Engine float */
-.engine-float { position:fixed; bottom:48px; right:20px; display:flex; align-items:center; gap:8px; background:var(--border); padding:5px 12px; border-radius:20px; border:1px solid var(--border2); opacity:0.7; font-size:10px; font-family:var(--font-mono); color:var(--text2); pointer-events:none; z-index:40; }
-.engine-pulse { width:8px; height:8px; border-radius:50%; background:var(--yellow); animation:pulse 2s ease-in-out infinite; }
-
-/* SVG chart */
-.chart-svg { width:100%; height:100%; }
+/* ── Wizard (pre-setup) ─────────────────────────────────────── */
+.wizard-wrap{flex:1;display:flex;align-items:center;justify-content:center;padding:40px}
+.wizard{max-width:460px;width:100%;text-align:center}
+.wizard h2{font-size:20px;margin-bottom:8px}
+.wizard p{font-size:13px;color:var(--text3);margin-bottom:24px}
+.wizard-step{display:none}
+.wizard-step.active{display:block}
 </style>
 </head>
 <body>
 
-<!-- ======================== WIZARD (preserved exactly) ======================== -->
-<div id="wizard" class="wizard">
-  <div class="progress" id="progress"></div>
-  <div id="wizard-content"></div>
-</div>
-
-<!-- ======================== DASHBOARD — 3-column ======================== -->
-<div id="dashboard" class="dashboard">
-
-  <!-- TOP STATUS BAR -->
-  <header class="header">
-    <div class="header-brand">
-      <div class="icon">H</div>
-      <div class="name">HYPERBOT<span>.v2</span></div>
+<!-- ── Header ─────────────────────────────────────────────── -->
+<div class="header">
+  <div class="header-left">
+    <div class="logo">H</div>
+    <span class="brand">HYPERBOT</span>
+    <div class="badge" id="d-status-badge" style="background:rgba(255,255,255,0.06);color:#888">
+      <span class="badge-dot" style="background:#555"></span>
+      <span id="d-status-text">Stopped</span>
     </div>
-    <div class="header-mode">
-      <span id="d-status" class="mode-badge mode-sim">SIMULATION</span>
-      <span id="d-network" class="mode-badge" style="background:rgba(234,179,8,0.1);color:var(--yellow);border:1px solid rgba(234,179,8,0.2);font-size:9px">MAINNET</span>
-    </div>
-    <div class="header-stats">
-      <div class="stat-item">
-        <span class="stat-label">Active Pair</span>
-        <span class="stat-value" id="d-active-pair">&mdash;</span>
-      </div>
-      <div class="stat-item">
-        <span class="stat-label">Equity</span>
-        <div>
-          <span class="stat-value" id="d-equity">$&mdash;</span>
-          <span class="stat-sub" id="d-pnl"></span>
-        </div>
-      </div>
-      <div class="stat-item">
-        <span class="stat-label">Daily Limit</span>
-        <div>
-          <span class="stat-value" id="d-daily-loss" style="font-weight:500">$0</span>
-          <span class="stat-sub" id="d-daily-limit"></span>
-        </div>
-      </div>
-      <div class="stat-item">
-        <span class="stat-label">Status</span>
-        <span class="stat-value" id="d-status-label" style="color:var(--yellow)">Scanning</span>
-      </div>
-    </div>
-    <div class="header-right">
-      <button class="icon-btn test-btn" id="d-test-btn" onclick="testTrade()">Test Trade</button>
-      <div id="d-controls" class="header-controls" style="display:none">
-        <button id="d-btn-start" class="btn-start" onclick="startTrading()">Start</button>
-        <button id="d-btn-stop" class="btn-stop" onclick="stopTrading()" disabled>Stop</button>
-      </div>
-      <button class="icon-btn" onclick="openSettings()">Settings</button>
-      <div class="latency-box">
-        <span class="latency-label">LATENCY</span>
-        <span class="latency-val" id="d-latency">&mdash;</span>
-      </div>
-    </div>
-  </header>
-
-  <!-- Wallet bar -->
-  <div class="wallet-bar">
-    <span>Wallet: <span id="d-wallet-addr" class="wallet-addr" onclick="copyWallet()" title="Click to copy">&mdash;</span><span id="copy-toast" class="copy-toast">Copied!</span></span>
-    <span id="d-updated" class="updated"></span>
+    <div class="badge" id="d-mode-badge" style="background:rgba(59,130,246,0.12);color:#60a5fa">Simulation</div>
   </div>
-
-  <div id="d-thinking" class="thinking-bar" style="display:none"></div>
-  <div id="d-error" class="error-bar"></div>
-
-  <!-- MAIN 3-COLUMN LAYOUT -->
-  <div class="main-grid">
-
-    <!-- LEFT: LOGIC ENGINE / SIGNALS -->
-    <section class="panel-left">
-      <div class="panel-header">
-        <span class="panel-title">Logic Engine</span>
-        <span class="panel-dot scanning" id="d-engine-dot"></span>
-      </div>
-      <div class="panel-body" id="d-left-panel">
-        <div class="bias-card">
-          <div class="bias-label">Bias Signal</div>
-          <div class="bias-value" id="d-bias-dir" style="color:var(--text4)">&mdash;</div>
-          <div class="bias-meta">
-            <span>Confidence:</span>
-            <span id="d-bias-conf">&mdash;</span>
-          </div>
-        </div>
-        <div>
-          <div class="checklist-title">Signal Conditions</div>
-          <div class="checklist" id="d-checklist">
-            <div style="font-size:12px;color:var(--text4);font-style:italic">Waiting for signals...</div>
-          </div>
-        </div>
-        <div id="d-warning-area"></div>
-      </div>
-    </section>
-
-    <!-- CENTER: CHART + TRADE THESIS -->
-    <section class="panel-center">
-      <div class="chart-container" id="d-chart-area">
-        <div class="chart-label" id="d-chart-label">&mdash;</div>
-        <svg id="d-chart-svg" class="chart-svg" preserveAspectRatio="none">
-          <defs>
-            <linearGradient id="chartGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-              <stop offset="0%" stop-color="#22c55e" stop-opacity="0.12"/>
-              <stop offset="100%" stop-color="#22c55e" stop-opacity="0"/>
-            </linearGradient>
-            <linearGradient id="chartGradRed" x1="0%" y1="0%" x2="0%" y2="100%">
-              <stop offset="0%" stop-color="#ef4444" stop-opacity="0.12"/>
-              <stop offset="100%" stop-color="#ef4444" stop-opacity="0"/>
-            </linearGradient>
-          </defs>
-        </svg>
-        <div class="chart-overlay" id="d-chart-overlay"></div>
-      </div>
-
-      <!-- Trade thesis -->
-      <div class="thesis-card" id="d-thesis">
-        <div class="thesis-header">
-          <span class="thesis-title">Active Trade Thesis</span>
-          <span class="thesis-strategy" id="d-thesis-strategy">&mdash;</span>
-        </div>
-        <div class="thesis-empty" id="d-thesis-empty">No active position. Waiting for signal...</div>
-        <div id="d-thesis-content" style="display:none">
-          <div class="thesis-grid">
-            <div><div class="thesis-item-label">Entry</div><div class="thesis-item-value" id="d-thesis-entry" style="color:var(--text2)">&mdash;</div></div>
-            <div><div class="thesis-item-label">Stop Loss</div><div class="thesis-item-value" id="d-thesis-sl" style="color:var(--red)">&mdash;</div></div>
-            <div><div class="thesis-item-label">Take Profit</div><div class="thesis-item-value" id="d-thesis-tp" style="color:var(--green)">&mdash;</div></div>
-          </div>
-          <div class="r-progress" id="d-r-progress">
-            <div style="display:flex;justify-content:space-between;align-items:center">
-              <span style="font-size:9px;text-transform:uppercase;color:var(--text4);letter-spacing:1px">Trade Progress</span>
-              <span style="font-size:11px;font-family:var(--font-mono)" id="d-r-value">&mdash;</span>
-            </div>
-            <div class="r-bar-container" id="d-r-bar"></div>
-            <div class="r-info" id="d-r-info"></div>
-          </div>
-          <div class="thesis-reasons" id="d-thesis-reasons"></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- RIGHT: POSITION & RISK -->
-    <section class="panel-right">
-      <div class="panel-header">
-        <span class="panel-title">Exposure & Risk</span>
-        <span style="color:var(--text4);font-size:12px">&#128274;</span>
-      </div>
-      <div class="pos-block">
-        <div class="pos-row">
-          <div class="pos-col">
-            <span class="pos-label">Position</span>
-            <span class="pos-big" id="d-pos-size">&mdash;</span>
-          </div>
-          <div class="pos-col" style="text-align:right">
-            <span class="pos-label">Unrealized PnL</span>
-            <span class="pos-big" id="d-pos-pnl" style="color:var(--text4)">&mdash;</span>
-          </div>
-        </div>
-        <div class="pos-grid">
-          <div><div class="pos-grid-label">Entry Price</div><div class="pos-grid-val" id="d-pos-entry">&mdash;</div></div>
-          <div><div class="pos-grid-label">Liq. Price</div><div class="pos-grid-val" id="d-pos-liq" style="color:var(--red)">&mdash;</div></div>
-          <div><div class="pos-grid-label">Mark Price</div><div class="pos-grid-val" id="d-pos-mark">&mdash;</div></div>
-          <div><div class="pos-grid-label">Margin Used</div><div class="pos-grid-val" id="d-pos-margin">&mdash;</div></div>
-        </div>
-      </div>
-      <div class="risk-section">
-        <div class="risk-title">Control Limits</div>
-        <div class="risk-row">
-          <div class="risk-row-head">
-            <span class="risk-row-label">Daily Loss Limit</span>
-            <span class="risk-row-val" id="d-risk-daily">&mdash;</span>
-          </div>
-          <div class="risk-bar"><div class="risk-bar-fill" id="d-risk-daily-bar" style="width:0%"></div></div>
-        </div>
-        <div class="risk-row">
-          <div class="risk-row-head">
-            <span class="risk-row-label">Leverage</span>
-            <span class="risk-row-val" id="d-risk-lev" style="color:var(--text2)">&mdash;</span>
-          </div>
-        </div>
-        <div class="risk-row">
-          <div class="risk-row-head">
-            <span class="risk-row-label">Distance to Stop</span>
-            <span class="risk-row-val" id="d-risk-sl-dist" style="color:var(--red)">&mdash;</span>
-          </div>
-        </div>
-        <div class="risk-row">
-          <div class="risk-row-head">
-            <span class="risk-row-label">Distance to Target</span>
-            <span class="risk-row-val" id="d-risk-tp-dist" style="color:var(--green)">&mdash;</span>
-          </div>
-        </div>
-      </div>
-      <button class="kill-btn" onclick="stopTrading()">Emergency Kill-Switch</button>
-    </section>
+  <div class="header-right">
+    <div class="stat-block">
+      <div class="stat-label">Equity</div>
+      <div class="stat-value mono" id="d-equity">$0</div>
+    </div>
+    <div class="stat-block">
+      <div class="stat-label">Today</div>
+      <div class="stat-value mono" id="d-daily-pnl" style="color:var(--text3)">—</div>
+    </div>
+    <button class="icon-btn" id="btn-notif" onclick="toggleNotifs()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+      <span class="notif-dot" id="d-notif-count" style="display:none">0</span>
+    </button>
+    <button class="icon-btn" onclick="toggleSettings()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    </button>
+    <button class="btn-power" id="btn-startstop" onclick="toggleTrading()" style="background:rgba(34,197,94,0.15);color:var(--green)">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+      <span id="d-startstop-label">Start</span>
+    </button>
   </div>
-
-  <!-- BOTTOM PANEL -->
-  <footer class="bottom-panel collapsed" id="bottomPanel">
-    <div class="bottom-bar" onclick="toggleBottom()">
-      <div class="bottom-left">
-        <div class="bottom-label">&#9654; System Output</div>
-        <div class="bottom-preview" id="d-bottom-preview"></div>
-      </div>
-      <div class="bottom-right">
-        <div class="bottom-tabs" id="bottomTabs" style="display:none">
-          <button class="bottom-tab active" data-tab="logs" onclick="event.stopPropagation();switchTab('logs')">Logs</button>
-          <button class="bottom-tab" data-tab="pairs" onclick="event.stopPropagation();switchTab('pairs')">Pairs</button>
-          <button class="bottom-tab" data-tab="config" onclick="event.stopPropagation();switchTab('config')">Config</button>
-          <button class="bottom-tab" data-tab="backtest" onclick="event.stopPropagation();switchTab('backtest')">Backtest</button>
-        </div>
-        <span class="chevron" id="chevron">&#9650;</span>
-      </div>
-    </div>
-    <div class="bottom-content" id="tab-logs">
-      <div id="d-trade-log"><span style="color:var(--text4);font-size:0.85rem">No trades yet</span></div>
-    </div>
-    <div class="bottom-content" id="tab-pairs" style="display:none">
-      <div class="pair-switcher" id="d-pair-switcher"></div>
-    </div>
-    <div class="bottom-content" id="tab-config" style="display:none;color:var(--text4)">
-      <div id="d-config-view">Loading config...</div>
-    </div>
-    <div class="bottom-content" id="tab-backtest" style="display:none">
-      <div style="margin-bottom:8px"><button class="icon-btn" id="d-bt-btn" onclick="runBacktest()">90-Day Backtest</button></div>
-      <div id="d-backtest-results"></div>
-    </div>
-  </footer>
 </div>
 
-<!-- Engine running indicator -->
-<div class="engine-float" id="d-engine-float" style="display:none">
-  <span class="engine-pulse"></span>
-  <span id="d-engine-label">ENGINE RUNNING</span>
+<!-- ── Thinking / Error ───────────────────────────────────── -->
+<div class="thinking-bar" id="d-thinking"><span class="thinking-dot"></span><span id="d-thinking-text"></span></div>
+<div class="error-bar" id="d-error"></div>
+
+<!-- ── Summary Bar ────────────────────────────────────────── -->
+<div class="summary" id="d-summary">
+  <div class="summary-item"><span class="summary-dot" style="background:var(--green)"></span><span id="d-active-count">0 active</span></div>
+  <div class="summary-item"><span class="summary-dot" style="background:var(--blue)"></span><span id="d-watching-count">0 watching</span></div>
+  <span class="summary-sep">|</span>
+  <div class="summary-item">Open P&L: <span class="mono" id="d-open-pnl" style="color:var(--text3)">$0</span></div>
 </div>
 
-<!-- Add Pair modal (preserved) -->
-<div id="add-pair-overlay" class="modal-overlay" onclick="if(event.target===this)closeAddPair()">
-  <div class="modal-panel">
-    <button class="modal-close" onclick="closeAddPair()">&times;</button>
-    <h2>Add Trading Pair</h2>
-    <input class="pair-search" id="add-pair-search" type="text" placeholder="Search... (DOGE, AVAX, WIF...)" oninput="renderAddPairGrid()">
-    <div class="pair-grid" id="add-pair-grid" style="margin-bottom:1rem"></div>
-    <div id="add-pair-status" style="font-size:0.85rem;color:var(--text3);margin-bottom:1rem"></div>
-    <div class="btn-row" style="margin-top:1rem">
-      <button class="btn btn-secondary" onclick="closeAddPair()">Cancel</button>
-      <button class="btn btn-primary" id="add-pair-btn" disabled onclick="confirmAddPair()">Add Pair</button>
+<!-- ── Card Grid ──────────────────────────────────────────── -->
+<div class="grid-wrap" id="d-grid-wrap">
+  <div class="card-grid" id="d-card-grid"></div>
+  <div id="d-unmanaged-section" style="display:none">
+    <div class="section-label">
+      <svg viewBox="0 0 24 24" fill="none" stroke="var(--yellow)" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      <span>Positions on your account (not managed by Hyperbot)</span>
+    </div>
+    <div class="card-grid" id="d-unmanaged-grid"></div>
+  </div>
+  <div class="empty-state" id="d-empty" style="display:none">
+    <div class="empty-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></div>
+    <div class="empty-title">No tokens yet</div>
+    <div class="empty-desc">Pick a token and a strategy to get started. The bot will watch for opportunities and trade automatically.</div>
+  </div>
+</div>
+
+<!-- ── Notification Panel ─────────────────────────────────── -->
+<div class="notif-overlay" id="notif-overlay" onclick="toggleNotifs()"></div>
+<div class="notif-panel" id="notif-panel">
+  <div class="notif-header">
+    <div class="notif-header-title">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+      Activity & Insights
+    </div>
+    <button class="icon-btn" onclick="toggleNotifs()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+  <div class="notif-list" id="d-notif-list"></div>
+</div>
+
+<!-- ── Add Token Modal ────────────────────────────────────── -->
+<div class="modal-overlay" id="add-modal">
+  <div class="modal">
+    <div id="add-step-1">
+      <div class="modal-head">
+        <h3>Choose a token</h3>
+        <button class="btn-x" onclick="closeAddModal()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+      </div>
+      <div class="token-grid" id="d-token-list"></div>
+    </div>
+    <div id="add-step-2" style="display:none">
+      <div class="modal-head">
+        <h3>Pick a strategy for <span id="d-selected-coin"></span></h3>
+        <button class="btn-x" onclick="closeAddModal()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+      </div>
+      <p class="modal-subtitle">Each strategy has a different approach to finding trades.</p>
+      <div class="strategy-list" id="d-strategy-list"></div>
     </div>
   </div>
 </div>
 
-<!-- Settings overlay (preserved) -->
-<div id="settings-overlay" class="settings-overlay" onclick="if(event.target===this)closeSettings()">
-  <div class="settings-panel">
-    <button class="settings-close" onclick="closeSettings()">&times;</button>
-    <h2>Settings</h2>
-    <div class="risk-group">
-      <div class="risk-label"><span>Max leverage</span><span class="val" id="s-lev-val">4x</span></div>
-      <input type="range" id="s-leverage" min="1" max="10" step="0.5" value="4" oninput="document.getElementById('s-lev-val').textContent=this.value+'x'">
+<!-- ── Settings Modal ─────────────────────────────────────── -->
+<div class="modal-overlay" id="settings-modal">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>Settings</h3>
+      <button class="btn-x" onclick="toggleSettings()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
     </div>
-    <div class="risk-group">
-      <div class="risk-label"><span>Risk per trade</span><span class="val" id="s-rpt-val">1%</span></div>
-      <input type="range" id="s-risk" min="0.25" max="3" step="0.25" value="1" oninput="document.getElementById('s-rpt-val').textContent=this.value+'%'">
+    <div class="settings-group">
+      <div style="display:flex;justify-content:space-between"><span class="settings-label">Max Leverage</span><span class="settings-value mono" id="d-set-lev">4x</span></div>
+      <input type="range" class="settings-slider" id="set-lev" min="1" max="20" value="4" oninput="document.getElementById('d-set-lev').textContent=this.value+'x'">
     </div>
-    <div class="risk-group">
-      <div class="risk-label"><span>Daily loss limit</span><span class="val" id="s-dll-val">5%</span></div>
-      <input type="range" id="s-daily" min="1" max="20" step="0.5" value="5" oninput="document.getElementById('s-dll-val').textContent=this.value+'%'">
-      <div class="risk-help">Percentage of your perps account equity. Circuit breaker halts all trading if hit.</div>
+    <div class="settings-group">
+      <div style="display:flex;justify-content:space-between"><span class="settings-label">Risk per Trade</span><span class="settings-value mono" id="d-set-risk">1.0%</span></div>
+      <input type="range" class="settings-slider" id="set-risk" min="0.5" max="5" step="0.5" value="1" oninput="document.getElementById('d-set-risk').textContent=this.value+'%'">
     </div>
-    <h2 style="margin-top:1.5rem;font-size:1rem">Wallet</h2>
-    <div class="cred-group">
-      <label style="font-size:0.8rem;color:var(--text3)">Account address (holds your funds)</label>
-      <input class="cred-input" id="s-master-addr" type="text" placeholder="0x..." style="font-size:0.8rem">
-      <div class="cred-note">Your main Hyperliquid wallet — used for balance/position queries</div>
+    <div class="settings-group">
+      <div style="display:flex;justify-content:space-between"><span class="settings-label">Daily Loss Limit</span><span class="settings-value mono" id="d-set-daily">5.0%</span></div>
+      <input type="range" class="settings-slider" id="set-daily" min="1" max="15" step="0.5" value="5" oninput="document.getElementById('d-set-daily').textContent=this.value+'%'">
     </div>
-    <div class="cred-group">
-      <label style="font-size:0.8rem;color:var(--text3)">API wallet private key</label>
-      <input class="cred-input" id="s-api-key" type="password" placeholder="0x..." style="font-size:0.8rem">
-      <div class="cred-note">Leave blank to keep current key</div>
-    </div>
-    <div class="btn-row" style="margin-top:1.5rem">
-      <button class="btn btn-secondary" onclick="closeSettings()">Cancel</button>
-      <button class="btn btn-primary" onclick="saveSettings()">Save Changes</button>
-    </div>
+    <button class="btn-save" onclick="saveSettings()">Save Settings</button>
   </div>
 </div>
 
 <script>
-// ============================================================
-// WIZARD STATE (preserved exactly)
-// ============================================================
-const STEPS = ['pair','strategies','risk','credentials','build'];
-let currentStep = 0;
-let wizardData = {
-  symbol: '', coin: '', price: null,
-  selectedPairs: [],
-  strategies: [],
-  max_leverage: 4, risk_per_trade_pct: 1.0, max_daily_loss_pct: 5,
-  master_address: '', agent_private_key: '',
-};
+// ── State ────────────────────────────────────────────────────
+let expandedCard = null;
+let expandedNotif = null;
+let notifsOpen = false;
+let addModalCoin = null;
+let notifications = [];
+let lastState = null;
+let pollTimer = null;
 
-const TOP_PAIRS = [
-  {coin:'BTC',symbol:'BTCUSDT'}, {coin:'ETH',symbol:'ETHUSDT'},
-  {coin:'SOL',symbol:'SOLUSDT'}, {coin:'DOGE',symbol:'DOGEUSDT'},
-  {coin:'ARB',symbol:'ARBUSDT'}, {coin:'AVAX',symbol:'AVAXUSDT'},
-  {coin:'LINK',symbol:'LINKUSDT'}, {coin:'OP',symbol:'OPUSDT'},
-  {coin:'WIF',symbol:'WIFUSDT'},
-];
+// Token metadata (icon lookup)
+const TOKEN_ICONS = {
+  ETH:'\u039E',BTC:'\u20BF',SOL:'\u25CE',ARB:'A',DOGE:'D',AVAX:'Av',
+  LINK:'L',MATIC:'P',OP:'Op',PEPE:'Pe',WIF:'W',JUP:'J',TIA:'T',
+  INJ:'I',SUI:'S',APT:'Ap',SEI:'Se',STRK:'St',NEAR:'N',ATOM:'At',
+  DOT:'Dt',ADA:'Ad',XRP:'X',AAVE:'Aa',MKR:'Mk',UNI:'U',FTM:'F',
+  RENDER:'R',WLD:'Wl',PYTH:'Py',JTO:'Jt',BONK:'Bk',ORDI:'Or'
+};
+function tokenIcon(coin){return TOKEN_ICONS[coin]||coin.substring(0,2)}
 
 const STRATEGIES = [
-  {
-    id:'trend_pullback', name:'Trend Pullback', family:'Continuation',
-    confidence:'High', suitability:'High',
-    desc:'Buys dips in an uptrend. Waits for price to pull back toward the moving average, then enters when trend confirmation holds. Low-frequency, high-probability.',
-    timeframes:'1D, 4H, 1H', risk:'1.5% per trade, 4x max leverage',
-  },
-  {
-    id:'compression_breakout', name:'Compression Breakout', family:'Breakout',
-    confidence:'High', suitability:'High',
-    desc:'Detects tight Bollinger Band squeezes, then enters when price breaks out with volume expansion. Catches the start of big moves.',
-    timeframes:'4H, 1H, 15M', risk:'1.0% per trade, 4x max leverage',
-  },
-  {
-    id:'liquidity_sweep_reversal', name:'Liquidity Sweep Reversal', family:'Reversal',
-    confidence:'Medium', suitability:'Medium',
-    desc:'Watches for stop-hunts below support or above resistance. Enters the reversal after a sweep-and-reject candle pattern. Higher reward, lower frequency.',
-    timeframes:'4H, 1H, 15M', risk:'0.75% per trade, 3x max leverage',
-  },
+  {id:'trend_pullback',name:'Trend Follower',desc:'Rides momentum when multiple timeframes align in the same direction',risk:'Medium'},
+  {id:'compression_breakout',name:'Breakout Hunter',desc:'Catches big moves when price breaks key support or resistance levels',risk:'High'},
+  {id:'liquidity_sweep_reversal',name:'Mean Reversion',desc:'Buys dips and sells rips when price stretches too far from average',risk:'Low'},
 ];
 
-let pairPrices = {};
-let lastStateData = null;
-
-// ============================================================
-// RENDER WIZARD (preserved exactly)
-// ============================================================
-function renderProgress() {
-  const el = document.getElementById('progress');
-  el.innerHTML = STEPS.map((s,i) =>
-    `<div class="progress-dot ${i < currentStep ? 'done' : ''} ${i === currentStep ? 'active' : ''}"></div>`
-  ).join('');
+// ── API Helpers ──────────────────────────────────────────────
+async function api(path,method='GET',body=null){
+  const opts={method,headers:{'Content-Type':'application/json'}};
+  if(body)opts.body=JSON.stringify(body);
+  const r=await fetch(path,opts);
+  const data=await r.json();
+  if(!r.ok) throw new Error(data.error||`API error ${r.status}`);
+  return data;
 }
 
-function renderStep() {
-  renderProgress();
-  const el = document.getElementById('wizard-content');
-  switch(STEPS[currentStep]) {
-    case 'pair': return renderPairStep(el);
-    case 'strategies': return renderStrategyStep(el);
-    case 'risk': return renderRiskStep(el);
-    case 'credentials': return renderCredentialStep(el);
-    case 'build': return renderBuildStep(el);
-  }
+// ── Notification Engine ──────────────────────────────────────
+function addNotification(type,icon,title,why,token){
+  const id=Date.now()+Math.random();
+  notifications.unshift({id,time:new Date(),type,icon,title,why,token});
+  if(notifications.length>50)notifications.pop();
+  renderNotifications();
+  updateNotifCount();
 }
 
-function renderPairStep(el) {
-  el.innerHTML = `
-    <div class="step-title">Pick your trading pairs</div>
-    <div class="step-sub">Choose one or more assets to trade on Hyperliquid. You can monitor and trade multiple pairs simultaneously. Prices are live.</div>
-    <input class="pair-search" id="pair-search" type="text" placeholder="Search pairs... (BTC, ETH, SOL...)" oninput="filterPairs()">
-    <div class="pair-grid" id="pair-grid"></div>
-    <div id="pair-selected-summary" style="font-size:0.85rem;color:var(--text3);margin-bottom:1rem"></div>
-    <div class="btn-row">
-      <div></div>
-      <button class="btn btn-primary" id="pair-next" disabled onclick="nextStep()">Continue</button>
-    </div>
-  `;
-  fetchPrices();
-  renderPairGrid();
+function timeSince(d){
+  const s=Math.floor((Date.now()-d.getTime())/1000);
+  if(s<60)return 'just now';
+  if(s<3600)return Math.floor(s/60)+'m ago';
+  if(s<86400)return Math.floor(s/3600)+'h ago';
+  return Math.floor(s/86400)+'d ago';
 }
 
-async function fetchPrices() {
-  try {
-    const r = await fetch('/api/pairs');
-    pairPrices = await r.json();
-    renderPairGrid();
-  } catch(e) { console.error(e); }
+function updateNotifCount(){
+  const el=document.getElementById('d-notif-count');
+  const c=notifications.length;
+  if(c>0){el.style.display='flex';el.textContent=c>9?'9+':c}
+  else{el.style.display='none'}
 }
 
-function renderPairGrid() {
-  const search = (document.getElementById('pair-search')?.value || '').toUpperCase();
-  let pairs = TOP_PAIRS;
-  if (search) {
-    const allCoins = Object.keys(pairPrices);
-    const filtered = allCoins.filter(c => c.toUpperCase().includes(search)).slice(0,9);
-    pairs = filtered.map(c => ({coin:c, symbol:c+'USDT'}));
-  }
-  const grid = document.getElementById('pair-grid');
-  if (!grid) return;
-  const selectedCoins = wizardData.selectedPairs.map(p => p.coin);
-  grid.innerHTML = pairs.map(p => {
-    const price = pairPrices[p.coin];
-    const priceStr = price ? '$' + parseFloat(price).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}) : '...';
-    const sel = selectedCoins.includes(p.coin) ? 'selected' : '';
-    return `<div class="pair-card ${sel}" onclick="togglePair('${p.coin}','${p.symbol}')">
-      <div class="pair-name">${p.coin}</div>
-      <div class="pair-price">${priceStr}</div>
-    </div>`;
-  }).join('');
-  const summary = document.getElementById('pair-selected-summary');
-  if (summary) {
-    summary.textContent = selectedCoins.length ? 'Selected: ' + selectedCoins.join(', ') : '';
-  }
-}
-function filterPairs() { renderPairGrid(); }
-
-function togglePair(coin, symbol) {
-  const idx = wizardData.selectedPairs.findIndex(p => p.coin === coin);
-  if (idx >= 0) {
-    wizardData.selectedPairs.splice(idx, 1);
-  } else {
-    wizardData.selectedPairs.push({coin, symbol});
-  }
-  if (wizardData.selectedPairs.length > 0) {
-    wizardData.coin = wizardData.selectedPairs[0].coin;
-    wizardData.symbol = wizardData.selectedPairs[0].symbol;
-    wizardData.price = pairPrices[wizardData.selectedPairs[0].coin] ? parseFloat(pairPrices[wizardData.selectedPairs[0].coin]) : null;
-  } else {
-    wizardData.coin = '';
-    wizardData.symbol = '';
-  }
-  renderPairGrid();
-  document.getElementById('pair-next').disabled = wizardData.selectedPairs.length === 0;
-}
-
-function renderStrategyStep(el) {
-  el.innerHTML = `
-    <div class="step-title">Select your strategies</div>
-    <div class="step-sub">Pick one or more. Each strategy watches for different market conditions. Running multiple gives broader coverage.</div>
-    <div id="strat-list"></div>
-    <div class="btn-row">
-      <button class="btn btn-secondary" onclick="prevStep()">Back</button>
-      <button class="btn btn-primary" id="strat-next" disabled onclick="nextStep()">Continue</button>
-    </div>
-  `;
-  renderStratList();
-}
-
-function renderStratList() {
-  const el = document.getElementById('strat-list');
-  el.innerHTML = STRATEGIES.map(s => {
-    const sel = wizardData.strategies.includes(s.id) ? 'selected' : '';
-    const tagClass = s.confidence === 'High' ? 'tag-high' : 'tag-med';
-    return `<div class="strat-card ${sel}" onclick="toggleStrategy('${s.id}')">
-      <div class="strat-name">${s.name} <span class="strat-tag ${tagClass}">${s.confidence} confidence</span></div>
-      <div class="strat-desc">${s.desc}</div>
-      <div class="strat-meta">
-        <span>${s.family}</span>
-        <span>Timeframes: ${s.timeframes}</span>
-        <span>Default: ${s.risk}</span>
-      </div>
-    </div>`;
-  }).join('');
-}
-
-function toggleStrategy(id) {
-  const idx = wizardData.strategies.indexOf(id);
-  if (idx >= 0) wizardData.strategies.splice(idx,1);
-  else wizardData.strategies.push(id);
-  renderStratList();
-  document.getElementById('strat-next').disabled = wizardData.strategies.length === 0;
-}
-
-function renderRiskStep(el) {
-  el.innerHTML = `
-    <div class="step-title">Set your risk parameters</div>
-    <div class="step-sub">These limits protect your capital. You can always change them later in operator-policy.json.</div>
-    <div class="risk-group">
-      <div class="risk-label"><span>Max leverage</span><span class="val" id="lev-val">${wizardData.max_leverage}x</span></div>
-      <input type="range" min="1" max="10" step="0.5" value="${wizardData.max_leverage}" oninput="wizardData.max_leverage=parseFloat(this.value);document.getElementById('lev-val').textContent=this.value+'x'">
-      <div class="risk-help">How much your position size can be multiplied. 1x = no leverage. Higher leverage = higher risk and reward.</div>
-    </div>
-    <div class="risk-group">
-      <div class="risk-label"><span>Risk per trade</span><span class="val" id="rpt-val">${wizardData.risk_per_trade_pct}%</span></div>
-      <input type="range" min="0.25" max="3" step="0.25" value="${wizardData.risk_per_trade_pct}" oninput="wizardData.risk_per_trade_pct=parseFloat(this.value);document.getElementById('rpt-val').textContent=this.value+'%'">
-      <div class="risk-help">Percentage of your account risked on each trade. 1% means a losing trade costs 1% of your equity.</div>
-    </div>
-    <div class="risk-group">
-      <div class="risk-label"><span>Daily loss limit</span><span class="val" id="dll-val">${wizardData.max_daily_loss_pct}%</span></div>
-      <input type="range" min="1" max="20" step="0.5" value="${wizardData.max_daily_loss_pct}" oninput="wizardData.max_daily_loss_pct=parseFloat(this.value);document.getElementById('dll-val').textContent=this.value+'%'">
-      <div class="risk-help">Percentage of your perps account equity. Circuit breaker halts all trading if daily losses reach this %.</div>
-    </div>
-    <div class="btn-row">
-      <button class="btn btn-secondary" onclick="prevStep()">Back</button>
-      <button class="btn btn-primary" onclick="nextStep()">Continue</button>
-    </div>
-  `;
-}
-
-function renderCredentialStep(el) {
-  fetch('/api/credential-status').then(r=>r.json()).then(s => {
-    if (s.connected) {
-      el.innerHTML = `
-        <div class="step-title">Wallet connected</div>
-        <div class="step-sub">Your Hyperliquid API wallet is already configured.</div>
-        <div class="cred-connected">Connected: ${s.master_address}</div>
-        <div class="btn-row">
-          <button class="btn btn-secondary" onclick="prevStep()">Back</button>
-          <button class="btn btn-primary" onclick="nextStep()">Continue with this wallet</button>
-        </div>
-        <div class="cred-skip" style="margin-top:1.5rem"><a href="#" onclick="showCredentialForm();return false">Use a different wallet</a></div>
-      `;
-    } else {
-      showCredentialForm();
-    }
-  }).catch(() => showCredentialForm());
-}
-
-function showCredentialForm() {
-  const el = document.getElementById('wizard-content');
-  el.innerHTML = `
-    <div class="step-title">Connect your wallet</div>
-    <div class="step-sub">
-      Go to <a href="https://app.hyperliquid.xyz/API" target="_blank">app.hyperliquid.xyz/API</a> to create an API wallet.
-      You need two things from that page:
-    </div>
-    <div class="cred-group">
-      <label style="color:var(--text);font-weight:600">Your account address (the one that holds your funds)</label>
-      <input class="cred-input" id="cred-addr" type="text" placeholder="0x5d87..." oninput="validateCreds()">
-      <div class="cred-note">This is your <b>main wallet</b> address shown in the top-right of Hyperliquid (e.g. 0x5d87...8290). NOT the API wallet address. This is used to read your balances and positions.</div>
-    </div>
-    <div class="cred-group">
-      <label style="color:var(--text);font-weight:600">API wallet private key</label>
-      <input class="cred-input" id="cred-key" type="password" placeholder="0x..." oninput="validateCreds()">
-      <div class="cred-note">The private key shown when you created the API wallet (starts with 0x, 66 characters). This key can only trade — it cannot withdraw your funds. Stored in macOS Keychain only.</div>
-    </div>
-    <div id="cred-error" style="color:var(--red);font-size:0.85rem;margin-top:1rem;padding:0.75rem;border-radius:8px;background:#2a1515;display:none"></div>
-    <div class="btn-row">
-      <button class="btn btn-secondary" onclick="prevStep()">Back</button>
-      <button class="btn btn-primary" id="cred-next" disabled onclick="saveCreds()">Save & Continue</button>
-    </div>
-  `;
-}
-
-function validateCreds() {
-  const addr = document.getElementById('cred-addr').value.trim();
-  const key = document.getElementById('cred-key').value.trim();
-  const addrOk = addr.startsWith('0x') && addr.length === 42;
-  const keyOk = key.startsWith('0x') && key.length === 66;
-  document.getElementById('cred-next').disabled = !(addrOk && keyOk);
-}
-
-async function saveCreds() {
-  const addr = document.getElementById('cred-addr').value.trim();
-  const key = document.getElementById('cred-key').value.trim();
-  document.getElementById('cred-next').disabled = true;
-  document.getElementById('cred-next').textContent = 'Saving...';
-  try {
-    const r = await fetch('/api/save-credentials', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({master_address:addr, agent_private_key:key})
-    });
-    const res = await r.json();
-    if (res.ok) {
-      wizardData.master_address = addr;
-      if (res.verify && res.verify.startsWith('Warning')) {
-        document.getElementById('cred-error').textContent = res.verify;
-        document.getElementById('cred-error').style.display = 'block';
-        document.getElementById('cred-error').style.background = '#3a3a1a';
-        document.getElementById('cred-error').style.color = '#facc15';
-        document.getElementById('cred-next').disabled = false;
-        document.getElementById('cred-next').textContent = 'Continue Anyway';
-        document.getElementById('cred-next').onclick = function(){ nextStep(); };
-        return;
-      }
-      nextStep();
-    } else {
-      document.getElementById('cred-error').textContent = res.error || 'Failed to save';
-      document.getElementById('cred-error').style.display = 'block';
-      document.getElementById('cred-next').disabled = false;
-      document.getElementById('cred-next').textContent = 'Save & Continue';
-    }
-  } catch(e) {
-    document.getElementById('cred-error').textContent = 'Connection error';
-    document.getElementById('cred-error').style.display = 'block';
-    document.getElementById('cred-next').disabled = false;
-    document.getElementById('cred-next').textContent = 'Save & Continue';
-  }
-}
-
-function renderBuildStep(el) {
-  el.innerHTML = `
-    <div class="build-container">
-      <div class="spinner" id="build-spinner"></div>
-      <div class="step-title" id="build-title">Building your workspace</div>
-      <div class="step-sub" id="build-sub">Fetching 90-day price data, profiling strategies, and setting up your ${wizardData.selectedPairs.map(p=>p.coin).join(', ')} trading workspace...</div>
-      <div class="build-log" id="build-log"></div>
-    </div>
-  `;
-  fetch('/api/build', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({
-      symbol: wizardData.symbol,
-      coin: wizardData.coin,
-      pairs: wizardData.selectedPairs.map(p => ({coin: p.coin, symbol: p.symbol})),
-      strategies: wizardData.strategies,
-      max_leverage: wizardData.max_leverage,
-      risk_per_trade_pct: wizardData.risk_per_trade_pct,
-      max_daily_loss_pct: wizardData.max_daily_loss_pct,
-    })
-  });
-  pollBuild();
-}
-
-async function pollBuild() {
-  try {
-    const r = await fetch('/api/build-status');
-    const s = await r.json();
-    const logEl = document.getElementById('build-log');
-    if (logEl) {
-      logEl.innerHTML = s.log.map(l => `<div>${l}</div>`).join('');
-      logEl.scrollTop = logEl.scrollHeight;
-    }
-    if (s.status === 'done') {
-      document.getElementById('build-spinner').style.display = 'none';
-      document.getElementById('build-title').textContent = 'Workspace ready';
-      const pairNames = wizardData.selectedPairs.length > 1 ? wizardData.selectedPairs.map(p=>p.coin).join(', ') : wizardData.coin;
-      document.getElementById('build-sub').textContent = `Your ${pairNames} trading bot is configured and monitoring the market.`;
-      setTimeout(() => {
-        document.getElementById('wizard').classList.add('wizard-hide');
-        document.getElementById('dashboard').classList.add('active');
-        startDashboardPoll();
-      }, 1500);
-      return;
-    }
-    if (s.status === 'error') {
-      document.getElementById('build-spinner').style.display = 'none';
-      document.getElementById('build-title').textContent = 'Build failed';
-      document.getElementById('build-sub').innerHTML = 'Check the log below. <a href="#" onclick="renderBuildStep(document.getElementById(\'wizard-content\'));return false">Retry</a>';
-      return;
-    }
-  } catch(e) { console.error(e); }
-  setTimeout(pollBuild, 1000);
-}
-
-function nextStep() {
-  if (currentStep < STEPS.length - 1) { currentStep++; renderStep(); }
-}
-function prevStep() {
-  if (currentStep > 0) { currentStep--; renderStep(); }
-}
-
-// ============================================================
-// DASHBOARD — 3-column renderers
-// ============================================================
-let prevPrices = {};
-let pairSettingsTimers = {};
-let activeCoin = '';
-let priceHistory = []; // for the PnL chart
-
-function fmtPrice(v) {
-  if (!v) return '\u2014';
-  return '$' + parseFloat(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
-}
-function humanName(id) { return id.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()); }
-
-function copyWallet() {
-  const addr = document.getElementById('d-wallet-addr').textContent;
-  if (addr && addr !== '\u2014') {
-    navigator.clipboard.writeText(addr).then(() => {
-      const toast = document.getElementById('copy-toast');
-      toast.style.opacity = '1';
-      setTimeout(() => toast.style.opacity = '0', 1500);
-    });
-  }
-}
-
-function pairSettingChanged(coin, field, value) {
-  const key = coin + '_' + field;
-  clearTimeout(pairSettingsTimers[key]);
-  pairSettingsTimers[key] = setTimeout(() => {
-    const body = {coin};
-    body[field] = parseFloat(value);
-    fetch('/api/pair-settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
-  }, 400);
-}
-
-function togglePairEnabled(coin, currentlyEnabled) {
-  fetch('/api/pair-settings', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({coin, enabled: !currentlyEnabled})
-  }).then(() => dashPoll());
-}
-
-function switchActivePair(coin) {
-  activeCoin = coin;
-  priceHistory = []; // reset chart data for new pair
-  dashPoll();
-}
-
-// ============================================================
-// RENDER LEFT PANEL — signals for active pair
-// ============================================================
-function renderLeftPanel(ps, allSignals) {
-  const signals = ps.last_signals || allSignals || [];
-  const dotEl = document.getElementById('d-engine-dot');
-
-  // Find strongest signal
-  let bestSig = null;
-  let bestConf = 0;
-  for (const sig of signals) {
-    if (sig.direction !== 'none' && sig.confidence > bestConf) {
-      bestSig = sig;
-      bestConf = sig.confidence;
-    }
-  }
-
-  // Bias
-  const biasEl = document.getElementById('d-bias-dir');
-  const confEl = document.getElementById('d-bias-conf');
-  if (bestSig) {
-    const isLong = bestSig.direction === 'buy';
-    biasEl.textContent = isLong ? 'LONG' : 'SHORT';
-    biasEl.style.color = isLong ? 'var(--green)' : 'var(--red)';
-    confEl.textContent = (bestConf * 100).toFixed(0) + '%';
-  } else {
-    biasEl.textContent = 'NEUTRAL';
-    biasEl.style.color = 'var(--text4)';
-    confEl.textContent = '\u2014';
-  }
-
-  // Checklist — show reasons from all signals
-  const checkEl = document.getElementById('d-checklist');
-  if (signals.length > 0) {
-    let items = [];
-    for (const sig of signals) {
-      if (!sig.reasons) continue;
-      for (const r of sig.reasons) {
-        // Determine pass/fail from reason text
-        const isFail = r.toLowerCase().includes('no ') || r.toLowerCase().includes('not ') || r.toLowerCase().includes('below') || r.toLowerCase().includes('weak');
-        items.push(`<div class="check-item ${isFail ? 'fail' : 'pass'}">
-          <span>${r}</span>
-          <span class="dot ${isFail ? 'dot-fail' : 'dot-pass'}"></span>
-        </div>`);
-      }
-    }
-    if (items.length > 0) {
-      checkEl.innerHTML = items.join('');
-    } else {
-      // Show signal names/directions as fallback
-      checkEl.innerHTML = signals.map(sig => {
-        const dc = sig.direction === 'buy' ? 'pass' : sig.direction === 'sell' ? 'pass' : 'pending';
-        return `<div class="check-item ${dc}">
-          <span>${humanName(sig.strategy_id || sig.pack_id || 'unknown')}: ${sig.direction.toUpperCase()}</span>
-          <span class="dot dot-${dc === 'pass' ? 'pass' : 'pending'}"></span>
-        </div>`;
-      }).join('');
-    }
-  } else {
-    checkEl.innerHTML = '<div style="font-size:12px;color:var(--text4);font-style:italic">Waiting for signals...</div>';
-  }
-}
-
-// ============================================================
-// RENDER CENTER — chart + thesis
-// ============================================================
-function renderChart(price, entryPrice, slPrice, tpPrice) {
-  const svg = document.getElementById('d-chart-svg');
-  const container = svg.parentElement;
-  const w = container.clientWidth;
-  const h = container.clientHeight;
-  if (w < 10 || h < 10) return;
-  svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
-
-  // Track price history
-  if (price) {
-    priceHistory.push(price);
-    if (priceHistory.length > 120) priceHistory.shift();
-  }
-  if (priceHistory.length < 2) {
-    svg.innerHTML = svg.querySelector('defs').outerHTML;
-    return;
-  }
-
-  const pts = priceHistory;
-  const hasPosition = entryPrice && entryPrice > 0;
-  const allVals = [...pts];
-  if (hasPosition) {
-    if (slPrice) allVals.push(slPrice);
-    if (tpPrice) allVals.push(tpPrice);
-    allVals.push(entryPrice);
-  }
-  const minP = Math.min(...allVals) * 0.999;
-  const maxP = Math.max(...allVals) * 1.001;
-  const pad = 30;
-  const cW = w - pad * 2;
-  const cH = h - pad * 2;
-
-  function x(i) { return pad + (i / (pts.length - 1)) * cW; }
-  function y(p) { return pad + (1 - (p - minP) / (maxP - minP)) * cH; }
-
-  const isUp = pts[pts.length - 1] >= (entryPrice || pts[0]);
-  const gradId = isUp ? 'chartGrad' : 'chartGradRed';
-  const lineColor = isUp ? '#22c55e' : '#ef4444';
-
-  let svgC = '';
-  // Grid
-  for (let i = 0; i < 4; i++) {
-    const gy = pad + (i / 3) * cH;
-    svgC += `<line x1="${pad}" y1="${gy}" x2="${w-pad}" y2="${gy}" stroke="var(--border)" stroke-width="0.5"/>`;
-  }
-
-  // SL/TP lines if in position
-  if (hasPosition) {
-    if (slPrice) {
-      const slY = y(slPrice);
-      svgC += `<line x1="${pad}" y1="${slY}" x2="${w-pad}" y2="${slY}" stroke="var(--red)" stroke-width="1" stroke-dasharray="4 3" opacity="0.5"/>`;
-      svgC += `<text x="${w-pad+4}" y="${slY+4}" font-family="var(--font-mono)" font-size="9" fill="var(--red)" opacity="0.6">SL</text>`;
-    }
-    if (tpPrice) {
-      const tpY = y(tpPrice);
-      svgC += `<line x1="${pad}" y1="${tpY}" x2="${w-pad}" y2="${tpY}" stroke="var(--green)" stroke-width="1" stroke-dasharray="4 3" opacity="0.5"/>`;
-      svgC += `<text x="${w-pad+4}" y="${tpY+4}" font-family="var(--font-mono)" font-size="9" fill="var(--green)" opacity="0.6">TP</text>`;
-    }
-    // Entry line
-    const eY = y(entryPrice);
-    svgC += `<line x1="${pad}" y1="${eY}" x2="${w-pad}" y2="${eY}" stroke="var(--text4)" stroke-width="1" stroke-dasharray="6 4"/>`;
-    svgC += `<text x="${pad+4}" y="${eY-6}" font-family="var(--font-mono)" font-size="9" fill="var(--text4)">Entry ${entryPrice.toFixed(2)}</text>`;
-  }
-
-  // Area fill
-  let areaPath = `M ${x(0)},${h-pad}`;
-  for (let i = 0; i < pts.length; i++) areaPath += ` L ${x(i)},${y(pts[i])}`;
-  areaPath += ` L ${x(pts.length-1)},${h-pad} Z`;
-  svgC += `<path d="${areaPath}" fill="url(#${gradId})"/>`;
-
-  // Line
-  let linePath = `M ${x(0)},${y(pts[0])}`;
-  for (let i = 1; i < pts.length; i++) linePath += ` L ${x(i)},${y(pts[i])}`;
-  svgC += `<path d="${linePath}" fill="none" stroke="${lineColor}" stroke-width="2"/>`;
-
-  // Current dot
-  const lx = x(pts.length - 1);
-  const ly = y(pts[pts.length - 1]);
-  svgC += `<circle cx="${lx}" cy="${ly}" r="4" fill="${lineColor}" opacity="0.9"/>`;
-  svgC += `<circle cx="${lx}" cy="${ly}" r="7" fill="none" stroke="${lineColor}" opacity="0.3" stroke-width="1.5"/>`;
-
-  const defs = svg.querySelector('defs').outerHTML;
-  svg.innerHTML = defs + svgC;
-}
-
-function renderThesis(ps, position, signals) {
-  const emptyEl = document.getElementById('d-thesis-empty');
-  const contentEl = document.getElementById('d-thesis-content');
-  const stratEl = document.getElementById('d-thesis-strategy');
-
-  if (!position) {
-    emptyEl.style.display = '';
-    contentEl.style.display = 'none';
-    stratEl.textContent = '\u2014';
-    return;
-  }
-
-  const entry = parseFloat(position.entry_price);
-  const currentPrice = ps.last_price || entry;
-  const sz = parseFloat(position.size);
-  const isLong = sz > 0;
-
-  // Find matching signal with SL/TP
-  let sl = null, tp = null, reasons = [], stratName = '';
-  const sigs = ps.last_signals || signals || [];
-  for (const sig of sigs) {
-    if (sig.direction === (isLong ? 'buy' : 'sell') && sig.stop_loss && sig.take_profit) {
-      sl = sig.stop_loss;
-      tp = sig.take_profit;
-      reasons = sig.reasons || [];
-      stratName = sig.strategy_id || sig.pack_id || '';
-      break;
-    }
-  }
-  // Fallback: use any signal with SL/TP
-  if (!sl) {
-    for (const sig of sigs) {
-      if (sig.stop_loss && sig.take_profit) {
-        sl = sig.stop_loss;
-        tp = sig.take_profit;
-        reasons = sig.reasons || [];
-        stratName = sig.strategy_id || sig.pack_id || '';
-        break;
-      }
-    }
-  }
-
-  emptyEl.style.display = 'none';
-  contentEl.style.display = '';
-  stratEl.textContent = stratName ? humanName(stratName) : '\u2014';
-
-  document.getElementById('d-thesis-entry').textContent = entry.toFixed(3);
-  document.getElementById('d-thesis-sl').textContent = sl ? parseFloat(sl).toFixed(3) : '\u2014';
-  document.getElementById('d-thesis-tp').textContent = tp ? parseFloat(tp).toFixed(3) : '\u2014';
-
-  // R-multiple progress
-  if (sl && tp) {
-    const slVal = parseFloat(sl);
-    const tpVal = parseFloat(tp);
-    const riskDist = Math.abs(entry - slVal);
-    const rewardDist = Math.abs(tpVal - entry);
-    const totalRange = riskDist + rewardDist;
-    const priceDist = isLong ? (currentPrice - entry) : (entry - currentPrice);
-    const rMultiple = riskDist > 0 ? priceDist / riskDist : 0;
-    const pctFromEntry = entry > 0 ? ((currentPrice - entry) / entry * 100) : 0;
-
-    const rValueEl = document.getElementById('d-r-value');
-    rValueEl.textContent = (rMultiple >= 0 ? '+' : '') + rMultiple.toFixed(2) + 'R';
-    rValueEl.style.color = rMultiple >= 0 ? 'var(--green)' : 'var(--red)';
-
-    // Bar: SL at 0%, Entry at risk/(risk+reward), current somewhere between
-    const entryPct = (riskDist / totalRange * 100);
-    const currentPct = ((riskDist + priceDist) / totalRange * 100);
-    const clampedPct = Math.max(0, Math.min(100, currentPct));
-
-    const barEl = document.getElementById('d-r-bar');
-    barEl.innerHTML = `
-      <div style="position:absolute;left:0;top:0;bottom:0;width:${entryPct}%;background:rgba(239,68,68,0.06);border-right:1px dashed rgba(239,68,68,0.3)"></div>
-      <div style="position:absolute;left:${entryPct}%;top:-4px;bottom:-4px;width:1px;border-left:1px dashed var(--text4)"></div>
-      <div style="position:absolute;left:${clampedPct}%;top:-4px;bottom:-4px;width:2px;background:var(--text);border-radius:1px;transform:translateX(-50%)"></div>
-      <div style="position:absolute;left:4px;top:50%;transform:translateY(-50%);font-size:8px;font-family:var(--font-mono);color:var(--red);opacity:0.7">SL ${slVal.toFixed(2)}</div>
-      <div style="position:absolute;right:4px;top:50%;transform:translateY(-50%);font-size:8px;font-family:var(--font-mono);color:var(--green);opacity:0.7">TP ${tpVal.toFixed(2)}</div>
-    `;
-
-    const rrRatio = riskDist > 0 ? (rewardDist / riskDist).toFixed(1) : '\u2014';
-    document.getElementById('d-r-info').innerHTML = `
-      <span>Risk: ${(pctFromEntry < 0 ? '' : '-')}${(riskDist / entry * 100).toFixed(2)}%</span>
-      <span>Reward: +${(rewardDist / entry * 100).toFixed(2)}% &middot; ${rrRatio}R target</span>
-    `;
-  }
-
-  // Reasons
-  const reasonsEl = document.getElementById('d-thesis-reasons');
-  if (reasons.length > 0) {
-    reasonsEl.innerHTML = '<span class="thesis-reasons-label">Signal Reasons</span>' +
-      reasons.map(r => `<div class="reason">${r}</div>`).join('');
-    reasonsEl.style.display = '';
-  } else {
-    reasonsEl.style.display = 'none';
-  }
-
-  return {sl: sl ? parseFloat(sl) : null, tp: tp ? parseFloat(tp) : null};
-}
-
-// ============================================================
-// RENDER RIGHT PANEL — position & risk
-// ============================================================
-function renderRightPanel(ps, position, slPrice, tpPrice, s) {
-  const price = ps.last_price;
-
-  if (!position) {
-    document.getElementById('d-pos-size').textContent = 'No position';
-    document.getElementById('d-pos-size').style.fontSize = '14px';
-    document.getElementById('d-pos-pnl').textContent = '\u2014';
-    document.getElementById('d-pos-pnl').style.color = 'var(--text4)';
-    document.getElementById('d-pos-entry').textContent = '\u2014';
-    document.getElementById('d-pos-liq').textContent = '\u2014';
-    document.getElementById('d-pos-mark').textContent = fmtPrice(price);
-    document.getElementById('d-pos-margin').textContent = '\u2014';
-    document.getElementById('d-risk-sl-dist').textContent = '\u2014';
-    document.getElementById('d-risk-tp-dist').textContent = '\u2014';
-    return;
-  }
-
-  const sz = parseFloat(position.size);
-  const entry = parseFloat(position.entry_price);
-  const pnl = parseFloat(position.unrealized_pnl);
-  const liq = position.liquidation_px ? parseFloat(position.liquidation_px) : null;
-  const isLong = sz > 0;
-  const coin = ps.coin || activeCoin;
-
-  document.getElementById('d-pos-size').textContent = Math.abs(sz).toFixed(4) + ' ' + coin;
-  document.getElementById('d-pos-size').style.fontSize = '';
-  document.getElementById('d-pos-pnl').textContent = (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2);
-  document.getElementById('d-pos-pnl').style.color = pnl >= 0 ? 'var(--green)' : 'var(--red)';
-  document.getElementById('d-pos-entry').textContent = fmtPrice(entry);
-  document.getElementById('d-pos-liq').textContent = liq ? fmtPrice(liq) : '\u2014';
-  document.getElementById('d-pos-mark').textContent = fmtPrice(price);
-  const margin = position.margin_used ? parseFloat(position.margin_used) : (Math.abs(sz) * entry / (ps.max_leverage || 4));
-  document.getElementById('d-pos-margin').textContent = '$' + margin.toFixed(2);
-
-  // Risk distances
-  if (slPrice && price) {
-    const slDist = ((price - slPrice) / price * 100);
-    document.getElementById('d-risk-sl-dist').textContent = slDist.toFixed(2) + '% (' + fmtPrice(slPrice) + ')';
-  }
-  if (tpPrice && price) {
-    const tpDist = ((tpPrice - price) / price * 100);
-    document.getElementById('d-risk-tp-dist').textContent = '+' + tpDist.toFixed(2) + '% (' + fmtPrice(tpPrice) + ')';
-  }
-
-  // Daily loss and leverage
-  document.getElementById('d-risk-daily').textContent = '$' + (s.daily_loss || 0).toFixed(2) + ' / $' + (s.max_daily_loss_usd || 0).toFixed(2);
-  const dailyPct = s.max_daily_loss_usd > 0 ? (s.daily_loss / s.max_daily_loss_usd * 100) : 0;
-  document.getElementById('d-risk-daily-bar').style.width = Math.min(100, dailyPct) + '%';
-  document.getElementById('d-risk-lev').textContent = (ps.max_leverage || s.max_leverage || 4) + 'x';
-}
-
-// ============================================================
-// RENDER BOTTOM PANEL — pairs switcher
-// ============================================================
-function renderPairSwitcher(s) {
-  const container = document.getElementById('d-pair-switcher');
-  const coins = s.all_coins || [];
-  const allPos = s.all_positions || s.positions || [];
-
-  container.innerHTML = coins.map(coin => {
-    const ps = s.pairs[coin] || {};
-    const isActive = coin === activeCoin;
-    const enabled = ps.enabled !== false;
-    const coinPos = allPos.filter(p => p.coin === coin);
-    let pnlHtml = '<span class="pair-pill-pnl" style="color:var(--text4)">No position</span>';
-    if (coinPos.length) {
-      const pnl = coinPos.reduce((sum, p) => sum + parseFloat(p.unrealized_pnl || 0), 0);
-      const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
-      pnlHtml = `<span class="pair-pill-pnl" style="color:${pnlColor}">${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}</span>`;
-    }
-    return `<div class="pair-pill ${isActive ? 'active' : ''}" onclick="switchActivePair('${coin}')">
-      <div>
-        <div class="pair-pill-name">${coin} <span style="font-weight:400;color:var(--text4);font-size:11px">${fmtPrice(ps.last_price)}</span></div>
-        ${pnlHtml}
-      </div>
-      <button class="pair-pill-toggle ${enabled ? 'on' : ''}" onclick="event.stopPropagation();togglePairEnabled('${coin}',${enabled})" title="${enabled ? 'Disable' : 'Enable'} ${coin}"></button>
-    </div>`;
-  }).join('') + `<div class="pair-pill" onclick="openAddPair()" style="justify-content:center;min-width:80px">
-    <span style="color:var(--text4);font-size:16px">+</span>
-  </div>`;
-}
-
-// ============================================================
-// DASHBOARD POLL — main loop
-// ============================================================
-async function dashPoll() {
-  const pollStart = Date.now();
-  try {
-    const r = await fetch('/api/state');
-    const s = await r.json();
-    lastStateData = s;
-    const latency = Date.now() - pollStart;
-    document.getElementById('d-latency').textContent = latency + 'ms';
-
-    // Active coin — default to first coin or server-provided active
-    const coins = s.all_coins || [];
-    if (!activeCoin && coins.length > 0) activeCoin = s.active_coin || coins[0];
-    if (activeCoin && !coins.includes(activeCoin) && coins.length > 0) activeCoin = coins[0];
-
-    const ps = (s.pairs && s.pairs[activeCoin]) || {};
-    const allPos = s.all_positions || s.positions || [];
-    const activePos = allPos.filter(p => p.coin === activeCoin);
-    const position = activePos.length > 0 ? activePos[0] : null;
-
-    // Wallet
-    if (s.master_address) {
-      const addr = s.master_address;
-      document.getElementById('d-wallet-addr').textContent = addr.slice(0,6) + '...' + addr.slice(-4);
-      document.getElementById('d-wallet-addr').title = addr;
-    }
-
-    // Network
-    const netBadge = document.getElementById('d-network');
-    if (netBadge) netBadge.textContent = s.network === 'mainnet' ? 'MAINNET' : 'TESTNET';
-
-    // Header status
-    const badge = document.getElementById('d-status');
-    const ctrl = document.getElementById('d-controls');
-    if (s.live_enabled) {
-      badge.className = 'mode-badge mode-live'; badge.textContent = 'LIVE';
-      ctrl.style.display = 'flex';
-      if (s.trading_active) {
-        document.getElementById('d-btn-start').disabled = true;
-        document.getElementById('d-btn-stop').disabled = false;
-      } else {
-        document.getElementById('d-btn-start').disabled = false;
-        document.getElementById('d-btn-stop').disabled = true;
-      }
-    } else {
-      badge.className = 'mode-badge mode-sim'; badge.textContent = 'SIMULATION';
-    }
-
-    // Status indicator
-    const statusLabel = document.getElementById('d-status-label');
-    const engineDot = document.getElementById('d-engine-dot');
-    if (s.trading_active) {
-      statusLabel.textContent = 'Trading Active'; statusLabel.style.color = 'var(--green)';
-      engineDot.className = 'panel-dot active';
-    } else if (s.setup_complete) {
-      statusLabel.textContent = 'Scanning'; statusLabel.style.color = 'var(--yellow)';
-      engineDot.className = 'panel-dot scanning';
-    } else {
-      statusLabel.textContent = 'Setting Up'; statusLabel.style.color = 'var(--text3)';
-      engineDot.className = 'panel-dot stopped';
-    }
-
-    // Error
-    const errBar = document.getElementById('d-error');
-    if (s.error) { errBar.textContent = s.error; errBar.style.display = 'block'; }
-    else { errBar.style.display = 'none'; }
-
-    // Thinking
-    const thinkEl = document.getElementById('d-thinking');
-    if (s.thinking) { thinkEl.textContent = s.thinking; thinkEl.style.display = 'flex'; }
-    else { thinkEl.style.display = 'none'; }
-
-    // Header stats
-    document.getElementById('d-active-pair').textContent = activeCoin || '\u2014';
-    document.getElementById('d-equity').textContent = '$' + s.equity.toLocaleString(undefined,{minimumFractionDigits:2});
-    const pnlEl = document.getElementById('d-pnl');
-    pnlEl.textContent = (s.pnl >= 0 ? '+' : '') + '$' + s.pnl.toFixed(2);
-    pnlEl.className = 'stat-sub ' + (s.pnl >= 0 ? 'pnl-pos' : 'pnl-neg');
-    document.getElementById('d-daily-loss').textContent = '$' + s.daily_loss.toFixed(2);
-    document.getElementById('d-daily-limit').textContent = '/ ' + s.max_daily_loss_pct.toFixed(1) + '%';
-    document.getElementById('d-updated').textContent = s.last_update ? 'Updated ' + s.last_update : '';
-
-    // Engine float
-    const engineFloat = document.getElementById('d-engine-float');
-    if (s.setup_complete) { engineFloat.style.display = 'flex'; }
-
-    // Chart label
-    const chartLabel = document.getElementById('d-chart-label');
-    chartLabel.innerHTML = activeCoin + '/USDT <span class="price">' + fmtPrice(ps.last_price) + '</span>';
-
-    // Render 3 columns
-    renderLeftPanel(ps, s.last_signals);
-
-    const thesisResult = renderThesis(ps, position, s.last_signals);
-    const slPrice = thesisResult ? thesisResult.sl : null;
-    const tpPrice = thesisResult ? thesisResult.tp : null;
-    const entryPrice = position ? parseFloat(position.entry_price) : null;
-
-    renderChart(ps.last_price, entryPrice, slPrice, tpPrice);
-    renderRightPanel(ps, position, slPrice, tpPrice, s);
-
-    // Chart overlay pills
-    const overlayEl = document.getElementById('d-chart-overlay');
-    if (position && ps.last_price) {
-      const entry = parseFloat(position.entry_price);
-      const pctChg = ((ps.last_price - entry) / entry * 100).toFixed(2);
-      const color = pctChg >= 0 ? 'var(--green)' : 'var(--red)';
-      overlayEl.innerHTML = `
-        <div class="chart-pill">Entry: <span>${fmtPrice(entry)}</span></div>
-        <div class="chart-pill">Current: <span style="color:${color}">${fmtPrice(ps.last_price)}</span></div>
-        <div class="chart-pill" style="color:${color}">${pctChg >= 0 ? '+' : ''}${pctChg}%</div>
-      `;
-    } else {
-      overlayEl.innerHTML = '';
-    }
-
-    // Pair switcher
-    renderPairSwitcher(s);
-
-    // Config view
-    document.getElementById('d-config-view').innerHTML = `
-      # Active: ${activeCoin}<br>
-      max_leverage: ${ps.max_leverage || s.max_leverage}<br>
-      risk_per_trade: ${ps.risk_per_trade_pct || s.risk_per_trade_pct}%<br>
-      daily_loss_limit: ${s.max_daily_loss_pct}%<br>
-      strategies: ${(ps.last_signals || []).map(sig => sig.pack_id || sig.strategy_id).filter((v,i,a) => a.indexOf(v) === i).join(', ') || 'none'}
-    `;
-
-    // Trade log
-    const logDiv = document.getElementById('d-trade-log');
-    if (s.trade_log && s.trade_log.length) {
-      logDiv.innerHTML = s.trade_log.slice().reverse().map(t => {
-        const timeShort = t.time.split(' ')[1] || t.time;
-        const actionClass = 'act-' + t.action.toLowerCase();
-        let detail = '';
-        if (t.size > 0) detail += t.size + ' @ $' + t.price.toLocaleString();
-        if (t.note) detail += (detail ? ' \u2014 ' : '') + t.note;
-        return `<div class="log-entry"><span class="log-time">${timeShort}</span><span class="log-action ${actionClass}">${t.action}</span><span class="log-detail" title="${(t.strategy + ' ' + t.note).trim()}">${t.strategy !== 'system' && t.strategy !== 'operator' ? t.strategy.replace(/_/g,' ') + ': ' : ''}${detail}</span></div>`;
-      }).join('');
-      // Update bottom preview with last log
-      const last = s.trade_log[s.trade_log.length - 1];
-      if (last) {
-        document.getElementById('d-bottom-preview').textContent = 'Last: ' + last.action + (last.note ? ' — ' + last.note : '');
-      }
-    }
-  } catch(e) { console.error(e); }
-}
-
-function startDashboardPoll() { setInterval(dashPoll, 3000); dashPoll(); }
-
-// ============================================================
-// BOTTOM PANEL
-// ============================================================
-function toggleBottom() {
-  const panel = document.getElementById('bottomPanel');
-  const chevron = document.getElementById('chevron');
-  const tabs = document.getElementById('bottomTabs');
-  panel.classList.toggle('collapsed');
-  panel.classList.toggle('expanded');
-  const isExpanded = panel.classList.contains('expanded');
-  chevron.innerHTML = isExpanded ? '&#9660;' : '&#9650;';
-  tabs.style.display = isExpanded ? 'flex' : 'none';
-}
-
-function switchTab(tab) {
-  document.querySelectorAll('.bottom-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
-  ['logs','pairs','config','backtest'].forEach(t => {
-    const el = document.getElementById('tab-' + t);
-    if (el) el.style.display = t === tab ? '' : 'none';
-  });
-}
-
-// ============================================================
-// START/STOP/TEST (preserved)
-// ============================================================
-async function startTrading() {
-  if (!confirm('Start live trading? Real orders will be placed with real money.')) return;
-  await fetch('/api/start',{method:'POST'}); dashPoll();
-}
-async function stopTrading() { await fetch('/api/stop',{method:'POST'}); dashPoll(); }
-
-// ============================================================
-// SETTINGS (preserved)
-// ============================================================
-function openSettings() {
-  fetch('/api/state').then(r=>r.json()).then(s => {
-    document.getElementById('s-leverage').value = s.max_leverage;
-    document.getElementById('s-lev-val').textContent = s.max_leverage + 'x';
-    document.getElementById('s-risk').value = s.risk_per_trade_pct;
-    document.getElementById('s-rpt-val').textContent = s.risk_per_trade_pct + '%';
-    document.getElementById('s-daily').value = s.max_daily_loss_pct;
-    document.getElementById('s-dll-val').textContent = s.max_daily_loss_pct + '%';
-    document.getElementById('s-master-addr').value = s.master_address || '';
-    document.getElementById('s-api-key').value = '';
-    document.getElementById('settings-overlay').classList.add('open');
-  });
-}
-function closeSettings() {
-  document.getElementById('settings-overlay').classList.remove('open');
-}
-async function saveSettings() {
-  const data = {
-    max_leverage: parseFloat(document.getElementById('s-leverage').value),
-    risk_per_trade_pct: parseFloat(document.getElementById('s-risk').value),
-    max_daily_loss_pct: parseFloat(document.getElementById('s-daily').value),
+function renderNotifications(){
+  const list=document.getElementById('d-notif-list');
+  const colorMap={
+    action:{bg:'var(--green-bg)',accent:'var(--green)',cls:'type-action'},
+    info:{bg:'var(--blue-bg)',accent:'var(--blue)',cls:'type-info'},
+    system:{bg:'var(--yellow-bg)',accent:'var(--yellow)',cls:'type-system'},
+    warning:{bg:'var(--red-bg)',accent:'var(--red)',cls:'type-warning'},
   };
-  await fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)});
-  const addr = document.getElementById('s-master-addr').value.trim();
-  const key = document.getElementById('s-api-key').value.trim();
-  if (addr || key) {
-    const creds = {};
-    if (addr) creds.master_address = addr;
-    if (key) creds.agent_private_key = key;
-    await fetch('/api/save-credentials', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(creds)});
-  }
-  closeSettings();
-  dashPoll();
-}
-
-// ============================================================
-// ADD PAIR (preserved)
-// ============================================================
-let addPairSelected = null;
-
-async function openAddPair() {
-  addPairSelected = null;
-  document.getElementById('add-pair-search').value = '';
-  document.getElementById('add-pair-status').textContent = '';
-  document.getElementById('add-pair-btn').disabled = true;
-  document.getElementById('add-pair-btn').textContent = 'Add Pair';
-  document.getElementById('add-pair-overlay').classList.add('open');
-  if (!pairPrices || Object.keys(pairPrices).length === 0) {
-    try {
-      const r = await fetch('/api/pairs');
-      pairPrices = await r.json();
-    } catch(e) { console.error(e); }
-  }
-  renderAddPairGrid();
-}
-function closeAddPair() {
-  document.getElementById('add-pair-overlay').classList.remove('open');
-}
-
-function renderAddPairGrid() {
-  const search = (document.getElementById('add-pair-search')?.value || '').toUpperCase();
-  const grid = document.getElementById('add-pair-grid');
-  if (!grid) return;
-  let activeCoinSet = new Set();
-  try { activeCoinSet = new Set(Object.keys(lastStateData?.pairs || {})); } catch(e) {}
-
-  const candidates = [
-    {coin:'DOGE',symbol:'DOGEUSDT'}, {coin:'AVAX',symbol:'AVAXUSDT'},
-    {coin:'LINK',symbol:'LINKUSDT'}, {coin:'OP',symbol:'OPUSDT'},
-    {coin:'WIF',symbol:'WIFUSDT'}, {coin:'ARB',symbol:'ARBUSDT'},
-    {coin:'SUI',symbol:'SUIUSDT'}, {coin:'PEPE',symbol:'PEPEUSDT'},
-    {coin:'NEAR',symbol:'NEARUSDT'},
-  ].filter(p => !activeCoinSet.has(p.coin));
-
-  let pairs = candidates;
-  if (search && pairPrices) {
-    const allCoins = Object.keys(pairPrices).filter(c => !activeCoinSet.has(c));
-    const filtered = allCoins.filter(c => c.toUpperCase().includes(search)).slice(0,9);
-    pairs = filtered.map(c => ({coin:c, symbol:c+'USDT'}));
-  }
-
-  grid.innerHTML = pairs.slice(0,9).map(p => {
-    const price = pairPrices[p.coin];
-    const priceStr = price ? '$' + parseFloat(price).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}) : '';
-    const sel = addPairSelected?.coin === p.coin ? 'selected' : '';
-    return `<div class="pair-card ${sel}" onclick="selectAddPair('${p.coin}','${p.symbol}')">
-      <div class="pair-name">${p.coin}</div>
-      <div class="pair-price">${priceStr}</div>
-    </div>`;
+  const iconMap={
+    entry:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="7 7 17 7 17 17"/></svg>',
+    exit:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="17" y1="7" x2="7" y2="17"/><polyline points="17 17 7 17 7 7"/></svg>',
+    scan:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
+    system:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
+    sl:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
+  };
+  list.innerHTML=notifications.map(n=>{
+    const c=colorMap[n.type]||colorMap.info;
+    const isExp=expandedNotif===n.id;
+    return `<button class="notif-item ${isExp?'expanded':''} ${c.cls}" onclick="toggleNotifItem(${n.id})">
+      <div class="notif-icon" style="background:${c.bg};color:${c.accent}">${iconMap[n.icon]||iconMap.system}</div>
+      <div class="notif-body">
+        <div class="notif-title">${esc(n.title)}</div>
+        <div class="notif-meta">${timeSince(n.time)}${n.token?' \u00b7 '+n.token:''}</div>
+        ${isExp&&n.why?`<div class="why-card">
+          <div class="why-label" style="color:${c.accent}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg> Why this happened</div>
+          <div class="why-text">${esc(n.why)}</div>
+        </div>`:''}
+      </div>
+      <svg class="notif-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+    </button>`;
   }).join('');
 }
-
-function selectAddPair(coin, symbol) {
-  addPairSelected = {coin, symbol};
-  renderAddPairGrid();
-  document.getElementById('add-pair-btn').disabled = false;
+function toggleNotifItem(id){expandedNotif=expandedNotif===id?null:id;renderNotifications()}
+function toggleNotifs(){
+  notifsOpen=!notifsOpen;
+  document.getElementById('notif-panel').classList.toggle('open',notifsOpen);
+  document.getElementById('notif-overlay').classList.toggle('open',notifsOpen);
 }
 
-async function confirmAddPair() {
-  if (!addPairSelected) return;
-  const btn = document.getElementById('add-pair-btn');
-  btn.disabled = true;
-  btn.textContent = 'Adding...';
-  try {
-    const r = await fetch('/api/add-pair', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(addPairSelected)
-    });
-    const res = await r.json();
-    if (res.ok) {
-      document.getElementById('add-pair-status').textContent = `Added ${res.coin} with ${res.configs.length} strategies`;
-      document.getElementById('add-pair-status').style.color = 'var(--green)';
-      setTimeout(() => { closeAddPair(); dashPoll(); }, 1000);
-    } else {
-      document.getElementById('add-pair-status').textContent = res.error || 'Failed';
-      document.getElementById('add-pair-status').style.color = 'var(--red)';
-      btn.disabled = false;
-      btn.textContent = 'Add Pair';
-    }
-  } catch(e) {
-    document.getElementById('add-pair-status').textContent = 'Connection error';
-    document.getElementById('add-pair-status').style.color = 'var(--red)';
-    btn.disabled = false;
-    btn.textContent = 'Add Pair';
+// ── Add Token Modal ──────────────────────────────────────────
+async function openAddModal(){
+  addModalCoin=null;
+  document.getElementById('add-step-1').style.display='block';
+  document.getElementById('add-step-2').style.display='none';
+  // Fetch available pairs
+  try{
+    const mids=await api('/api/pairs');
+    const existing=lastState?Object.keys(lastState.pairs||{}).map(c=>c.toUpperCase()):[];
+    const tokens=Object.keys(mids).filter(s=>s.includes('-PERP')||s.includes('/'))
+      .map(s=>s.replace('-PERP','').replace('/USD','').replace('/USDC',''))
+      .filter((v,i,a)=>a.indexOf(v)===i&&!existing.includes(v))
+      .sort().slice(0,20);
+    const grid=document.getElementById('d-token-list');
+    grid.innerHTML=tokens.map(coin=>`<button class="token-option" onclick="selectAddToken('${coin}')">
+      <div class="token-icon">${tokenIcon(coin)}</div>
+      <div><div class="token-sym">${coin}</div><div class="token-full">${coin}/USDC</div></div>
+    </button>`).join('');
+  }catch(e){console.error(e)}
+  document.getElementById('add-modal').classList.add('open');
+}
+function selectAddToken(coin){
+  addModalCoin=coin;
+  document.getElementById('d-selected-coin').textContent=coin;
+  document.getElementById('add-step-1').style.display='none';
+  document.getElementById('add-step-2').style.display='block';
+  const list=document.getElementById('d-strategy-list');
+  list.innerHTML=STRATEGIES.map(s=>{
+    const rc=s.risk==='Low'?'var(--green)':s.risk==='Medium'?'var(--yellow)':'var(--red)';
+    const rbg=s.risk==='Low'?'var(--green-bg)':s.risk==='Medium'?'var(--yellow-bg)':'var(--red-bg)';
+    return `<button class="strategy-option" onclick="addTokenWithStrategy('${s.id}')">
+      <div class="strategy-header">
+        <span class="strategy-name">${s.name}</span>
+        <span class="risk-tag" style="background:${rbg};color:${rc}">${s.risk} risk</span>
+      </div>
+      <div class="strategy-desc">${s.desc}</div>
+    </button>`;
+  }).join('');
+}
+async function addTokenWithStrategy(packId){
+  if(!addModalCoin)return;
+  const coin=addModalCoin;
+  const symbol=coin+'/USDC';
+  try{
+    await api('/api/add-pair','POST',{coin, symbol, pack_id:packId});
+    addNotification('action','entry',`Added ${coin} to your portfolio`,
+      `The bot will now monitor ${coin} and look for trading opportunities using your selected strategy. It may take a few minutes for the first signals to appear.`,coin);
+    closeAddModal();
+  }catch(e){
+    console.error(e);
+    addNotification('warning','system',`Failed to add ${coin}`,
+      `Something went wrong: ${e.message}. Please try again.`,coin);
+    closeAddModal();
+  }
+}
+function closeAddModal(){
+  document.getElementById('add-modal').classList.remove('open');
+  addModalCoin=null;
+}
+
+// ── Settings Modal ───────────────────────────────────────────
+function toggleSettings(){
+  const m=document.getElementById('settings-modal');
+  m.classList.toggle('open');
+  if(m.classList.contains('open')&&lastState){
+    document.getElementById('set-lev').value=lastState.max_leverage||4;
+    document.getElementById('d-set-lev').textContent=(lastState.max_leverage||4)+'x';
+    document.getElementById('set-risk').value=lastState.risk_per_trade_pct||1;
+    document.getElementById('d-set-risk').textContent=(lastState.risk_per_trade_pct||1)+'%';
+    document.getElementById('set-daily').value=lastState.max_daily_loss_pct||5;
+    document.getElementById('d-set-daily').textContent=(lastState.max_daily_loss_pct||5)+'%';
+  }
+}
+async function saveSettings(){
+  const lev=parseFloat(document.getElementById('set-lev').value);
+  const risk=parseFloat(document.getElementById('set-risk').value);
+  const daily=parseFloat(document.getElementById('set-daily').value);
+  await api('/api/settings','POST',{max_leverage:lev,risk_per_trade_pct:risk,max_daily_loss_pct:daily});
+  addNotification('system','system',`Settings updated: ${lev}x leverage, ${risk}% risk, ${daily}% daily limit`,
+    `These settings apply to all new trades. Leverage caps how much the bot can borrow. Risk per trade limits how much equity is at stake per position. The daily loss limit pauses all trading if losses exceed this threshold.`,null);
+  toggleSettings();
+}
+
+// ── Trading Toggle ───────────────────────────────────────────
+async function toggleTrading(){
+  if(!lastState)return;
+  if(lastState.trading_active){
+    await api('/api/stop','POST');
+    addNotification('system','system','Trading stopped','You stopped the trading engine. The bot will no longer open new positions or manage existing ones until you restart.',null);
+  }else{
+    await api('/api/start','POST');
+    addNotification('action','entry','Trading started','The bot is now actively monitoring your tokens and will execute trades when conditions are met.',null);
   }
 }
 
-// ============================================================
-// BACKTEST (preserved)
-// ============================================================
-async function runBacktest() {
-  const btn = document.getElementById('d-bt-btn');
-  const resultsEl = document.getElementById('d-backtest-results');
-  if (!btn || !resultsEl) { console.warn('Backtest UI elements not found'); return; }
-  btn.disabled = true;
-  btn.textContent = 'Running...';
-  resultsEl.innerHTML = '<div style="color:var(--text3);font-size:0.85rem;padding:0.5rem">Fetching 90 days of candle data and simulating trades...</div>';
+// ── Card Rendering ───────────────────────────────────────────
+function esc(s){return s?String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'):''}
+function fmt$(v){return v>=0?'+$'+Math.abs(v).toFixed(0):'-$'+Math.abs(v).toFixed(0)}
+function fmtPct(v){return (v>=0?'+':'')+v.toFixed(1)+'%'}
+function fmtPrice(v){if(!v)return '\u2014';if(v>=1000)return '$'+v.toLocaleString(undefined,{maximumFractionDigits:0});if(v>=1)return '$'+v.toFixed(2);return '$'+v.toPrecision(4)}
 
-  const coin = lastStateData?.active_coin || activeCoin || lastStateData?.coin;
-  const packs = [...new Set((lastStateData?.last_signals || []).map(s => s.pack_id).filter(Boolean))];
-  if (packs.length === 0) packs.push('trend_pullback');
+function renderCards(s){
+  const grid=document.getElementById('d-card-grid');
+  const pairs=s.pairs||{};
+  const coins=Object.keys(pairs);
+  let html='';
+  let activeCount=0,watchingCount=0,totalPnl=0;
 
-  let allResults = [];
-  for (const pack of packs) {
-    try {
-      const r = await fetch('/api/backtest', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({coin, pack_id: pack, days: 90})
-      });
-      const res = await r.json();
-      if (res.ok) allResults.push({pack, summary: res.summary});
-      else allResults.push({pack, error: res.error});
-    } catch(e) {
-      allResults.push({pack, error: 'Connection error'});
-    }
-  }
+  for(const coin of coins){
+    const ps=pairs[coin];
+    const pos=ps.positions&&ps.positions[0];
+    const inTrade=!!pos;
+    const isExp=expandedCard===coin;
+    const direction=pos?(parseFloat(pos.size||0)>0?'LONG':'SHORT'):null;
+    const pnl=parseFloat(pos?.unrealized_pnl||ps.pnl||0);
+    const entryPx=parseFloat(pos?.entry_px||ps.plan_entry||0);
+    const markPx=ps.last_price||0;
+    const leverage=parseFloat(pos?.leverage?.value||ps.max_leverage||4);
+    const slPx=ps.plan_sl||null;
+    const tpPx=ps.plan_tp||null;
+    const strategy=ps.plan_strategy||'Watching';
+    const pnlPct=entryPx>0?((markPx-entryPx)/entryPx*100*(direction==='SHORT'?-1:1)):0;
 
-  resultsEl.innerHTML = allResults.map(r => {
-    if (r.error) return `<div class="bt-results"><b>${r.pack.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())}</b><div style="color:var(--red);font-size:0.8rem;margin-top:0.3rem">${r.error}</div></div>`;
-    const s = r.summary;
-    const winColor = (s.win_rate_pct||0) >= 50 ? 'var(--green)' : 'var(--red)';
-    const retColor = (s.total_return_pct||0) >= 0 ? 'var(--green)' : 'var(--red)';
-    return `<div class="bt-results">
-      <div style="display:flex;justify-content:space-between;align-items:center"><b>${r.pack.replace(/_/g,' ')}</b><span style="font-size:0.75rem;color:var(--text3)">${s.coin || coin} &middot; ${s.bars_evaluated||0} bars &middot; ${s.trades||0} trades</span></div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.25rem 1rem;margin-top:0.5rem">
-        <div class="bt-stat"><span class="bt-stat-label">Win Rate</span><span class="bt-stat-value" style="color:${winColor}">${(s.win_rate_pct||0).toFixed(1)}%</span></div>
-        <div class="bt-stat"><span class="bt-stat-label">Avg R</span><span class="bt-stat-value">${(s.average_r_multiple||0).toFixed(2)}</span></div>
-        <div class="bt-stat"><span class="bt-stat-label">Total Return</span><span class="bt-stat-value" style="color:${retColor}">${(s.total_return_pct||0).toFixed(1)}%</span></div>
-        <div class="bt-stat"><span class="bt-stat-label">Max Drawdown</span><span class="bt-stat-value" style="color:var(--red)">${(s.max_drawdown_pct||0).toFixed(1)}%</span></div>
+    if(inTrade){activeCount++;totalPnl+=pnl}else{watchingCount++}
+
+    html+=`<div class="card ${isExp?'expanded':''} ${inTrade?'clickable':''}" ${inTrade?`onclick="toggleCard('${coin}')"`:''}>`
+
+    // Header
+    html+=`<div class="card-head">
+      <div class="card-token">
+        <div class="token-icon">${tokenIcon(coin)}</div>
+        <div><div class="token-name">${coin}</div><div class="token-strategy">${esc(strategy)}</div></div>
+      </div>
+      <div class="card-actions">
+        ${inTrade?`<svg class="chevron ${isExp?'open':''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>`:''}
+        <button class="btn-x" onclick="event.stopPropagation();removePair('${coin}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
       </div>
     </div>`;
-  }).join('');
-  btn.disabled = false;
-  btn.textContent = '90-Day Backtest';
-}
 
-// ============================================================
-// TEST TRADE (preserved)
-// ============================================================
-async function testTrade() {
-  const btn = document.getElementById('d-test-btn');
-  btn.disabled = true;
-  btn.textContent = 'Testing...';
-  try {
-    const r = await fetch('/api/test-trade', {method:'POST'});
-    const res = await r.json();
-    if (res.ok) {
-      btn.textContent = res.message || 'Test OK';
-      btn.style.borderColor = 'var(--green)';
-      btn.style.color = 'var(--green)';
-    } else {
-      btn.textContent = res.error || 'Failed';
-      btn.style.borderColor = 'var(--red)';
-      btn.style.color = 'var(--red)';
+    // Status badge
+    const badgeBg=inTrade?(direction==='LONG'?'var(--green-bg)':'var(--red-bg)'):'rgba(255,255,255,0.04)';
+    const badgeColor=inTrade?(direction==='LONG'?'var(--green)':'var(--red)'):'var(--text2)';
+    const arrow=direction==='LONG'?'\u2197':direction==='SHORT'?'\u2198':'\u23F1';
+    const statusText=inTrade?`${direction} \u00b7 ${esc(strategy)}`:(ps.last_signals&&ps.last_signals.some(sig=>sig.direction!=='none')?'Signal detected':'Watching for entry');
+    html+=`<div><span class="status-badge" style="background:${badgeBg};color:${badgeColor}">${arrow} ${statusText}</span></div>`;
+
+    // P&L row
+    if(inTrade){
+      html+=`<div class="pnl-row">
+        <div><div class="pnl-label">Unrealized P&L</div>
+          <div class="pnl-value mono" style="color:${pnl>=0?'var(--green)':'var(--red)'}">${fmt$(pnl)}<span class="pnl-pct">(${fmtPct(pnlPct)})</span></div>
+        </div>
+        <div style="text-align:right"><div class="risk-label">Risking</div><div class="risk-value mono">${fmtPrice(slPx?Math.abs(markPx-(slPx||0))*leverage:0)}</div></div>
+      </div>`;
+    }else{
+      // Show last trade or waiting message
+      html+=`<div class="last-trade">\u23F1 Scanning ${coin} across all timeframes...</div>`;
     }
-  } catch(e) {
-    btn.textContent = 'Error';
-    btn.style.borderColor = 'var(--red)';
-    btn.style.color = 'var(--red)';
+
+    // Expanded controls
+    if(isExp&&inTrade){
+      html+=`<div class="controls">
+        <div class="info-grid">
+          <div class="info-cell"><div class="info-cell-label">Entry</div><div class="info-cell-value mono">${fmtPrice(entryPx)}</div></div>
+          <div class="info-cell"><div class="info-cell-label">Mark</div><div class="info-cell-value mono">${fmtPrice(markPx)}</div></div>
+          <div class="info-cell"><div class="info-cell-label">Leverage</div><div class="info-cell-value mono">${leverage}x</div></div>
+        </div>
+        <div class="sl-tp-row">
+          <div class="sl-tp-box" style="background:var(--red-bg);border:1px solid rgba(239,68,68,0.12)">
+            <div class="sl-tp-header"><span style="color:var(--red);opacity:0.8">Stop Loss</span></div>
+            <div class="sl-tp-value mono" style="color:var(--red)">${fmtPrice(slPx)}</div>
+            <div class="sl-tp-btns">
+              <button class="sl-tp-btn" style="background:rgba(239,68,68,0.08);color:var(--red)" onclick="event.stopPropagation();adjustSl('${coin}','tighter')">Tighter</button>
+              <button class="sl-tp-btn" style="background:rgba(239,68,68,0.08);color:var(--red)" onclick="event.stopPropagation();adjustSl('${coin}','wider')">Wider</button>
+            </div>
+          </div>
+          <div class="sl-tp-box" style="background:var(--green-bg);border:1px solid rgba(34,197,94,0.12)">
+            <div class="sl-tp-header"><span style="color:var(--green);opacity:0.8">Take Profit</span></div>
+            <div class="sl-tp-value mono" style="color:var(--green)">${fmtPrice(tpPx)}</div>
+            <div class="sl-tp-btns">
+              <button class="sl-tp-btn" style="background:rgba(34,197,94,0.08);color:var(--green)" onclick="event.stopPropagation();adjustTp('${coin}','closer')">Closer</button>
+              <button class="sl-tp-btn" style="background:rgba(34,197,94,0.08);color:var(--green)" onclick="event.stopPropagation();adjustTp('${coin}','further')">Further</button>
+            </div>
+          </div>
+        </div>
+        <button class="btn-close-position" onclick="event.stopPropagation();closePosition('${coin}')">Close Position</button>
+      </div>`;
+    }
+
+    html+=`</div>`;
   }
-  setTimeout(() => {
-    btn.disabled = false;
-    btn.textContent = 'Test Trade';
-    btn.style.borderColor = '';
-    btn.style.color = '';
-  }, 4000);
-  dashPoll();
+
+  // Add token card
+  html+=`<button class="card-add" onclick="openAddModal()">
+    <div class="add-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></div>
+    <span>Add token</span>
+  </button>`;
+
+  grid.innerHTML=html;
+
+  // Empty state
+  document.getElementById('d-empty').style.display=coins.length===0?'block':'none';
+
+  // Summary bar
+  document.getElementById('d-active-count').textContent=activeCount+' active';
+  document.getElementById('d-watching-count').textContent=watchingCount+' watching';
+  const pnlEl=document.getElementById('d-open-pnl');
+  pnlEl.textContent=fmt$(totalPnl);
+  pnlEl.style.color=totalPnl>=0?'var(--green)':'var(--red)';
 }
 
-// ============================================================
-// INIT (preserved)
-// ============================================================
-(async function init() {
-  try {
-    const r = await fetch('/api/workspace-status');
-    const ws = await r.json();
-    if (ws.has_manifest && ws.pairs && ws.pairs.length > 0 && !ws.setup_complete) {
-      const pairs = ws.pairs.filter(p => p.enabled !== false);
-      if (pairs.length > 0) {
-        wizardData.selectedPairs = pairs.map(p => ({coin: p.coin, symbol: p.symbol}));
-        wizardData.coin = pairs[0].coin;
-        wizardData.symbol = pairs[0].symbol;
-        const cr = await fetch('/api/credential-status');
-        const cs = await cr.json();
-        if (cs.connected) {
-          currentStep = STEPS.indexOf('build');
-          renderStep();
-          return;
+function toggleCard(coin){expandedCard=expandedCard===coin?null:coin;if(lastState)renderCards(lastState)}
+
+async function removePair(coin){
+  if(!confirm('Remove '+coin+' from your dashboard?'))return;
+  await api('/api/remove-pair','POST',{coin});
+  addNotification('system','system',`Removed ${coin} from dashboard`,`${coin} will no longer be monitored. Any open positions remain on your Hyperliquid account.`,coin);
+}
+
+// ── SL/TP Adjustments (placeholder — wired to notification) ──
+function adjustSl(coin,dir){
+  addNotification('info','sl',`Stop loss ${dir==='tighter'?'tightened':'widened'} for ${coin}`,
+    `${dir==='tighter'?'Tightening':'Widening'} the stop loss ${dir==='tighter'?'reduces potential loss but increases the chance of being stopped out':'gives the trade more room to breathe but increases potential loss'}. The bot will use the new level for this position.`,coin);
+}
+function adjustTp(coin,dir){
+  addNotification('info','sl',`Take profit ${dir==='closer'?'moved closer':'moved further'} for ${coin}`,
+    `${dir==='closer'?'A closer take profit locks in gains sooner but limits upside':'A further take profit aims for larger gains but the trade needs to move more in your favor'}. The bot will use the new level.`,coin);
+}
+async function closePosition(coin){
+  if(!confirm('Close your '+coin+' position at market price?'))return;
+  try{
+    await api('/api/close-position','POST',{coin});
+    addNotification('action','exit',`Position close requested for ${coin}`,
+      `A market order to close the full ${coin} position has been submitted. It may take a moment to fill.`,coin);
+  }catch(e){
+    console.error(e);
+    addNotification('warning','system',`Failed to close ${coin} position`,
+      `Something went wrong: ${e.message}. Check your Hyperliquid account directly to verify position status.`,coin);
+  }
+}
+
+// ── Main Poll Loop ───────────────────────────────────────────
+let prevLogLen=0;
+async function dashPoll(){
+  try{
+    const s=await api('/api/state');
+    lastState=s;
+
+    // Header
+    document.getElementById('d-equity').textContent='$'+(s.equity||0).toLocaleString(undefined,{maximumFractionDigits:0});
+    const dayPnl=s.equity&&s.start_of_day_equity?(s.equity-s.start_of_day_equity)/s.start_of_day_equity*100:0;
+    const dayPnlEl=document.getElementById('d-daily-pnl');
+    dayPnlEl.textContent=fmtPct(dayPnl);
+    dayPnlEl.style.color=dayPnl>=0?'var(--green)':'var(--red)';
+
+    // Status badge
+    const running=s.trading_active;
+    const statusBadge=document.getElementById('d-status-badge');
+    statusBadge.style.background=running?'rgba(34,197,94,0.12)':'rgba(255,255,255,0.06)';
+    statusBadge.style.color=running?'var(--green)':'#888';
+    statusBadge.querySelector('.badge-dot').style.background=running?'var(--green)':'#555';
+    document.getElementById('d-status-text').textContent=running?'Live':'Stopped';
+
+    // Mode badge
+    const modeBadge=document.getElementById('d-mode-badge');
+    if(s.live_enabled){modeBadge.style.background='rgba(34,197,94,0.12)';modeBadge.style.color='var(--green)';modeBadge.textContent='Mainnet'}
+    else{modeBadge.style.background='rgba(59,130,246,0.12)';modeBadge.style.color='#60a5fa';modeBadge.textContent='Simulation'}
+
+    // Start/Stop button
+    const btn=document.getElementById('btn-startstop');
+    if(running){btn.style.background='rgba(239,68,68,0.15)';btn.style.color='var(--red)';document.getElementById('d-startstop-label').textContent='Stop'}
+    else{btn.style.background='rgba(34,197,94,0.15)';btn.style.color='var(--green)';document.getElementById('d-startstop-label').textContent='Start'}
+
+    // Thinking bar
+    const thinkEl=document.getElementById('d-thinking');
+    if(s.thinking){thinkEl.classList.add('visible');document.getElementById('d-thinking-text').textContent=s.thinking}
+    else{thinkEl.classList.remove('visible')}
+
+    // Error bar
+    const errEl=document.getElementById('d-error');
+    if(s.error){errEl.classList.add('visible');errEl.textContent=s.error}
+    else{errEl.classList.remove('visible')}
+
+    // Generate notifications from trade log
+    const log=s.trade_log||[];
+    if(log.length>prevLogLen){
+      for(let i=prevLogLen;i<log.length;i++){
+        const entry=log[i];
+        const tag=entry.tag||'';
+        const detail=entry.detail||'';
+        if(tag==='ORDER'||tag==='SIGNAL'){
+          const action=entry.action||'';
+          const why=generateWhy(tag,action,detail,entry);
+          addNotification('action',action.includes('BUY')||action.includes('ENTRY')?'entry':'exit',
+            `${action} ${entry.coin||''} ${detail}`.trim(),why,entry.coin);
         }
-        currentStep = STEPS.indexOf('credentials');
-        renderStep();
-        return;
       }
-    } else if (ws.setup_complete) {
-      document.getElementById('wizard').classList.add('wizard-hide');
-      document.getElementById('dashboard').classList.add('active');
-      startDashboardPoll();
-      return;
+      prevLogLen=log.length;
     }
-  } catch(e) { console.log('Init check failed, showing wizard:', e); }
-  renderStep();
-})();
+
+    // Render cards
+    renderCards(s);
+
+  }catch(e){
+    console.error('Poll error:',e);
+  }
+}
+
+function generateWhy(tag,action,detail,entry){
+  if(tag==='SIGNAL'){
+    if(action.includes('LONG'))return `The signal engine detected bullish conditions across multiple timeframes for ${entry.coin||'this token'}. The strategy waits for alignment before suggesting an entry \u2014 this reduces false signals.`;
+    if(action.includes('SHORT'))return `The signal engine detected bearish conditions. Price appears overextended or rejecting a key level, suggesting a potential pullback.`;
+    return `The signal engine is monitoring conditions. ${detail}`;
+  }
+  if(action.includes('BUY'))return `A buy order was placed. The strategy identified favorable entry conditions and the position size was calculated based on your risk settings.`;
+  if(action.includes('SELL'))return `A sell order was placed to close or reduce the position. ${detail}`;
+  return detail||'The trading engine took an action based on current market conditions and your strategy settings.';
+}
+
+// ── Init ─────────────────────────────────────────────────────
+async function init(){
+  // Check if workspace is set up
+  try{
+    const ws=await api('/api/workspace-status');
+    if(!ws.pairs||ws.pairs.length===0){
+      // Empty workspace — show welcome message
+      addNotification('system','system','Welcome to Hyperbot!',
+        'Add your first token using the + button below. Pick a token and a strategy, and the bot will start watching for trading opportunities.',null);
+    }
+  }catch(e){}
+
+  // Start polling
+  dashPoll();
+  pollTimer=setInterval(dashPoll,3000);
+}
+
+init();
 </script>
 </body>
 </html>"""
@@ -2441,13 +1443,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._json({"error": str(e)}, 500)
 
-        elif path == "/api/credential-status":
-            master = read_credential("master_address")
-            self._json({"connected": master is not None, "master_address": master or ""})
-
-        elif path == "/api/build-status":
-            self._json({"status": STATE.build_status, "log": STATE.build_log[-30:]})
-
         elif path == "/api/workspace-status":
             # Check if workspace was pre-built (has pairs in manifest)
             has_manifest = MANIFEST_PATH.exists()
@@ -2472,63 +1467,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", 0))
-        body = json.loads(self.rfile.read(length)) if length > 0 else {}
+        try:
+            body = json.loads(self.rfile.read(length)) if length > 0 else {}
+        except (json.JSONDecodeError, ValueError) as e:
+            self._json({"ok": False, "error": f"Invalid JSON: {e}"}, 400)
+            return
         path = self.path.split("?")[0]
 
-        if path == "/api/save-credentials":
-            try:
-                master = body.get("master_address", "").strip()
-                agent_pk = body.get("agent_private_key", "").strip()
-                if master:
-                    if not master.startswith("0x") or len(master) != 42:
-                        raise ValueError("Address must be 0x + 40 hex chars")
-                    store_credential("master_address", master)
-                    STATE.master_address = master
-                    print(f"  Master address saved: {master}", flush=True)
-                if agent_pk:
-                    pk = agent_pk.removeprefix("0x")
-                    if len(pk) != 64 or not all(c in "0123456789abcdefABCDEF" for c in pk):
-                        raise ValueError("Invalid private key format")
-                    store_credential("agent_private_key", agent_pk)
-                    # Derive and log the agent address for verification
-                    try:
-                        from eth_account import Account
-                        agent_wallet = Account.from_key(agent_pk)
-                        print(f"  API key saved (agent address: {agent_wallet.address})", flush=True)
-                    except Exception:
-                        print(f"  API key saved", flush=True)
-                if not master and not agent_pk:
-                    raise ValueError("No credentials provided")
-                # Verify master address has an account on Hyperliquid
-                verify_msg = ""
-                if master:
-                    try:
-                        ch = hl_client.get_clearinghouse_state(master)
-                        margin = ch.get("marginSummary") or {}
-                        equity = float(margin.get("accountValue") or 0)
-                        if equity > 0:
-                            verify_msg = f"Verified: account has ${equity:.2f}"
-                            print(f"  {verify_msg}", flush=True)
-                        else:
-                            verify_msg = "Warning: account shows $0 equity. Make sure this is your MAIN wallet address (the one with funds), not the API wallet address."
-                            print(f"  WARNING: {verify_msg}", flush=True)
-                    except Exception as e:
-                        verify_msg = f"Could not verify account: {e}"
-                        print(f"  {verify_msg}", flush=True)
-                self._json({"ok": True, "verify": verify_msg})
-            except Exception as e:
-                self._json({"ok": False, "error": str(e)}, 400)
-
-        elif path == "/api/build":
-            global BUILD_THREAD
-            if STATE.build_status == "building":
-                self._json({"ok": False, "error": "Build already in progress"})
-                return
-            BUILD_THREAD = threading.Thread(target=build_workspace_background, args=(body,), daemon=True)
-            BUILD_THREAD.start()
-            self._json({"ok": True})
-
-        elif path == "/api/start":
+        if path == "/api/start":
             if STATE.live_enabled:
                 STATE.trading_active = True
                 log_trade("START", "operator", 0, STATE.last_price or 0, "live trading activated")
@@ -2601,23 +1547,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._json({"ok": False, "error": f"{coin} is already added"}, 400)
                     return
                 STATE.add_pair(coin, symbol)
+                if not STATE.setup_complete:
+                    STATE.setup_complete = True
             # Install strategy configs for the new pair
             config_dir = ROOT / "config" / "strategies"
             config_dir.mkdir(parents=True, exist_ok=True)
             installed_packs = []
-            # Determine which pack_ids are in use from existing configs
-            existing_pack_ids: set[str] = set()
-            for f in config_dir.glob("*.json"):
-                try:
-                    cfg = json.loads(f.read_text(encoding="utf-8"))
-                    pid = cfg.get("pack_id", "")
-                    if pid:
-                        existing_pack_ids.add(pid)
-                except Exception:
-                    pass
-            if not existing_pack_ids:
-                existing_pack_ids = {"trend_pullback"}
-            for pack_id in sorted(existing_pack_ids):
+            # Use the pack_id from the request if provided, otherwise scan existing
+            requested_pack = body.get("pack_id", "").strip()
+            if requested_pack:
+                target_pack_ids: set[str] = {requested_pack}
+            else:
+                # Determine which pack_ids are in use from existing configs
+                target_pack_ids = set()
+                for f in config_dir.glob("*.json"):
+                    try:
+                        cfg = json.loads(f.read_text(encoding="utf-8"))
+                        pid = cfg.get("pack_id", "")
+                        if pid:
+                            target_pack_ids.add(pid)
+                    except Exception:
+                        pass
+            if not target_pack_ids:
+                target_pack_ids = {"trend_pullback"}
+            for pack_id in sorted(target_pack_ids):
                 new_id = f"{coin.lower()}_{pack_id}"
                 cfg = {
                     "strategy_id": new_id,
@@ -2664,6 +1617,43 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     STATE._sync_legacy()
             log_trade("REMOVE_PAIR", "operator", 0, 0, f"Removed {coin}")
             self._json({"ok": True, "removed": coin})
+
+        elif path == "/api/close-position":
+            coin = body.get("coin", "").upper().strip()
+            if not coin:
+                self._json({"ok": False, "error": "coin is required"}, 400)
+                return
+            with STATE.lock:
+                ps = STATE.pairs.get(coin)
+                if not ps:
+                    self._json({"ok": False, "error": f"Unknown pair: {coin}"}, 400)
+                    return
+            try:
+                # Get current position size to close
+                positions = hl_client.get_user_state().get("assetPositions", [])
+                pos_size = 0.0
+                for p in positions:
+                    info = p.get("position", {})
+                    if info.get("coin", "").upper() == coin:
+                        pos_size = abs(float(info.get("szi", "0")))
+                        is_long = float(info.get("szi", "0")) > 0
+                        break
+                if pos_size == 0:
+                    self._json({"ok": False, "error": f"No open position for {coin}"}, 400)
+                    return
+                # Close by placing opposite market order with reduce_only
+                result = hl_client.place_order(coin, not is_long, pos_size, order_type="market", reduce_only=True)
+                if result.ok:
+                    log_trade("CLOSE", "operator", pos_size, STATE.last_price or 0,
+                              f"Closed {coin} position, oid={result.order_id}")
+                    self._json({"ok": True, "coin": coin, "closed_size": pos_size})
+                else:
+                    log_trade("CLOSE_FAIL", "operator", pos_size, STATE.last_price or 0,
+                              f"Close failed: {result.error}")
+                    self._json({"ok": False, "error": f"Close order failed: {result.error}"}, 500)
+            except Exception as e:
+                traceback.print_exc()
+                self._json({"ok": False, "error": str(e)}, 500)
 
         elif path == "/api/backtest":
             coin = body.get("coin", "").upper().strip() or STATE.coin
@@ -2770,7 +1760,52 @@ def main() -> int:
 
     STATE.live_enabled = args.live
 
-    # Start trading loop in background (waits for setup_complete)
+    # Auto-setup: load pairs from manifest if it exists
+    if MANIFEST_PATH.exists():
+        try:
+            manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+            manifest_pairs = manifest.get("pairs", [])
+            if not manifest_pairs and manifest.get("coin"):
+                manifest_pairs = [{"coin": manifest["coin"], "symbol": manifest["symbol"], "enabled": True}]
+            for mp in manifest_pairs:
+                coin = mp.get("coin", "")
+                symbol = mp.get("symbol", coin)
+                if coin and coin not in STATE.pairs:
+                    STATE.add_pair(coin, symbol)
+            if STATE.pairs:
+                first = next(iter(STATE.pairs))
+                STATE.coin = first
+                STATE.symbol = STATE.pairs[first].symbol
+                STATE.setup_complete = True
+                print(f"[hyperbot] Auto-loaded {len(STATE.pairs)} pair(s): {', '.join(STATE.pairs.keys())}", flush=True)
+        except Exception as e:
+            print(f"[hyperbot] Warning: could not read manifest: {e}", flush=True)
+
+    # Load risk settings from policy if available
+    if POLICY_PATH.exists() and not STATE.setup_complete:
+        try:
+            policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+            safe = policy.get("auto_apply", {}).get("safe_bands", {})
+            STATE.max_leverage = safe.get("leverage_max", STATE.max_leverage)
+            STATE.risk_per_trade_pct = safe.get("risk_per_trade_pct_max", STATE.risk_per_trade_pct)
+            STATE.max_daily_loss_pct = safe.get("max_daily_loss_pct", STATE.max_daily_loss_pct)
+        except Exception:
+            pass
+
+    # If no manifest but we have credentials, still mark setup complete
+    # so the trading loop starts and pairs can be added via the UI
+    if not STATE.setup_complete:
+        creds = hl_client.get_credentials()
+        if creds.get("master_address"):
+            STATE.setup_complete = True
+            print("[hyperbot] No manifest but credentials found — ready for pairs via UI", flush=True)
+        else:
+            # No credentials either — still allow the UI, just mark setup complete
+            # so the trading loop can start and show the empty state
+            STATE.setup_complete = True
+            print("[hyperbot] Fresh start — add tokens via the dashboard", flush=True)
+
+    # Start trading loop in background
     thread = threading.Thread(target=trading_loop, daemon=True)
     thread.start()
 

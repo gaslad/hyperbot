@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Hyperbot - Connect Wallet</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.13.4/ethers.umd.min.js"></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -33,11 +34,13 @@
   ol { margin: 0 0 1.5rem 1.2rem; }
   li { margin-bottom: 0.5rem; }
   .btn {
-    display: block; width: 100%; padding: 0.9rem;
+    display: flex; align-items: center; justify-content: center;
+    width: 100%; padding: 0.9rem;
     border: none; border-radius: 8px;
     font-size: 1rem; font-weight: 600;
     cursor: pointer; transition: all 0.2s;
     margin-bottom: 0.75rem;
+    gap: 0.5rem;
   }
   .btn:last-child { margin-bottom: 0; }
   .btn-primary { background: #4ade80; color: #0a0a0f; }
@@ -45,9 +48,17 @@
   .btn-primary:disabled { background: #2a3a2a; color: #666; cursor: not-allowed; }
   .btn-secondary { background: #2a2a3a; color: #e0e0e0; }
   .btn-secondary:hover { background: #3a3a4a; }
+  .btn-wallet {
+    background: #1a1a2e; border: 1px solid #3a3a4a; color: #e0e0e0;
+    justify-content: flex-start; padding-left: 1.5rem;
+  }
+  .btn-wallet:hover { background: #252540; border-color: #4ade80; }
+  .btn-wallet img, .btn-wallet .wallet-icon { width: 28px; height: 28px; border-radius: 6px; }
+  .btn-wallet .wallet-icon { display: flex; align-items: center; justify-content: center; }
   .btn-link {
     background: none; color: #60a5fa; font-size: 0.85rem;
     text-decoration: underline; padding: 0.5rem;
+    display: block; text-align: center; cursor: pointer; border: none;
   }
   .btn-link:hover { color: #93bbfc; }
   .status {
@@ -80,7 +91,7 @@
   .checkmark { color: #4ade80; font-size: 3rem; text-align: center; margin-bottom: 1rem; }
   .divider {
     text-align: center; color: #555; font-size: 0.8rem;
-    margin: 1rem 0; position: relative;
+    margin: 1.25rem 0; position: relative;
   }
   .divider::before, .divider::after {
     content: ''; position: absolute; top: 50%;
@@ -91,6 +102,15 @@
   a { color: #4ade80; text-decoration: none; }
   a:hover { text-decoration: underline; }
   code { background: #1a1a2a; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.85rem; }
+  .wallet-list { margin-bottom: 0.5rem; }
+  .wallet-section-label {
+    font-size: 0.75rem; color: #666; text-transform: uppercase;
+    letter-spacing: 0.05em; margin-bottom: 0.5rem; margin-top: 0.25rem;
+  }
+  .no-wallets-hint {
+    font-size: 0.8rem; color: #666; text-align: center;
+    padding: 0.75rem; margin-bottom: 0.75rem;
+  }
 </style>
 </head>
 <body>
@@ -101,15 +121,41 @@
   <div class="card">
     <!-- Step 1: Choose method -->
     <div id="step-choose" class="step active">
-      <h2>Connect to Hyperliquid</h2>
+      <h2>Connect</h2>
       <p>Link your Hyperliquid account so Hyperbot can trade on your behalf via a secure agent wallet.</p>
-      <button class="btn btn-primary" onclick="showStep('step-manual')">Connect with API Wallet</button>
+
+      <!-- Dynamically discovered browser extension wallets (EIP-6963) -->
+      <div id="discovered-wallets" class="wallet-list"></div>
+
+      <!-- WalletConnect button (always shown) -->
+      <button class="btn btn-wallet" id="btn-walletconnect" onclick="connectWalletConnect()">
+        <svg class="wallet-icon" width="28" height="28" viewBox="0 0 480 480" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="480" height="480" rx="64" fill="#3396FF"/>
+          <path d="M141.3 196.2c54.6-53.5 143.2-53.5 197.7 0l6.6 6.4a6.7 6.7 0 010 9.7l-22.5 22a3.5 3.5 0 01-4.9 0l-9-8.9c-38.1-37.3-99.9-37.3-138 0l-9.7 9.5a3.5 3.5 0 01-4.9 0l-22.5-22a6.7 6.7 0 010-9.7l7.2-7zm244.3 45.5l20 19.7a6.7 6.7 0 010 9.7l-90.3 88.5a7 7 0 01-9.9 0l-64.1-62.8a1.8 1.8 0 00-2.5 0l-64.1 62.8a7 7 0 01-9.9 0l-90.3-88.5a6.7 6.7 0 010-9.7l20-19.7a7 7 0 019.9 0l64.1 62.8a1.8 1.8 0 002.5 0l64.1-62.8a7 7 0 019.9 0l64.1 62.8a1.8 1.8 0 002.5 0l64.1-62.8a7 7 0 019.9 0z" fill="#fff"/>
+        </svg>
+        WalletConnect
+      </button>
+
+      <div class="divider">OR</div>
+
+      <button class="btn btn-secondary" onclick="showStep('step-manual')">Enter API Key Manually</button>
+
+      <div id="status-choose" class="status"></div>
       <div class="security-note">
-        Uses Hyperliquid's built-in API wallet system. The agent can only trade — it cannot withdraw your funds.
+        Browser wallet creates a scoped agent key &mdash; it can only trade, never withdraw your funds.
+        API key route uses Hyperliquid's built-in API wallet system with the same protections.
       </div>
     </div>
 
-    <!-- Step 2: Manual API wallet flow -->
+    <!-- Step 2a: Browser wallet signing -->
+    <div id="step-signing" class="step">
+      <h2>Approve Agent</h2>
+      <p>Your wallet will ask you to sign a message. This authorizes Hyperbot to place trades on your behalf.</p>
+      <div id="status-signing" class="status info"><span class="spinner"></span>Waiting for wallet signature...</div>
+      <button class="btn btn-link" onclick="showStep('step-choose')">Cancel</button>
+    </div>
+
+    <!-- Step 2b: Manual API wallet flow -->
     <div id="step-manual" class="step">
       <h2>API Wallet Setup</h2>
       <ol>
@@ -134,8 +180,12 @@
     <div id="step-done" class="step">
       <div class="checkmark">&#10003;</div>
       <h2 style="text-align:center">Connected</h2>
-      <p style="text-align:center">Your wallet is connected. You can close this window and return to your terminal.</p>
+      <p id="done-message" style="text-align:center">Your wallet is connected. Launching dashboard<span id="dot-anim">...</span></p>
       <div id="wallet-result" class="status success"></div>
+      <div id="dashboard-loader" style="text-align:center; margin-top:1rem;">
+        <span class="spinner"></span>
+        <span style="color:#4ade80; font-size:0.9rem;">Loading Hyperbot Dashboard</span>
+      </div>
     </div>
   </div>
 </div>
@@ -144,6 +194,61 @@
 const CALLBACK_PORT = new URLSearchParams(window.location.search).get('port') || '18741';
 const CALLBACK_URL = `http://127.0.0.1:${CALLBACK_PORT}`;
 
+// WalletConnect Cloud project ID — get yours free at https://cloud.reown.com
+const WC_PROJECT_ID = new URLSearchParams(window.location.search).get('wcid') || '5799bab5c5f2e4b7ee04e2e6e5dbdc95';
+
+// -----------------------------------------------------------------------
+// EIP-6963: Multi-wallet discovery (avoids Brave/MetaMask window.ethereum hijack)
+// -----------------------------------------------------------------------
+const discoveredWallets = new Map();
+
+window.addEventListener('eip6963:announceProvider', (event) => {
+  const { info, provider } = event.detail;
+  // Dedupe by rdns (e.g. "io.metamask", "io.rabby", "xyz.talisman")
+  if (!discoveredWallets.has(info.rdns)) {
+    discoveredWallets.set(info.rdns, { info, provider });
+    renderDiscoveredWallets();
+  }
+});
+
+function renderDiscoveredWallets() {
+  const container = document.getElementById('discovered-wallets');
+  container.innerHTML = '';
+
+  if (discoveredWallets.size > 0) {
+    const label = document.createElement('div');
+    label.className = 'wallet-section-label';
+    label.textContent = 'Browser wallets detected';
+    container.appendChild(label);
+  }
+
+  for (const [rdns, { info, provider }] of discoveredWallets) {
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-wallet';
+
+    const icon = document.createElement('img');
+    icon.src = info.icon;
+    icon.alt = info.name;
+    icon.width = 28;
+    icon.height = 28;
+    icon.style.borderRadius = '6px';
+
+    const name = document.createTextNode(info.name);
+
+    btn.appendChild(icon);
+    btn.appendChild(name);
+    btn.addEventListener('click', () => connectExtensionWallet(provider, info.name));
+    container.appendChild(btn);
+  }
+}
+
+// Request wallet announcements — extensions respond immediately
+window.dispatchEvent(new Event('eip6963:requestProvider'));
+
+// -----------------------------------------------------------------------
+// UI helpers
+// -----------------------------------------------------------------------
+
 function showStep(id) {
   document.querySelectorAll('.step').forEach(s => s.classList.remove('active'));
   document.getElementById(id).classList.add('active');
@@ -151,9 +256,184 @@ function showStep(id) {
 
 function setStatus(stepId, msg, type) {
   const el = document.getElementById(`status-${stepId}`);
+  if (!el) return;
   el.className = `status ${type}`;
   el.innerHTML = msg;
 }
+
+// -----------------------------------------------------------------------
+// Shared: EIP-712 agent approval signing flow
+// -----------------------------------------------------------------------
+
+async function performAgentApproval(signer, masterAddress) {
+  showStep('step-signing');
+  setStatus('signing', '<span class="spinner"></span>Generating agent wallet...', 'info');
+
+  // Generate a fresh agent wallet (ephemeral key for trading only)
+  const agentWallet = ethers.Wallet.createRandom();
+  const agentAddress = agentWallet.address.toLowerCase();
+  const agentPrivateKey = agentWallet.privateKey;
+
+  // Get nonce from local server
+  const nonceResp = await fetch(`${CALLBACK_URL}/nonce?address=${masterAddress}`);
+  const nonceData = await nonceResp.json();
+  const nonce = nonceData.nonce;
+
+  // EIP-712 typed data for Hyperliquid approveAgent
+  // User-signed actions use Arbitrum One chainId (42161), not HL L1 (1337)
+  const domain = {
+    name: 'HyperliquidSignTransaction',
+    version: '1',
+    chainId: 42161,
+    verifyingContract: '0x0000000000000000000000000000000000000000',
+  };
+
+  const types = {
+    'HyperliquidTransaction:ApproveAgent': [
+      { name: 'hyperliquidChain', type: 'string' },
+      { name: 'agentAddress', type: 'address' },
+      { name: 'agentName', type: 'string' },
+      { name: 'nonce', type: 'uint64' },
+    ],
+  };
+
+  const value = {
+    hyperliquidChain: 'Mainnet',
+    agentAddress: agentAddress,
+    agentName: 'hyperbot',
+    nonce: nonce,
+  };
+
+  setStatus('signing', '<span class="spinner"></span>Please approve the signature in your wallet...', 'info');
+
+  const signature = await signer.signTypedData(domain, types, value);
+
+  setStatus('signing', '<span class="spinner"></span>Submitting approval to Hyperliquid...', 'info');
+
+  const resp = await fetch(`${CALLBACK_URL}/complete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      master_address: masterAddress,
+      agent_address: agentAddress,
+      agent_private_key: agentPrivateKey,
+      signature: signature,
+      nonce: nonce,
+    }),
+  });
+
+  const result = await resp.json();
+  if (result.ok) {
+    document.getElementById('wallet-result').textContent =
+      `Wallet: ${result.master_address}\nAgent: ${result.agent_address}\nCredentials saved to macOS Keychain.`;
+    showStep('step-done');
+  } else {
+    throw new Error(result.error || 'Failed to approve agent');
+  }
+}
+
+// -----------------------------------------------------------------------
+// Connect via browser extension (EIP-6963 discovered provider)
+// -----------------------------------------------------------------------
+
+async function connectExtensionWallet(provider, walletName) {
+  try {
+    setStatus('choose', `<span class="spinner"></span>Connecting to ${walletName}...`, 'info');
+
+    const accounts = await provider.request({ method: 'eth_requestAccounts' });
+    const masterAddress = accounts[0].toLowerCase();
+
+    const ethersProvider = new ethers.BrowserProvider(provider);
+    const signer = await ethersProvider.getSigner();
+
+    await performAgentApproval(signer, masterAddress);
+
+  } catch (err) {
+    if (err.code === 4001) {
+      setStatus('signing', 'Signature rejected. You can try again.', 'error');
+      setTimeout(() => showStep('step-choose'), 2000);
+    } else {
+      setStatus('choose', `Error: ${err.message}`, 'error');
+    }
+  }
+}
+
+// -----------------------------------------------------------------------
+// Connect via WalletConnect (QR code / deep link)
+// -----------------------------------------------------------------------
+
+let wcProviderModule = null;
+
+async function loadWalletConnectSDK() {
+  if (wcProviderModule) return wcProviderModule;
+
+  // Dynamically import WalletConnect EthereumProvider from esm.sh CDN
+  const mod = await import(
+    `https://esm.sh/@walletconnect/ethereum-provider@2.17.0?bundle`
+  );
+  wcProviderModule = mod;
+  return mod;
+}
+
+async function connectWalletConnect() {
+  try {
+    setStatus('choose', '<span class="spinner"></span>Loading WalletConnect...', 'info');
+
+    const { EthereumProvider } = await loadWalletConnectSDK();
+
+    const wcProvider = await EthereumProvider.init({
+      projectId: WC_PROJECT_ID,
+      chains: [1],                     // Ethereum mainnet
+      optionalChains: [42161],         // Arbitrum
+      showQrModal: true,               // Built-in QR modal
+      qrModalOptions: {
+        themeMode: 'dark',
+      },
+      metadata: {
+        name: 'Hyperbot',
+        description: 'Automated Hyperliquid trading',
+        url: 'https://hyperbot.trade',
+        icons: ['https://hyperbot.trade/icon.png'],
+      },
+    });
+
+    setStatus('choose', '<span class="spinner"></span>Scan QR code with your wallet...', 'info');
+
+    // This opens the WalletConnect QR modal
+    await wcProvider.connect();
+
+    const accounts = wcProvider.accounts;
+    if (!accounts || accounts.length === 0) {
+      throw new Error('No accounts returned from WalletConnect');
+    }
+
+    const masterAddress = accounts[0].toLowerCase();
+
+    const ethersProvider = new ethers.BrowserProvider(wcProvider);
+    const signer = await ethersProvider.getSigner();
+
+    await performAgentApproval(signer, masterAddress);
+
+    // Clean up WC session after successful approval
+    try { await wcProvider.disconnect(); } catch (_) {}
+
+  } catch (err) {
+    if (err.code === 4001 || err.message?.includes('rejected')) {
+      setStatus('signing', 'Connection rejected. You can try again.', 'error');
+      setTimeout(() => showStep('step-choose'), 2000);
+    } else if (err.message?.includes('projectId')) {
+      setStatus('choose', 'WalletConnect needs a project ID. Use a browser wallet extension or API key instead.', 'error');
+    } else {
+      const target = document.getElementById('step-signing').classList.contains('active') ? 'signing' : 'choose';
+      setStatus(target, `Error: ${err.message}`, 'error');
+      if (target === 'signing') setTimeout(() => showStep('step-choose'), 3000);
+    }
+  }
+}
+
+// -----------------------------------------------------------------------
+// Manual API key flow
+// -----------------------------------------------------------------------
 
 async function submitManual() {
   const address = document.getElementById('input-address').value.trim();
