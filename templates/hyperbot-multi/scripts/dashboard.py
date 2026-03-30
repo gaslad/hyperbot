@@ -57,6 +57,12 @@ class PairState:
         # Per-pair risk settings (defaults inherited from global)
         self.max_leverage: float = 4.0
         self.risk_per_trade_pct: float = 1.0
+        # Persisted trade plan from the originating signal
+        self.plan_entry: float | None = None
+        self.plan_sl: float | None = None
+        self.plan_tp: float | None = None
+        self.plan_strategy: str = ""
+        self.plan_reasons: list[str] = []
 
     def to_dict(self) -> dict:
         return {
@@ -69,6 +75,11 @@ class PairState:
             "enabled": self.enabled,
             "max_leverage": self.max_leverage,
             "risk_per_trade_pct": self.risk_per_trade_pct,
+            "plan_entry": self.plan_entry,
+            "plan_sl": self.plan_sl,
+            "plan_tp": self.plan_tp,
+            "plan_strategy": self.plan_strategy,
+            "plan_reasons": list(self.plan_reasons),
         }
 
 
@@ -480,6 +491,15 @@ def trading_loop() -> None:
                 if ps:
                     with STATE.lock:
                         ps.last_signals = sig_dicts
+                        # Persist trade plan from the strongest active signal
+                        active_sigs = [s for s in sig_dicts if s.get("direction") != "none"]
+                        if active_sigs:
+                            best = max(active_sigs, key=lambda s: s.get("confidence", 0))
+                            ps.plan_entry = best.get("entry_price")
+                            ps.plan_sl = best.get("stop_loss")
+                            ps.plan_tp = best.get("take_profit")
+                            ps.plan_strategy = best.get("strategy_id", "")
+                            ps.plan_reasons = best.get("reasons", [])
 
                 # Execute trades if live and active
                 with STATE.lock:
@@ -557,6 +577,12 @@ def trading_loop() -> None:
                         STATE.pnl = portfolio["unrealized_pnl"]
                         # Distribute positions to their respective pair states
                         all_positions = portfolio["positions"]
+                        # Auto-add pairs for coins with open positions not yet tracked
+                        for pos in all_positions:
+                            pc = pos.get("coin", "")
+                            if pc and pc not in STATE.pairs:
+                                STATE.add_pair(pc, pc)
+                                print(f"[dashboard] Auto-added pair {pc} (open position detected)", flush=True)
                         pair_positions: dict[str, list[dict]] = {c: [] for c in STATE.pairs}
                         for pos in all_positions:
                             pc = pos.get("coin", "")
