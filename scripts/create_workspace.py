@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-TEMPLATE_ROOT = ROOT / "templates" / "workspace"
+TEMPLATE_ROOT = ROOT / "templates" / "hyperbot-multi"
 PACKS_ROOT = ROOT / "strategy-packs"
 KNOWN_ASSETS: dict[str, int] = {}
 
