@@ -48,12 +48,23 @@ EOF
 
 chmod +x "$BIN_DIR/hyperbot"
 
+# Ensure hyperbot is on PATH for this session (and persist for future shells)
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *)
-    echo
-    echo "Add this to your shell profile if needed:"
-    echo "  export PATH=\"$BIN_DIR:\$PATH\""
+    export PATH="$BIN_DIR:$PATH"
+    # Add to shell profile if not already there
+    SHELL_RC=""
+    if [ -f "$HOME/.zshrc" ]; then
+      SHELL_RC="$HOME/.zshrc"
+    elif [ -f "$HOME/.bashrc" ]; then
+      SHELL_RC="$HOME/.bashrc"
+    elif [ -f "$HOME/.bash_profile" ]; then
+      SHELL_RC="$HOME/.bash_profile"
+    fi
+    if [ -n "$SHELL_RC" ] && ! grep -q "$BIN_DIR" "$SHELL_RC" 2>/dev/null; then
+      echo "export PATH=\"$BIN_DIR:\$PATH\"" >> "$SHELL_RC"
+    fi
     ;;
 esac
 
@@ -62,22 +73,12 @@ echo "============================================"
 echo "  Hyperbot installed successfully."
 echo "============================================"
 echo
-echo "  CLI: $BIN_DIR/hyperbot"
+echo "  Starts in test mode — no real trades until"
+echo "  you explicitly enable live trading."
 echo
-echo "  Get started:"
-echo "    hyperbot dashboard        Launch the setup wizard (recommended)"
-echo
-echo "  The wizard walks you through:"
-echo "    1. Pick a trading pair"
-echo "    2. Select strategies"
-echo "    3. Set risk parameters"
-echo "    4. Connect your Hyperliquid wallet"
-echo "    5. Build your workspace"
-echo
-echo "  Other commands:"
-echo "    hyperbot list-packs       Show available strategy packs"
-echo "    hyperbot validate         Run readiness checks"
-echo
-echo "  Starts in test mode by default. No real trades"
-echo "  until you explicitly enable live trading."
+echo "  Launching setup wizard..."
 echo "============================================"
+echo
+
+# Launch the dashboard wizard directly
+exec "$VENV_DIR/bin/python" "$INSTALL_ROOT/scripts/hyperbot.py" dashboard
