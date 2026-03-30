@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hyperbot — Own Your Trading Stack</title>
+<meta name="description" content="Local-first CLI for automated Hyperliquid perpetual futures trading. One command from zero to a live dashboard. No cloud, no black boxes.">
+<meta name="theme-color" content="#111111">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Serif+Display:ital@0;1&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --paper: #E8E4DD;
+  --signal: #E63B2E;
+  --offwhite: #F5F3EE;
+  --black: #111111;
+  --gray: #555;
+  --gray-light: #999;
+  --font-heading: 'Space Grotesk', sans-serif;
+  --font-drama: 'DM Serif Display', serif;
+  --font-mono: 'Space Mono', monospace;
+  --font-body: 'Space Grotesk', sans-serif;
+}
+
+* { margin:0; padding:0; box-sizing:border-box; }
+html { scroll-behavior:smooth; font-size:16px; }
+body { font-family:var(--font-body); background:var(--offwhite); color:var(--black); line-height:1.6; -webkit-font-smoothing:antialiased; overflow-x:hidden; }
+a { color:var(--signal); text-decoration:none; }
+a:hover { text-decoration:underline; }
+::selection { background:var(--signal); color:#fff; }
+
+/* Noise overlay */
+.noise { position:fixed; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:9999; opacity:0.04; }
+
+/* Skip link */
+.skip-link { position:absolute; top:-100px; left:16px; background:var(--signal); color:#fff; padding:8px 16px; font-size:14px; border-radius:0 0 8px 8px; z-index:10000; transition:top 0.2s; }
+.skip-link:focus { top:0; }
+
+/* ── NAVBAR ── */
+.nav { position:fixed; top:20px; left:50%; transform:translateX(-50%); z-index:100; display:flex; align-items:center; gap:32px; padding:12px 28px; border-radius:100px; transition:all 0.4s cubic-bezier(0.25,0.46,0.45,0.94); }
+.nav.top { background:transparent; }
+.nav.scrolled { background:rgba(245,243,238,0.85); backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px); border:1px solid rgba(0,0,0,0.06); box-shadow:0 4px 24px rgba(0,0,0,0.06); }
+.nav-brand { font-family:var(--font-heading); font-weight:700; font-size:18px; letter-spacing:-0.5px; white-space:nowrap; }
+.nav.top .nav-brand, .nav.top .nav-link { color:#fff; }
+.nav.scrolled .nav-brand, .nav.scrolled .nav-link { color:var(--black); }
+.nav-links { display:flex; gap:24px; align-items:center; }
+.nav-link { font-size:14px; font-weight:500; transition:color 0.2s, transform 0.2s; display:inline-block; }
+.nav-link:hover { text-decoration:none; transform:translateY(-1px); }
+.nav-cta { background:var(--signal); color:#fff; padding:8px 20px; border-radius:100px; font-size:14px; font-weight:600; border:none; cursor:pointer; transition:transform 0.2s cubic-bezier(0.25,0.46,0.45,0.94), box-shadow 0.2s; white-space:nowrap; }
+.nav-cta:hover { transform:scale(1.03); box-shadow:0 4px 16px rgba(230,59,46,0.25); text-decoration:none; }
+
+/* ── HERO ── */
+.hero { position:relative; min-height:100dvh; display:flex; align-items:flex-end; padding:0 clamp(24px,5vw,80px) clamp(60px,10vh,120px); overflow:hidden; }
+.hero-bg { position:absolute; inset:0; background:linear-gradient(to top, #111 0%, rgba(17,17,17,0.7) 40%, rgba(17,17,17,0.3) 100%), url('https://images.unsplash.com/photo-1558618666-fcd25c85f82e?w=1920&q=80') center/cover no-repeat; }
+.hero-content { position:relative; z-index:2; max-width:900px; }
+.hero-line1 { font-family:var(--font-heading); font-weight:700; font-size:clamp(20px,3vw,28px); color:rgba(255,255,255,0.7); letter-spacing:-0.02em; margin-bottom:8px; text-transform:uppercase; letter-spacing:0.1em; }
+.hero-line2 { font-family:var(--font-drama); font-style:italic; font-size:clamp(48px,8vw,96px); color:#fff; line-height:1.05; letter-spacing:-0.02em; margin-bottom:24px; }
+.hero-line2 em { color:var(--signal); font-style:italic; }
+.hero-sub { font-size:clamp(16px,1.8vw,20px); color:rgba(255,255,255,0.6); max-width:560px; line-height:1.5; margin-bottom:36px; }
+.hero-cta { display:inline-flex; align-items:center; gap:10px; background:var(--signal); color:#fff; padding:16px 32px; border-radius:8px; font-family:var(--font-heading); font-weight:600; font-size:16px; border:none; cursor:pointer; transition:transform 0.2s, box-shadow 0.2s; }
+.hero-cta:hover { transform:scale(1.03); box-shadow:0 8px 32px rgba(230,59,46,0.3); text-decoration:none; color:#fff; }
+.hero-install { display:block; margin-top:16px; font-family:var(--font-mono); font-size:13px; color:rgba(255,255,255,0.4); }
+
+/* ── SECTION COMMON ── */
+.section { padding:clamp(80px,12vw,160px) clamp(24px,5vw,80px); }
+.section-label { font-family:var(--font-mono); font-size:12px; text-transform:uppercase; letter-spacing:0.15em; color:var(--signal); margin-bottom:16px; }
+.section-title { font-family:var(--font-heading); font-weight:700; font-size:clamp(32px,5vw,56px); letter-spacing:-0.03em; line-height:1.1; margin-bottom:24px; }
+.section-sub { font-size:clamp(16px,1.5vw,20px); color:var(--gray); max-width:600px; line-height:1.5; margin-bottom:48px; }
+
+/* ── FEATURES ── */
+.features { background:var(--offwhite); }
+.feature-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:24px; max-width:1200px; }
+.feature-card { background:var(--paper); border-top:3px solid var(--signal); padding:40px 32px; transition:transform 0.3s cubic-bezier(0.25,0.46,0.45,0.94); }
+.feature-card:hover { transform:translateY(-4px); }
+.feature-icon { width:48px; height:48px; background:var(--black); border-radius:8px; display:flex; align-items:center; justify-content:center; margin-bottom:24px; }
+.feature-icon svg { width:24px; height:24px; stroke:#fff; stroke-width:2; fill:none; stroke-linecap:round; stroke-linejoin:round; }
+.feature-name { font-family:var(--font-heading); font-weight:700; font-size:20px; letter-spacing:-0.02em; margin-bottom:12px; }
+.feature-desc { font-size:15px; color:var(--gray); line-height:1.6; }
+.feature-detail { font-family:var(--font-mono); font-size:12px; color:var(--signal); margin-top:16px; display:flex; align-items:center; gap:6px; }
+
+/* ── PHILOSOPHY ── */
+.philosophy { background:var(--black); color:#fff; position:relative; overflow:hidden; }
+.philosophy-bg { position:absolute; inset:0; background:url('https://images.unsplash.com/photo-1635070041078-e363dbe005cb?w=1920&q=80') center/cover no-repeat; opacity:0.06; }
+.philosophy-content { position:relative; z-index:2; max-width:900px; }
+.phil-line-small { font-size:clamp(18px,2.5vw,28px); color:rgba(255,255,255,0.5); margin-bottom:24px; line-height:1.4; }
+.phil-line-big { font-family:var(--font-drama); font-style:italic; font-size:clamp(36px,6vw,72px); line-height:1.1; letter-spacing:-0.02em; }
+.phil-line-big em { color:var(--signal); font-style:italic; }
+
+/* ── HOW IT WORKS ── */
+.protocol { background:var(--paper); }
+.protocol-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:24px; max-width:1200px; }
+.protocol-card { background:var(--offwhite); border-top:3px solid var(--black); padding:40px 32px; position:relative; }
+.protocol-num { font-family:var(--font-mono); font-size:64px; font-weight:700; color:rgba(0,0,0,0.06); position:absolute; top:16px; right:24px; line-height:1; }
+.protocol-title { font-family:var(--font-heading); font-weight:700; font-size:20px; margin-bottom:12px; letter-spacing:-0.02em; }
+.protocol-desc { font-size:15px; color:var(--gray); line-height:1.6; }
+
+/* ── STRATEGIES ── */
+.strategies { background:var(--offwhite); }
+.strat-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:24px; max-width:1200px; }
+.strat-card { background:var(--paper); border-top:3px solid var(--signal); padding:32px; }
+.strat-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; }
+.strat-name { font-family:var(--font-heading); font-weight:700; font-size:18px; letter-spacing:-0.02em; }
+.strat-badge { font-family:var(--font-mono); font-size:11px; padding:4px 10px; border-radius:4px; font-weight:700; }
+.badge-high { background:rgba(230,59,46,0.1); color:var(--signal); }
+.badge-med { background:rgba(0,0,0,0.06); color:var(--gray); }
+.strat-family { font-family:var(--font-mono); font-size:11px; text-transform:uppercase; letter-spacing:0.1em; color:var(--gray-light); margin-bottom:12px; }
+.strat-desc { font-size:14px; color:var(--gray); line-height:1.6; margin-bottom:16px; }
+.strat-meta { display:flex; gap:16px; font-family:var(--font-mono); font-size:11px; color:var(--gray-light); }
+
+/* ── INSTALL / CTA ── */
+.install { background:var(--black); color:#fff; text-align:center; }
+.install-title { font-family:var(--font-drama); font-style:italic; font-size:clamp(36px,6vw,64px); line-height:1.1; margin-bottom:16px; }
+.install-sub { font-size:18px; color:rgba(255,255,255,0.5); margin-bottom:40px; max-width:500px; margin-left:auto; margin-right:auto; }
+.install-cmd { display:inline-block; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.1); border-radius:8px; padding:20px 32px; font-family:var(--font-mono); font-size:clamp(13px,1.5vw,16px); color:rgba(255,255,255,0.8); cursor:pointer; transition:border-color 0.2s, background 0.2s; word-break:break-all; max-width:90vw; }
+.install-cmd:hover { border-color:var(--signal); background:rgba(230,59,46,0.06); }
+.install-hint { font-size:13px; color:rgba(255,255,255,0.3); margin-top:16px; }
+.install-links { display:flex; gap:24px; justify-content:center; margin-top:32px; }
+.install-link { color:rgba(255,255,255,0.5); font-size:14px; transition:color 0.2s; }
+.install-link:hover { color:#fff; }
+
+/* ── FOOTER ── */
+.footer { background:var(--black); color:rgba(255,255,255,0.4); padding:48px clamp(24px,5vw,80px); border-top:1px solid rgba(255,255,255,0.06); }
+.footer-inner { display:flex; justify-content:space-between; align-items:center; max-width:1200px; margin:0 auto; flex-wrap:wrap; gap:24px; }
+.footer-brand { font-family:var(--font-heading); font-weight:700; font-size:16px; color:#fff; }
+.footer-status { display:flex; align-items:center; gap:8px; font-family:var(--font-mono); font-size:12px; }
+.footer-dot { width:8px; height:8px; border-radius:50%; background:#22c55e; box-shadow:0 0 8px rgba(34,197,94,0.4); animation:fpulse 2s ease-in-out infinite; }
+@keyframes fpulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+.footer-links { display:flex; gap:24px; font-size:13px; }
+.footer-links a { color:rgba(255,255,255,0.4); }
+.footer-links a:hover { color:#fff; text-decoration:none; }
+
+/* ── RESPONSIVE ── */
+@media(max-width:768px) {
+  .nav-links { display:none; }
+  .feature-grid, .protocol-grid, .strat-grid { grid-template-columns:1fr; }
+  .hero { align-items:center; padding-bottom:60px; }
+  .footer-inner { flex-direction:column; text-align:center; }
+}
+
+/* ── ANIMATIONS ── */
+.reveal { opacity:0; transform:translateY(30px); transition:opacity 0.8s cubic-bezier(0.25,0.46,0.45,0.94), transform 0.8s cubic-bezier(0.25,0.46,0.45,0.94); }
+.reveal.visible { opacity:1; transform:translateY(0); }
+.reveal-delay-1 { transition-delay:0.1s; }
+.reveal-delay-2 { transition-delay:0.2s; }
+.reveal-delay-3 { transition-delay:0.3s; }
+
+/* Typewriter */
+.typewriter { font-family:var(--font-mono); font-size:13px; color:var(--gray); min-height:120px; padding:16px; background:rgba(0,0,0,0.03); border-radius:4px; margin-top:16px; white-space:pre-wrap; word-break:break-word; }
+.cursor { display:inline-block; width:2px; height:14px; background:var(--signal); animation:blink 1s step-end infinite; vertical-align:text-bottom; margin-left:2px; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+.live-dot { display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--signal); margin-right:6px; animation:fpulse 2s ease-in-out infinite; }
+
+@media(prefers-reduced-motion:reduce) {
+  .reveal { opacity:1; transform:none; transition:none; }
+  .cursor { animation:none; opacity:1; }
+  .footer-dot, .live-dot { animation:none; }
+}
+</style>
+</head>
+<body>
+
+<!-- Noise texture -->
+<svg class="noise" xmlns="http://www.w3.org/2000/svg"><filter id="noise"><feTurbulence type="fractalNoise" baseFrequency="0.65" numOctaves="3" stitchTiles="stitch"/></filter><rect width="100%" height="100%" filter="url(#noise)"/></svg>
+
+<!-- Skip link -->
+<a href="#main" class="skip-link">Skip to content</a>
+
+<!-- Navbar -->
+<nav class="nav top" id="navbar">
+  <span class="nav-brand">Hyperbot</span>
+  <div class="nav-links">
+    <a href="#features" class="nav-link">Features</a>
+    <a href="#how" class="nav-link">How It Works</a>
+    <a href="#strategies" class="nav-link">Strategies</a>
+    <a href="#install" class="nav-cta">Get Started</a>
+  </div>
+</nav>
+
+<!-- Hero -->
+<section class="hero" id="main">
+  <div class="hero-bg"></div>
+  <div class="hero-content">
+    <div class="hero-line1 reveal">Own the</div>
+    <h1 class="hero-line2 reveal reveal-delay-1">Trading<br><em>Stack.</em></h1>
+    <p class="hero-sub reveal reveal-delay-2">Local-first CLI that generates self-contained trading workspaces for Hyperliquid perpetual futures. No cloud dependencies, no LLM tokens, no black boxes.</p>
+    <a href="#install" class="hero-cta reveal reveal-delay-3">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+      Get Started
+    </a>
+    <span class="hero-install reveal reveal-delay-3">bash &lt;(curl -fsSL .../install.sh)</span>
+  </div>
+</section>
+
+<!-- Features -->
+<section class="section features" id="features">
+  <div class="section-label reveal">Core Principles</div>
+  <h2 class="section-title reveal">Built for traders who<br>read their own code.</h2>
+  <p class="section-sub reveal">Every line of logic that touches your money is deterministic Python running on your machine. No cloud. No AI making decisions. No surprises.</p>
+  <div class="feature-grid">
+    <div class="feature-card reveal">
+      <div class="feature-icon">
+        <svg viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="2"/><path d="M12 2v20M2 12h20"/></svg>
+      </div>
+      <div class="feature-name">Local-First Execution</div>
+      <div class="feature-desc">All signal detection, risk management, position sizing, and order execution runs as deterministic Python on your machine. The only external call is to Hyperliquid's API for market data and order submission.</div>
+      <div class="feature-detail">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/></svg>
+        Zero cloud dependencies
+      </div>
+    </div>
+    <div class="feature-card reveal reveal-delay-1">
+      <div class="feature-icon">
+        <svg viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+      </div>
+      <div class="feature-name">Deterministic Signals</div>
+      <div class="feature-desc">Three strategy packs — trend pullback, compression breakout, liquidity sweep reversal — each a readable config with traceable calculations. No neural networks, no black-box predictions. You can follow every signal to its source.</div>
+      <div class="feature-detail">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/></svg>
+        SMA, Bollinger, ATR, wick analysis
+      </div>
+    </div>
+    <div class="feature-card reveal reveal-delay-2">
+      <div class="feature-icon">
+        <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+      </div>
+      <div class="feature-name">Safety by Default</div>
+      <div class="feature-desc">Live trading is always opt-in with <code>--live --confirm-risk</code>. Leverage caps, daily loss circuit breakers, and position sizing are enforced at the workspace level. Built to protect you from yourself at 3am.</div>
+      <div class="feature-detail">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/></svg>
+        Policy-driven risk management
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Philosophy -->
+<section class="section philosophy">
+  <div class="philosophy-bg"></div>
+  <div class="philosophy-content">
+    <p class="phil-line-small reveal">Most trading tools ask you to choose: hand over control to a hosted platform, or spend weeks building from raw SDKs.</p>
+    <p class="phil-line-big reveal reveal-delay-1">Hyperbot generates the workspace.<br>You <em>own it</em> from there.</p>
+  </div>
+</section>
+
+<!-- How It Works -->
+<section class="section protocol" id="how">
+  <div class="section-label reveal">How It Works</div>
+  <h2 class="section-title reveal">Zero to live dashboard<br>in one command.</h2>
+  <p class="section-sub reveal">A 5-step wizard handles everything — pair selection, strategy config, risk parameters, wallet credentials, and workspace build. Then the dashboard takes over.</p>
+  <div class="protocol-grid">
+    <div class="protocol-card reveal">
+      <div class="protocol-num">01</div>
+      <div class="protocol-title">Generate Workspace</div>
+      <div class="protocol-desc">Run <code style="font-family:var(--font-mono);font-size:13px;background:rgba(0,0,0,0.05);padding:2px 6px;border-radius:3px">hyperbot dashboard</code> and the wizard walks you through pair selection, strategy packs, and risk limits. A self-contained workspace is built with 90-day historical profiles.</div>
+    </div>
+    <div class="protocol-card reveal reveal-delay-1">
+      <div class="protocol-num">02</div>
+      <div class="protocol-title">Monitor Signals</div>
+      <div class="protocol-desc">The live dashboard polls Hyperliquid every 3 seconds. You see real-time price, account equity, strategy signals with confidence scores, open positions, and a trade thesis showing exactly what the bot plans to do and why.</div>
+    </div>
+    <div class="protocol-card reveal reveal-delay-2">
+      <div class="protocol-num">03</div>
+      <div class="protocol-title">Execute with Control</div>
+      <div class="protocol-desc">When you're ready, enable live mode. Orders execute through Hyperliquid's SDK with proper asset-specific formatting, stop-loss placement, and take-profit targets. Every trade is logged. Every decision is traceable.</div>
+    </div>
+  </div>
+</section>
+
+<!-- Strategies -->
+<section class="section strategies" id="strategies">
+  <div class="section-label reveal">Strategy Packs v1</div>
+  <h2 class="section-title reveal">Modular. Readable.<br>Forkable.</h2>
+  <p class="section-sub reveal">Each pack is a self-contained config with sensible defaults. Token-specific revision tunes parameters automatically using 90-day historical data. Or fork one and write your own signals.</p>
+  <div class="strat-grid">
+    <div class="strat-card reveal">
+      <div class="strat-head">
+        <div class="strat-name">Trend Pullback</div>
+        <span class="strat-badge badge-high">High Confidence</span>
+      </div>
+      <div class="strat-family">Continuation</div>
+      <div class="strat-desc">Buys dips in an uptrend. Waits for price to pull back toward the SMA, then enters when trend confirmation holds. Low-frequency, high-probability.</div>
+      <div class="strat-meta">
+        <span>1D, 4H, 1H</span>
+        <span>1.5% risk</span>
+        <span>4x max lev</span>
+      </div>
+    </div>
+    <div class="strat-card reveal reveal-delay-1">
+      <div class="strat-head">
+        <div class="strat-name">Compression Breakout</div>
+        <span class="strat-badge badge-high">High Confidence</span>
+      </div>
+      <div class="strat-family">Breakout</div>
+      <div class="strat-desc">Detects tight Bollinger Band squeezes, then enters when price breaks out with volume expansion. Catches the start of big moves.</div>
+      <div class="strat-meta">
+        <span>4H, 1H, 15M</span>
+        <span>1.0% risk</span>
+        <span>4x max lev</span>
+      </div>
+    </div>
+    <div class="strat-card reveal reveal-delay-2">
+      <div class="strat-head">
+        <div class="strat-name">Liquidity Sweep</div>
+        <span class="strat-badge badge-med">Medium Confidence</span>
+      </div>
+      <div class="strat-family">Reversal</div>
+      <div class="strat-desc">Watches for stop-hunts below support or above resistance. Enters the reversal after a sweep-and-reject candle pattern. Higher reward, lower frequency.</div>
+      <div class="strat-meta">
+        <span>4H, 1H, 15M</span>
+        <span>0.75% risk</span>
+        <span>3x max lev</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Dashboard Preview -->
+<section class="section" style="background:var(--black);color:#fff;text-align:center">
+  <div class="section-label reveal" style="color:var(--signal)">The Dashboard</div>
+  <h2 class="section-title reveal" style="color:#fff;max-width:700px;margin-left:auto;margin-right:auto">A control panel,<br>not a pretty chart.</h2>
+  <p class="section-sub reveal" style="color:rgba(255,255,255,0.5);margin-left:auto;margin-right:auto">3-column layout. Left: signal engine with condition checklist. Center: live PnL chart with trade thesis showing SL/TP and R-multiple progress. Right: position details and risk controls. Every data point updates every 3 seconds.</p>
+  <div class="reveal reveal-delay-1" style="margin-top:40px;padding:2px;background:linear-gradient(135deg,rgba(230,59,46,0.3),rgba(255,255,255,0.1));border-radius:12px;display:inline-block;max-width:900px;width:100%">
+    <div style="background:#0a0a0a;border-radius:11px;padding:32px;text-align:left">
+      <div style="display:flex;gap:12px;margin-bottom:20px">
+        <div style="width:12px;height:12px;border-radius:50%;background:#E63B2E"></div>
+        <div style="width:12px;height:12px;border-radius:50%;background:#eab308"></div>
+        <div style="width:12px;height:12px;border-radius:50%;background:#22c55e"></div>
+      </div>
+      <div style="display:grid;grid-template-columns:200px 1fr 200px;gap:16px;font-family:var(--font-mono);font-size:11px;color:rgba(255,255,255,0.5);min-height:200px">
+        <div style="border-right:1px solid rgba(255,255,255,0.08);padding-right:16px">
+          <div style="color:rgba(255,255,255,0.3);font-size:10px;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px">Logic Engine</div>
+          <div style="color:#22c55e;font-size:24px;font-weight:700;font-family:var(--font-heading);margin-bottom:8px">LONG</div>
+          <div style="margin-bottom:4px">Confidence: <span style="color:#fff">82%</span></div>
+          <div style="margin-top:12px;font-size:10px">
+            <div style="margin-bottom:4px"><span style="color:#22c55e">&bull;</span> Price > SMA(50)</div>
+            <div style="margin-bottom:4px"><span style="color:#22c55e">&bull;</span> Pullback detected</div>
+            <div style="margin-bottom:4px;color:rgba(255,255,255,0.25);text-decoration:line-through"><span style="color:#ef4444">&bull;</span> Volume spike</div>
+          </div>
+        </div>
+        <div style="padding:0 16px">
+          <div style="color:rgba(255,255,255,0.3);font-size:10px;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px">SOL/USDT <span style="color:#fff">104.22</span></div>
+          <div style="height:100px;position:relative;margin-bottom:12px">
+            <svg width="100%" height="100%" viewBox="0 0 400 100" preserveAspectRatio="none" style="opacity:0.7">
+              <defs><linearGradient id="pg" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#22c55e" stop-opacity="0.15"/><stop offset="100%" stop-color="#22c55e" stop-opacity="0"/></linearGradient></defs>
+              <line x1="0" y1="70" x2="400" y2="70" stroke="rgba(255,255,255,0.05)" stroke-dasharray="4"/>
+              <path d="M0,100 L0,65 L30,70 L60,55 L90,60 L120,50 L150,55 L180,40 L210,45 L240,35 L270,30 L300,28 L330,25 L360,20 L400,15 L400,100Z" fill="url(#pg)"/>
+              <path d="M0,65 L30,70 L60,55 L90,60 L120,50 L150,55 L180,40 L210,45 L240,35 L270,30 L300,28 L330,25 L360,20 L400,15" fill="none" stroke="#22c55e" stroke-width="2"/>
+              <circle cx="400" cy="15" r="3" fill="#22c55e"/>
+            </svg>
+          </div>
+          <div style="font-size:10px;color:rgba(255,255,255,0.3)">
+            <span style="margin-right:16px">Entry: <span style="color:rgba(255,255,255,0.6)">102.34</span></span>
+            <span style="margin-right:16px">SL: <span style="color:#ef4444">99.80</span></span>
+            <span>TP: <span style="color:#22c55e">106.44</span></span>
+            <span style="margin-left:16px;color:#22c55e">+0.46R</span>
+          </div>
+        </div>
+        <div style="border-left:1px solid rgba(255,255,255,0.08);padding-left:16px">
+          <div style="color:rgba(255,255,255,0.3);font-size:10px;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px">Exposure</div>
+          <div style="margin-bottom:8px">Position: <span style="color:#fff">50.0 SOL</span></div>
+          <div style="margin-bottom:8px">PnL: <span style="color:#22c55e">+$94.12</span></div>
+          <div style="margin-bottom:8px">Leverage: <span style="color:#fff">5.0x</span></div>
+          <div style="margin-top:16px;padding:8px;border:1px solid rgba(239,68,68,0.2);background:rgba(239,68,68,0.05);text-align:center;color:#ef4444;font-size:10px;font-weight:700;letter-spacing:1px">KILL SWITCH</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Install CTA -->
+<section class="section install" id="install">
+  <div class="section-label reveal" style="color:var(--signal)">Get Started</div>
+  <h2 class="install-title reveal">One command.<br>Your machine.</h2>
+  <p class="install-sub reveal">Installs the Hyperbot CLI. Run it again to update. No accounts, no API keys, no subscriptions.</p>
+  <div class="install-cmd reveal reveal-delay-1" onclick="navigator.clipboard.writeText('bash <(curl -fsSL https://raw.githubusercontent.com/gaslad/hyperbot/main/install.sh)');this.style.borderColor='#22c55e';this.innerHTML='Copied to clipboard!';setTimeout(()=>{this.style.borderColor='';this.innerHTML='bash &lt;(curl -fsSL https://raw.githubusercontent.com/gaslad/hyperbot/main/install.sh)'},2000)">
+    bash &lt;(curl -fsSL https://raw.githubusercontent.com/gaslad/hyperbot/main/install.sh)
+  </div>
+  <div class="install-hint reveal reveal-delay-2">Click to copy</div>
+  <div class="install-links reveal reveal-delay-3">
+    <a href="https://github.com/gaslad/hyperbot" class="install-link">GitHub Repository</a>
+    <a href="https://github.com/gaslad/hyperbot#readme" class="install-link">Documentation</a>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer class="footer">
+  <div class="footer-inner">
+    <div>
+      <div class="footer-brand">Hyperbot</div>
+      <div style="font-size:13px;margin-top:4px">The workspace generator for traders who own their stack.</div>
+    </div>
+    <div class="footer-status">
+      <span class="footer-dot"></span>
+      Open Source &middot; MIT License
+    </div>
+    <div class="footer-links">
+      <a href="https://github.com/gaslad/hyperbot">GitHub</a>
+      <a href="https://github.com/gaslad/hyperbot#readme">Docs</a>
+      <a href="https://app.hyperliquid.xyz">Hyperliquid</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+// Navbar scroll morph
+const nav = document.getElementById('navbar');
+function checkScroll() {
+  if (window.scrollY > 80) { nav.classList.remove('top'); nav.classList.add('scrolled'); }
+  else { nav.classList.remove('scrolled'); nav.classList.add('top'); }
+}
+if (window.scrollY > 80) { nav.classList.remove('top'); nav.classList.add('scrolled'); }
+window.addEventListener('scroll', checkScroll, {passive:true});
+
+// Scroll reveal
+const reveals = document.querySelectorAll('.reveal');
+const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+if (prefersReduced) {
+  reveals.forEach(el => el.classList.add('visible'));
+} else {
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); io.unobserve(e.target); }});
+  }, {threshold:0.1, rootMargin:'0px 0px -40px 0px'});
+  reveals.forEach(el => io.observe(el));
+}
+
+// Smooth anchor scroll
+document.querySelectorAll('a[href^="#"]').forEach(a => {
+  a.addEventListener('click', e => {
+    e.preventDefault();
+    const target = document.querySelector(a.getAttribute('href'));
+    if (target) target.scrollIntoView({behavior:'smooth', block:'start'});
+  });
+});
+</script>
+</body>
+</html>

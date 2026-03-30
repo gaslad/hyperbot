@@ -1,0 +1,37 @@
+{
+  "strategy_id": "btc_compression_breakout",
+  "display_name": "BTC Compression Breakout",
+  "enabled": true,
+  "pack_id": "compression_breakout",
+  "market": {
+    "symbol": "BTCUSDT",
+    "coin": "BTC",
+    "market_type": "perpetual"
+  },
+  "runner": {
+    "source": "hyperliquid_candles",
+    "anchor_timeframe": "1D",
+    "trigger_timeframe": "4H",
+    "confirmation_timeframe": "1H"
+  },
+  "entry": {
+    "sma_period": 10,
+    "pullback_zone_pct": 5.0,
+    "confirmation_type": "close_above_prev_high"
+  },
+  "filters": {
+    "overextension_max_pct": 20.0,
+    "min_pullback_pct": 3.0
+  },
+  "risk": {
+    "invalidation_below_sma_pct": 3.0,
+    "position_sizing": {
+      "risk_per_trade_pct": 1.5,
+      "max_leverage": 4.0
+    }
+  },
+  "take_profit": {
+    "tp1_r_multiple": 1.0,
+    "tp2_r_multiple": 2.0
+  }
+}

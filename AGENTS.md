@@ -54,6 +54,23 @@ No LLM API tokens are required for any core functionality.
 - Signal dispatch: `pack_id` field in strategy config maps to detector functions in `signals.py`
 - Credentials: macOS Keychain via `security` CLI, fallback to `~/.hyperbot/credentials/`
 
+## Website (Landing Page)
+
+- `website/index.html` — single-file marketing landing page ("Brutalist Signal" aesthetic)
+- `website/_redirects` — Netlify SPA routing
+- Hosted on Netlify: `hyperbot-landing` (site ID: `7a8e6d3d-4864-4c60-8928-6593a8e3429b`)
+- Live URL: `https://hyperbot-landing.netlify.app`
+- Deploy: `./scripts/deploy.sh` or drag-drop `website/` at Netlify dashboard
+
+## Dashboard
+
+- `templates/hyperbot-multi/scripts/dashboard.py` — serves the trading dashboard as inline HTML (`DASHBOARD_HTML` string ~2800 lines)
+- 3-column layout: left (signals/checklist), center (chart + trade thesis), right (position/risk)
+- Bottom tabbed panel: Logs, Pairs, Config, Backtest
+- All vanilla HTML/CSS/JS — no React, no build step
+- `dashPoll()` hits `/api/state` every 3s
+- To edit the UI: modify the `DASHBOARD_HTML` string (starts ~line 619), then verify with `python3 -c "compile(open('dashboard.py').read(), 'dashboard.py', 'exec')"`
+
 ## Build & Test
 
 ```bash

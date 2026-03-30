@@ -1,0 +1,37 @@
+plugins = []
+headers = []
+
+[functions]
+
+[functions."*"]
+
+[build]
+publish = "/Users/gaston/Library/CloudStorage/Dropbox/-- PROJECTS/hyperbot/website"
+publishOrigin = "default"
+base = "/Users/gaston/Library/CloudStorage/Dropbox/-- PROJECTS/hyperbot/website"
+
+[build.environment]
+
+[build.processing]
+
+[build.processing.css]
+
+[build.processing.html]
+
+[build.processing.images]
+
+[build.processing.js]
+
+[build.services]
+
+[[redirects]]
+from = "/*"
+to = "/index.html"
+status = 200.0
+force = false
+
+[redirects.query]
+
+[redirects.conditions]
+
+[redirects.headers]
