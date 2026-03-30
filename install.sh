@@ -29,15 +29,21 @@ else
   git clone --depth=1 --branch "$BRANCH" "$REPO_URL" "$INSTALL_ROOT"
 fi
 
+VENV_DIR="$INSTALL_ROOT/.venv"
+if [ ! -d "$VENV_DIR" ]; then
+  echo "Creating virtual environment"
+  python3 -m venv "$VENV_DIR"
+fi
+
 if [ -f "$INSTALL_ROOT/requirements.txt" ]; then
   echo "Installing Python dependencies"
-  python3 -m pip install -r "$INSTALL_ROOT/requirements.txt"
+  "$VENV_DIR/bin/pip" install -r "$INSTALL_ROOT/requirements.txt"
 fi
 
 cat > "$BIN_DIR/hyperbot" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-exec python3 "$INSTALL_ROOT/scripts/hyperbot.py" "\$@"
+exec "$VENV_DIR/bin/python" "$INSTALL_ROOT/scripts/hyperbot.py" "\$@"
 EOF
 
 chmod +x "$BIN_DIR/hyperbot"
