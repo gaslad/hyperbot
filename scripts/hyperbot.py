@@ -96,20 +96,16 @@ def launch_dashboard(args: argparse.Namespace) -> int:
     # Step 1: Ensure SDK is available
     ensure_sdk()
 
-    # Step 2: Check for wallet credentials (from `hyperbot connect`)
+    # Step 2: Check for wallet credentials (optional — dashboard can connect via browser wallet)
     try:
         from connect.server import read_credential
         master = read_credential("master_address")
-        if not master:
-            log("[hyperbot] No wallet connected.")
-            log("[hyperbot] Run:  hyperbot connect")
-            log("[hyperbot] This opens a browser to connect your Hyperliquid wallet.")
-            return 1
-        log(f"[hyperbot] Wallet: {master}")
-    except Exception as e:
-        log(f"[hyperbot] Could not check credentials: {e}")
-        log("[hyperbot] Run:  hyperbot connect")
-        return 1
+        if master:
+            log(f"[hyperbot] Wallet from Keychain: {master}")
+        else:
+            log("[hyperbot] No saved wallet — dashboard will prompt for browser wallet connect.")
+    except Exception:
+        log("[hyperbot] No saved wallet — dashboard will prompt for browser wallet connect.")
 
     # Step 3: Find or create workspace
     if args.workspace_path:
@@ -141,6 +137,21 @@ def launch_dashboard(args: argparse.Namespace) -> int:
         log(f"[hyperbot] Workspace ready at {workspace}")
     else:
         log(f"[hyperbot] Using workspace: {workspace}")
+
+    # Sync template scripts into workspace (keeps strategy code up to date)
+    template_scripts = ROOT / "templates" / "hyperbot-multi" / "scripts"
+    workspace_scripts = workspace / "scripts"
+    if template_scripts.is_dir() and workspace_scripts.is_dir():
+        import shutil
+        synced = []
+        for src in template_scripts.glob("*.py"):
+            dst = workspace_scripts / src.name
+            # Always overwrite — template is source of truth for code
+            if not dst.exists() or src.read_bytes() != dst.read_bytes():
+                shutil.copy2(src, dst)
+                synced.append(src.name)
+        if synced:
+            log(f"[hyperbot] Synced {len(synced)} script(s): {', '.join(synced)}")
 
     # Step 4: Launch dashboard
     dash_script = workspace / "scripts" / "dashboard.py"

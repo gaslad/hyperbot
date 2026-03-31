@@ -1,0 +1,25 @@
+{
+  "pack_id": "scalp_v2",
+  "name": "5-Minute Scalp v2",
+  "version": "2.0.0",
+  "description": "Professional-grade 5-minute breakout scalping strategy. Targets 3-5 trades/day on liquid Hyperliquid perps using 15m trend bias + 5m execution with ADX, VWAP, CVD, and volume confirmation.",
+  "category": "scalping",
+  "timeframes": {
+    "bias": "15m",
+    "execution": "5m"
+  },
+  "risk_profile": "medium",
+  "min_equity_usd": 500,
+  "recommended_symbols": ["BTC", "ETH", "SOL", "HYPE", "SUI", "DOGE", "AVAX", "ARB"],
+  "features": [
+    "ADX regime filter (trending vs ranging)",
+    "Choppiness Index chop detection",
+    "VWAP session filter with early-session exclusion",
+    "Cumulative Volume Delta confirmation",
+    "Relative volume breakout gating",
+    "Partial exit at 1R (30%) + trail remainder to 1.8R",
+    "Maker-preferred entries (ALO) for lower fees",
+    "Circuit breakers: daily loss, consecutive loss, flash crash",
+    "Mark price aware stop placement"
+  ]
+}

@@ -1,80 +1,72 @@
 # Next — Hyperbot Session Handoff
 
-Last updated: 2026-03-30
+Last updated: 2026-03-31
 
 ## Current State
 
-**The v2 card-based dashboard is fully written into `dashboard.py` but has NEVER been tested in a browser.** All changes are uncommitted — nothing from the v2 work has been committed yet (15 modified files, 4 untracked).
+**Scalp strategy v2 is integrated and running live on the dashboard.** BTC, ETH, SOL, HYPE tested — strategy evaluates every 15s, shows live regime analysis (ADX, VWAP, RVOL, CVD, choppiness), signal strength proximity bar, and rejection reasons. No trades have fired yet (correct — market conditions haven't met all 8 regime filters simultaneously).
 
-The new UI replaces the old 3-column trading terminal with a card-based layout: token cards in a grid, `+` button to add tokens, expandable trade controls, notification center with educational "why" explanations, and unmanaged position detection. The React prototype (`prototype-dashboard.jsx`) was approved by the user as the design target.
+Dashboard v2 (card-based UI) is fully functional. Workspace script sync is in place — template changes auto-propagate on dashboard restart.
 
-## Just Completed (Across Two Sessions)
+## Just Completed (This Session)
 
-### Session 1 — Design + Implementation
-- Ran trading-dashboard-critic on live dashboard, identified issues
-- Defined new dashboard philosophy (card-based, educational, progressive disclosure)
-- Built React prototype (`prototype-dashboard.jsx`) — user approved ("cooked Claude")
-- Updated all docs (brand-brief, AGENTS.md, roadmap, CLAUDE.md, GEMINI.md)
-- Implemented v2 HTML/CSS/JS in `templates/hyperbot-multi/scripts/dashboard.py` (full rewrite: -1733/+709 lines)
-- Rewrote `launch_dashboard()` in `scripts/hyperbot.py` for credential-first flow
-- Fixed `setup_complete` always-false bug (removed wizard dependency)
-- Fixed trading loop crash on empty pairs (`get_candles("")` → 500)
-- Fixed repo paths from Dropbox → `~/Projects/hyperbot`
-- Removed dead credential-entry endpoints from dashboard
+### Scalp Strategy v2 Integration
+- Added `scalp_strategy_v2.py` to workspace template — standalone 5m/15m breakout strategy (~890 lines)
+- Added `scalp_strategy_v2_prompt.py` — full strategy rules reference
+- Created `strategy-packs/scalp_v2/` with pack.json and config template
+- Extended `hl_client.py`: `get_best_bid_ask()`, `update_leverage()`, `place_trigger_order()` (TP/SL with explicit limit prices)
+- Added `_run_scalp_v2_cycle()` to dashboard trading loop — branches on `pack_id == "scalp_v2"`
+- Full execution flow: set leverage → entry (ALO/IOC) → SL trigger → TP1 partial (30% at 1R) → TP final (70% at 1.8R)
+- Failsafe: if SL placement fails, position is immediately flattened
 
-### Session 2 — Workspace Creation Fix
-- Added `--empty` flag to `create_workspace.py` (replaces hacky PLACEHOLDER approach)
-- Updated `launch_dashboard()` to use `--empty` instead of `--symbol PLACEHOLDER` + cleanup
-- Fixed welcome notification JS condition (was gated on `!setup_complete` which is always true)
-- Verified dry-run of `create_workspace.py --empty` produces clean manifest
+### Dashboard Improvements
+- Signal strength now shows regime proximity (0–70%) even on NO_TRADE signals
+- Live analysis dot colors: red for failing conditions, green for passing
+- "5m Scalper" appears first in strategy picker
 
-## Key Files Changed (all uncommitted)
+### Blaze Scalp (Test Strategy)
+- Added `blaze_scalp.py` — ultra-fast 1m test scalper for verifying execution pipeline
+- Minimal filters (RVOL ≥ 0.5x, spread < 0.1%, 5-candle micro-breakout), no time/ADX/VWAP gates
+- 1:1 R:R with 1 ATR stop/target — should fire and resolve within minutes
+- Wired into dashboard with `pack_id == "blaze_scalp"`, appears first in strategy picker
+
+### Infrastructure
+- `hyperbot.py` auto-syncs template scripts into workspace on every launch (no more stale copies)
+- Fixed candle column mapping: Hyperliquid returns `o,h,l,c,v` → renamed to `open,high,low,close,volume`
+- Adjusted time windows for AEST operator (UTC+10): nearly 24h coverage, only 06:00–08:00 UTC blocked
+
+### Docs
+- Updated AGENTS.md with scalp_v2 architecture, hl_client extensions, workspace sync docs
+- Fixed branch reference (was `feature/web3-wallet-connect`, now `main`)
+
+## Key Files Changed
 
 | File | What Changed |
 |------|-------------|
-| `templates/hyperbot-multi/scripts/dashboard.py` | Full HTML/CSS/JS rewrite — old wizard + 3-column layout → card grid + notification panel + add-token modal. Auto-setup logic. Empty-pairs guard. Removed dead endpoints. |
-| `scripts/hyperbot.py` | `launch_dashboard()` rewritten: Keychain creds check → `--empty` workspace → launch. |
-| `scripts/create_workspace.py` | Added `--empty` flag for bare workspace creation (no pairs, no strategies). |
-| `scripts/connect/server.py` | Wallet connect flow for EIP-6963 browser extensions. |
-| `scripts/connect/wallet_connect.html` | WalletConnect UI page. |
-| `AGENTS.md` | Rewrote dashboard section for v2 architecture + new design principles. |
-| `docs/brand-brief.md` | Added "Dashboard Philosophy" section. |
-| `docs/local-first-roadmap.md` | Dashboard v2 is priority #2, fixed stale template paths. |
-| `CLAUDE.md`, `GEMINI.md` | Paths fixed: Dropbox → `~/Projects/hyperbot`. |
-| `.netlify/netlify.toml`, `website/.netlify/netlify.toml` | Paths fixed. |
-| `prototype-dashboard.jsx` | NEW — React visual prototype (reference only, not production). |
+| `templates/hyperbot-multi/scripts/scalp_strategy_v2.py` | NEW — full scalp strategy module |
+| `templates/hyperbot-multi/scripts/scalp_strategy_v2_prompt.py` | NEW — strategy rules reference |
+| `templates/hyperbot-multi/scripts/blaze_scalp.py` | NEW — 1m test scalper for pipeline verification |
+| `templates/hyperbot-multi/scripts/dashboard.py` | Scalp v2 integration, signal proximity, improved live analysis |
+| `templates/hyperbot-multi/scripts/hl_client.py` | Trigger orders, leverage, bid/ask |
+| `scripts/hyperbot.py` | Workspace script sync on launch |
+| `strategy-packs/scalp_v2/` | NEW — pack definition + config |
+| `AGENTS.md` | Scalp v2 docs, branch fix |
 
-## Pending — Ready to Pick Up
+## Pending — Next Session
 
-1. **Test the new-user flow end-to-end in a browser.** This is the #1 priority — the dashboard has never been loaded in a browser since the v2 rewrite.
-   - Check Keychain: `security find-generic-password -s hyperbot -a hyperbot.master_address -w`
-   - If no creds: `cd ~/Projects/hyperbot && python3 scripts/hyperbot.py connect`
-   - Delete any stale workspace: `rm -rf ~/Projects/hyperbot-workspace`
-   - Launch: `cd ~/Projects/hyperbot && python3 scripts/hyperbot.py dashboard`
-   - Expected: browser → empty card grid → `+` button → welcome notification → add token → card appears → bot watches
-   - Fix whatever breaks, re-test.
+1. **Run live with `--live --confirm-risk` and monitor first trade execution.** Strategy is evaluating correctly but no trade has fired yet. Need to observe during peak hours (08:00–17:00 UTC / 18:00–03:00 AEST) when RVOL and ADX conditions are more likely to be met.
 
-2. **Fix runtime issues found during testing.** Known risks:
-   - `hl_client.get_all_mids()` needs Hyperliquid SDK installed in workspace Python env
-   - Connect module import relies on Python adding `scripts/` to sys.path
-   - Strategy pack installation in `/api/add-pair` assumes pack files exist relative to workspace `ROOT`
+2. **Add position monitoring to scalp_v2 cycle.** Currently the strategy places entry + TP/SL but doesn't monitor for partial fills, SL adjustments after TP1 hit (move SL to breakeven), or trailing stop logic. The TP/SL triggers handle basic exits but the "move stop to breakeven after TP1" flow needs implementation.
 
-3. **Commit all v2 changes.** Suggest: one commit for docs/config path fixes, one for the dashboard v2 rewrite.
+3. **Dashboard: show passing conditions too.** Currently only rejection reasons are shown in Live Analysis. When 5/8 conditions pass, show the 5 green ones alongside the 3 red ones for better transparency.
 
-4. **WalletConnect projectId** — still using default. Need one from cloud.reown.com.
+4. **Backtest scalp_v2.** The existing `backtest.py` only supports legacy strategies. Needs a parallel path for scalp_v2 using 5m/15m candle data.
 
-5. **Testnet support** — wallet connect hardcodes Mainnet.
-
-## Blockers
-
-- **No browser testing done yet.** Dashboard HTML was written blind — layout, JS errors, API connectivity are all unverified.
-- Cowork sandbox blocks npm/GitHub — deploy/install testing must happen in user's terminal.
+5. **Commit the 2 unpushed commits + this session's work, push to GitHub.**
 
 ## Decisions Made
 
-- **Card-based dashboard approved** — user loved the prototype, don't revert to 3-column
-- **`--empty` workspace** — `create_workspace.py --empty` creates clean workspace with no pairs/strategies
-- **`setup_complete` always True** — trading loop starts immediately, empty pairs handled gracefully (3s wait + retry)
-- **Welcome notification on empty pairs** — triggers when `pairs.length === 0` regardless of setup state
-- **Credentials from Keychain only** — `launch_dashboard()` refuses without creds, no manual entry UI
-- **Educational "why" explanations** are the primary UX differentiator
+- **RVOL threshold stays at 1.5x** — operator decision, no reduction for testing
+- **Time windows expanded for AEST** — nearly 24/7, only 06:00–08:00 UTC dead zone
+- **Template script sync** — workspace scripts are always overwritten from templates on launch (user config in workspace manifest is preserved)
+- **Signal proximity score** — counts passing regime conditions / 8, scaled to 70% max (setup validation needed for higher)

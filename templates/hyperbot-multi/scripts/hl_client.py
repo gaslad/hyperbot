@@ -93,6 +93,117 @@ def get_all_mids(base_url: str = HL_MAINNET) -> dict[str, str]:
     return _info_post({"type": "allMids"}, base_url)
 
 
+def get_meta(base_url: str = HL_MAINNET) -> dict:
+    """Get perps metadata: universe of assets with szDecimals, maxLeverage, etc."""
+    return _info_post({"type": "meta"}, base_url)
+
+
+def get_spot_meta(base_url: str = HL_MAINNET) -> dict:
+    """Get spot metadata: universe of spot tokens."""
+    return _info_post({"type": "spotMeta"}, base_url)
+
+
+def get_meta_and_asset_ctxs(base_url: str = HL_MAINNET) -> list:
+    """Get perps metadata + asset contexts (prices, funding, OI) in one call."""
+    return _info_post({"type": "metaAndAssetCtxs"}, base_url)
+
+
+def get_spot_meta_and_asset_ctxs(base_url: str = HL_MAINNET) -> list:
+    """Get spot metadata + asset contexts in one call."""
+    return _info_post({"type": "spotMetaAndAssetCtxs"}, base_url)
+
+
+def get_all_markets(base_url: str = HL_MAINNET) -> dict:
+    """Get the full categorized market universe.
+
+    Returns: {
+        "perps": [...], "spot": [...],
+        Each item has: coin, price, dayNtlVlm, maxLeverage, category
+        Categories: "crypto", "tradfi", "hip3", "prelaunch"
+    }
+    """
+    # Known TradFi tickers on Hyperliquid (stocks, indices, commodities, forex)
+    TRADFI = {
+        # Equities / indices
+        "AAPL", "AMZN", "GOOG", "GOOGL", "META", "MSFT", "NVDA", "TSLA",
+        "AMD", "NFLX", "COIN", "MSTR", "GME", "AMC", "PLTR", "BABA",
+        "TSM", "INTC", "UBER", "ABNB", "SNAP", "SQ", "SHOP", "RBLX",
+        "SPY", "QQQ", "DIA", "IWM", "GLD", "SLV", "USO", "TLT",
+        # Commodities / forex
+        "XAU", "XAG", "WTI", "BRENT", "NG", "EUR", "GBP", "JPY",
+    }
+
+    result: dict[str, list] = {"perps": [], "spot": []}
+
+    # Perps: meta + asset contexts come as [meta_dict, [asset_ctx, ...]]
+    try:
+        perp_data = get_meta_and_asset_ctxs(base_url)
+        if isinstance(perp_data, list) and len(perp_data) == 2:
+            meta = perp_data[0]
+            ctxs = perp_data[1]
+            universe = meta.get("universe", [])
+            for i, asset in enumerate(universe):
+                ctx = ctxs[i] if i < len(ctxs) else {}
+                coin = asset.get("name", "")
+                max_lev = asset.get("maxLeverage", 1)
+                vol = ctx.get("dayNtlVlm", "0")
+                # Categorize
+                if coin.upper() in TRADFI:
+                    cat = "tradfi"
+                elif asset.get("isPreLaunch"):
+                    cat = "prelaunch"
+                elif max_lev <= 3:
+                    # Low leverage + small name often = pre-launch or HIP-3
+                    cat = "crypto"
+                else:
+                    cat = "crypto"
+                result["perps"].append({
+                    "coin": coin,
+                    "szDecimals": asset.get("szDecimals", 0),
+                    "maxLeverage": max_lev,
+                    "price": ctx.get("markPx", "0"),
+                    "funding": ctx.get("funding", "0"),
+                    "openInterest": ctx.get("openInterest", "0"),
+                    "dayNtlVlm": vol,
+                    "category": cat,
+                })
+    except Exception as e:
+        print(f"  [hl_client] Perps meta error: {e}", flush=True)
+
+    # Spot: spotMeta + asset contexts come as [meta_dict, [asset_ctx, ...]]
+    try:
+        spot_data = get_spot_meta_and_asset_ctxs(base_url)
+        if isinstance(spot_data, list) and len(spot_data) == 2:
+            meta = spot_data[0]
+            ctxs = spot_data[1]
+            tokens = meta.get("tokens", [])
+            universe = meta.get("universe", [])
+
+            # Build token index lookup for HIP-3 detection
+            token_index = {}
+            for ti, tok in enumerate(tokens):
+                token_index[ti] = tok
+
+            for i, market in enumerate(universe):
+                ctx = ctxs[i] if i < len(ctxs) else {}
+                name = market.get("name", "")
+                # Detect HIP-3: spot tokens launched via HIP-3 have isCanonical=true
+                # on their base token or specific flags
+                base_idx = market.get("tokens", [None, None])[0]
+                base_token = token_index.get(base_idx, {}) if base_idx is not None else {}
+                is_hip3 = base_token.get("isCanonical", False)
+                result["spot"].append({
+                    "coin": name,
+                    "price": ctx.get("markPx", "0"),
+                    "dayNtlVlm": ctx.get("dayNtlVlm", "0"),
+                    "category": "hip3" if is_hip3 else "spot",
+                })
+    except Exception as e:
+        print(f"  [hl_client] Spot meta error: {e}", flush=True)
+
+    return result
+
+
 def get_mid_price(coin: str, base_url: str = HL_MAINNET) -> float | None:
     mids = get_all_mids(base_url)
     price_str = mids.get(coin)
@@ -422,3 +533,110 @@ def cancel_all_orders(coin: str, base_url: str = HL_MAINNET) -> list[OrderResult
         if order.get("coin") == coin:
             results.append(cancel_order(coin, order["oid"], base_url))
     return results
+
+
+# ---------------------------------------------------------------------------
+# Best bid/ask from L2 book
+# ---------------------------------------------------------------------------
+
+def get_best_bid_ask(coin: str, base_url: str = HL_MAINNET) -> dict:
+    """Get best bid and ask prices from L2 order book.
+
+    Returns: {"best_bid": float|None, "best_ask": float|None, "spread_pct": float|None}
+    """
+    try:
+        book = get_l2_book(coin, base_url)
+        levels = book.get("levels", [[], []])
+        bids = levels[0] if len(levels) > 0 else []
+        asks = levels[1] if len(levels) > 1 else []
+        best_bid = float(bids[0]["px"]) if bids else None
+        best_ask = float(asks[0]["px"]) if asks else None
+        spread_pct = None
+        if best_bid and best_ask:
+            spread_pct = (best_ask - best_bid) / best_ask
+        return {"best_bid": best_bid, "best_ask": best_ask, "spread_pct": spread_pct}
+    except Exception as e:
+        print(f"  [hl_client] get_best_bid_ask({coin}) error: {e}", flush=True)
+        return {"best_bid": None, "best_ask": None, "spread_pct": None}
+
+
+# ---------------------------------------------------------------------------
+# Leverage management
+# ---------------------------------------------------------------------------
+
+def update_leverage(coin: str, leverage: int, base_url: str = HL_MAINNET) -> OrderResult:
+    """Set cross leverage for a coin. Leverage must be an integer."""
+    try:
+        exchange = _get_exchange_client(base_url)
+        result = exchange.update_leverage(int(leverage), coin)
+        print(f"  [order] Set leverage {coin} → {leverage}x: {result}", flush=True)
+        return OrderResult(ok=result.get("status") == "ok", raw=result)
+    except Exception as e:
+        print(f"  [order] update_leverage({coin}, {leverage}) error: {e}", flush=True)
+        return OrderResult(ok=False, error=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Trigger orders (TP/SL with explicit limit prices)
+# ---------------------------------------------------------------------------
+
+def place_trigger_order(
+    coin: str,
+    is_buy: bool,
+    size: float,
+    trigger_price: float,
+    limit_price: float,
+    tp_or_sl: str = "sl",
+    reduce_only: bool = True,
+    base_url: str = HL_MAINNET,
+) -> OrderResult:
+    """Place a trigger order (TP or SL) with explicit limit price.
+
+    Args:
+        coin: Asset symbol (e.g. "BTC")
+        is_buy: True for buy (closing a short), False for sell (closing a long)
+        size: Position size to close
+        trigger_price: Mark price level that activates the order
+        limit_price: Limit price for the fill (must be worse than trigger for safety)
+        tp_or_sl: "tp" or "sl"
+        reduce_only: Should always be True for exits
+    """
+    try:
+        exchange = _get_exchange_client(base_url)
+
+        # Look up asset metadata for proper rounding
+        asset_info = get_asset_info(coin, base_url)
+        sz_decimals = asset_info.get("szDecimals", 3) if asset_info else 3
+        rounded_size = round_size(size, sz_decimals)
+        if rounded_size <= 0:
+            return OrderResult(ok=False, error=f"Trigger order size rounds to 0")
+
+        rp_trigger = round_price(trigger_price, coin, base_url)
+        rp_limit = round_price(limit_price, coin, base_url)
+
+        print(f"  [order] TRIGGER {tp_or_sl.upper()} {coin} "
+              f"{'BUY' if is_buy else 'SELL'} size={rounded_size} "
+              f"trigger={rp_trigger} limit={rp_limit} reduce_only={reduce_only}",
+              flush=True)
+
+        result = exchange.order(
+            coin,
+            is_buy,
+            rounded_size,
+            rp_limit,
+            {
+                "trigger": {
+                    "triggerPx": str(rp_trigger),
+                    "isMarket": False,
+                    "tpsl": tp_or_sl,
+                }
+            },
+            reduce_only=reduce_only,
+        )
+        print(f"  [order] TRIGGER RAW RESPONSE: {json.dumps(result)}", flush=True)
+        return _parse_order_result(result)
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return OrderResult(ok=False, error=str(e))

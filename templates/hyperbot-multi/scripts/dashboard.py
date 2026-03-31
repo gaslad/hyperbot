@@ -13,6 +13,7 @@ Launch:
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 import os
 import platform
@@ -31,6 +32,12 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hl_client
 import signals
+from scalp_strategy_v2 import ScalpStrategy, StrategyConfig as ScalpConfig
+from blaze_scalp import BlazeScalp, BlazeConfig
+
+# Shared strategy instances (stateful — track consecutive losses, performance)
+SCALP_STRATEGY = ScalpStrategy(config=ScalpConfig())
+BLAZE_STRATEGY = BlazeScalp(config=BlazeConfig())
 
 ROOT = Path(__file__).resolve().parents[1]
 POLICY_PATH = ROOT / "config" / "policy" / "operator-policy.json"
@@ -59,6 +66,9 @@ class PairState:
         self.plan_tp: float | None = None
         self.plan_strategy: str = ""
         self.plan_reasons: list[str] = []
+        self.pack_id: str = "trend_pullback"
+        self.last_scan_ts: str = ""
+        self.trading_live: bool = False  # Per-card trading toggle
 
     def to_dict(self) -> dict:
         return {
@@ -76,6 +86,9 @@ class PairState:
             "plan_tp": self.plan_tp,
             "plan_strategy": self.plan_strategy,
             "plan_reasons": list(self.plan_reasons),
+            "pack_id": self.pack_id,
+            "last_scan_ts": self.last_scan_ts,
+            "trading_live": self.trading_live,
         }
 
 
@@ -424,6 +437,338 @@ def _thinking_message(cycle: int, state: TradingState) -> str:
     return msgs[cycle % len(msgs)]
 
 
+def _run_blaze_cycle(coin: str, ps, price: float | None, master_address: str | None) -> None:
+    """Run one evaluation cycle of the blaze_scalp test strategy.
+
+    Uses 1m candles, minimal filters. Designed to fire fast for pipeline testing.
+    """
+    try:
+        # Fetch 1m candles (~1 hour of data)
+        candles_1m = hl_client.get_candles(coin, "1m", 1)
+        if not candles_1m:
+            print(f"  [blaze] {coin}: no 1m candle data", flush=True)
+            return
+
+        bba = hl_client.get_best_bid_ask(coin)
+        best_bid = bba["best_bid"]
+        best_ask = bba["best_ask"]
+        mark_price = price or 0.0
+
+        if not best_bid or not best_ask or not mark_price:
+            return
+
+        with STATE.lock:
+            coin_positions = ps.positions if ps else []
+            has_open = any(abs(float(p.get("size", 0))) > 0 for p in coin_positions)
+            equity = STATE.equity
+            daily_loss = STATE.daily_loss
+
+        market_data = {
+            "candles_1m": candles_1m,
+            "account_equity": equity,
+            "session_daily_loss": daily_loss,
+            "mark_price": mark_price,
+            "best_bid": best_bid,
+            "best_ask": best_ask,
+            "open_position": {"side": "long"} if has_open else None,
+        }
+
+        signal = BLAZE_STRATEGY.evaluate(coin, market_data)
+
+        # Compute proximity for signal strength bar
+        if signal.action == "TRADE":
+            proximity = signal.confidence / 10.0
+        elif signal.regime:
+            r = signal.regime
+            checks = [r.ema_aligned, r.rvol_ok, r.spread_ok]
+            passing = sum(1 for c in checks if c)
+            proximity = (passing / len(checks)) * 0.7
+        else:
+            proximity = 0.0
+
+        sig_dict = {
+            "direction": signal.direction or "none",
+            "strategy_id": "blaze_scalp",
+            "pack_id": "blaze_scalp",
+            "confidence": proximity,
+            "reasons": signal.rejection_reasons if signal.action == "NO_TRADE" else [
+                f"R:R = {signal.setup.r_distance:.1f}" if signal.setup else "",
+                f"ATR = {signal.setup.atr:.4f}" if signal.setup else "",
+            ],
+            "entry_price": signal.order_params.entry_price if signal.order_params else None,
+            "stop_loss": signal.order_params.stop_trigger if signal.order_params else None,
+            "take_profit": signal.order_params.tp_trigger if signal.order_params else None,
+        }
+        if ps:
+            with STATE.lock:
+                ps.last_signals = [sig_dict]
+                ps.last_scan_ts = datetime.now(timezone.utc).isoformat()
+                if signal.action == "TRADE" and signal.order_params:
+                    op = signal.order_params
+                    ps.plan_entry = op.entry_price
+                    ps.plan_sl = op.stop_trigger
+                    ps.plan_tp = op.tp_trigger
+                    ps.plan_strategy = "Blaze Scalp"
+                    ps.plan_reasons = [signal.direction or ""]
+
+        if signal.action == "TRADE":
+            print(f"  [blaze] {signal.summary()}", flush=True)
+        else:
+            reasons_str = "; ".join(signal.rejection_reasons[:3])
+            print(f"  [blaze] {coin} NO TRADE — {reasons_str}", flush=True)
+
+        # Execute if live
+        with STATE.lock:
+            live_enabled = STATE.live_enabled
+            card_live = ps.trading_live if ps else False
+
+        if signal.action == "TRADE" and live_enabled and card_live and signal.order_params:
+            op = signal.order_params
+
+            notional = op.size * op.entry_price
+            if notional < 10.0:
+                log_trade("SKIP", "blaze_scalp", op.size, op.entry_price,
+                          f"notional ${notional:.2f} < $10 min")
+                return
+
+            # Set leverage
+            hl_client.update_leverage(coin, int(op.leverage))
+
+            # Entry — always IOC (taker) for speed
+            is_buy = op.side == "buy"
+            entry_result = hl_client.place_order(coin, is_buy, op.size, order_type="market")
+
+            log_trade("BUY" if is_buy else "SELL", "blaze_scalp", op.size, op.entry_price,
+                      f"SL={op.stop_trigger} TP={op.tp_trigger}")
+
+            if entry_result.ok:
+                log_trade("FILLED", "blaze_scalp", op.size, op.entry_price,
+                          f"oid={entry_result.order_id}")
+
+                # SL
+                sl_result = hl_client.place_trigger_order(
+                    coin, is_buy=not is_buy, size=op.size,
+                    trigger_price=op.stop_trigger, limit_price=op.stop_limit,
+                    tp_or_sl="sl", reduce_only=True,
+                )
+                if not sl_result.ok:
+                    log_trade("SL_FAIL", "blaze_scalp", op.size, op.stop_trigger,
+                              f"FLATTENING: {sl_result.error}")
+                    hl_client.place_order(coin, not is_buy, op.size,
+                                          order_type="market", reduce_only=True)
+                    return
+
+                # TP (single — no partial for blaze)
+                tp_result = hl_client.place_trigger_order(
+                    coin, is_buy=not is_buy, size=op.size,
+                    trigger_price=op.tp_trigger, limit_price=op.tp_limit,
+                    tp_or_sl="tp", reduce_only=True,
+                )
+                if tp_result.ok:
+                    log_trade("TP_SET", "blaze_scalp", op.size, op.tp_trigger, "1:1 R:R")
+            else:
+                log_trade("REJECTED", "blaze_scalp", op.size, op.entry_price,
+                          entry_result.error or "unknown")
+
+    except Exception as e:
+        print(f"  [blaze] {coin} cycle error: {e}", flush=True)
+        traceback.print_exc()
+
+
+def _run_scalp_v2_cycle(coin: str, ps, price: float | None, master_address: str | None) -> None:
+    """Run one evaluation cycle of the scalp_v2 strategy for a coin.
+
+    Fetches 5m/15m candles, evaluates via ScalpStrategy, and if live + TRADE signal,
+    submits entry + TP/SL trigger orders via hl_client.
+    """
+    try:
+        # Fetch 5m candles (need 80+, ~7 hours → lookback 1 day is plenty)
+        candles_5m = hl_client.get_candles(coin, "5m", 1)
+        candles_15m = hl_client.get_candles(coin, "15m", 2)
+
+        if not candles_5m or not candles_15m:
+            print(f"  [scalp_v2] {coin}: insufficient candle data", flush=True)
+            return
+
+        # Get best bid/ask for spread checking
+        bba = hl_client.get_best_bid_ask(coin)
+        best_bid = bba["best_bid"]
+        best_ask = bba["best_ask"]
+        mark_price = price or 0.0
+
+        if not best_bid or not best_ask or not mark_price:
+            print(f"  [scalp_v2] {coin}: no price/book data", flush=True)
+            return
+
+        # Check for open position on this coin
+        with STATE.lock:
+            coin_positions = ps.positions if ps else []
+            has_open_position = any(
+                abs(float(p.get("size", 0))) > 0 for p in coin_positions
+            )
+            equity = STATE.equity
+            daily_loss = STATE.daily_loss
+
+        # Build the market_data dict that ScalpStrategy.evaluate() expects
+        market_data = {
+            "candles_5m": candles_5m,
+            "candles_15m": candles_15m,
+            "account_equity": equity,
+            "session_daily_loss": daily_loss,
+            "session_consecutive_losses": SCALP_STRATEGY._consecutive_losses,
+            "session_trade_count": len(SCALP_STRATEGY._performance),
+            "mark_price": mark_price,
+            "best_bid": best_bid,
+            "best_ask": best_ask,
+            "open_position": {"side": "long", "entry": 0, "size": 0} if has_open_position else None,
+        }
+
+        signal = SCALP_STRATEGY.evaluate(coin, market_data)
+
+        # Compute signal proximity: how close are we to a valid trade?
+        # Even on NO_TRADE, show how many regime conditions pass (0-1 scale)
+        if signal.action == "TRADE":
+            proximity = signal.confidence / 10.0  # 0.5–1.0 for valid trades
+        elif signal.regime:
+            r = signal.regime
+            checks = [r.ema_aligned, r.adx_ok, r.choppiness_ok, r.vwap_ok,
+                       r.atr_above_median, r.rvol_ok, r.cvd_confirming, r.time_ok]
+            passing = sum(1 for c in checks if c)
+            # Scale: 0/8 = 0%, 8/8 = ~70% (needs setup too for higher)
+            proximity = (passing / len(checks)) * 0.7
+        else:
+            proximity = 0.0
+
+        # Update pair state with signal info
+        sig_dict = {
+            "direction": signal.direction or "none",
+            "strategy_id": "scalp_v2",
+            "pack_id": "scalp_v2",
+            "confidence": proximity,
+            "reasons": signal.rejection_reasons if signal.action == "NO_TRADE" else [
+                f"Net R: {signal.effective_r_net:.2f}",
+                f"Confidence: {signal.confidence}/10",
+            ],
+            "entry_price": signal.order_params.entry_price if signal.order_params else None,
+            "stop_loss": signal.order_params.stop_trigger if signal.order_params else None,
+            "take_profit": signal.order_params.tp_final_trigger if signal.order_params else None,
+        }
+        if ps:
+            with STATE.lock:
+                ps.last_signals = [sig_dict]
+                ps.last_scan_ts = datetime.now(timezone.utc).isoformat()
+                if signal.action == "TRADE" and signal.order_params:
+                    op = signal.order_params
+                    ps.plan_entry = op.entry_price
+                    ps.plan_sl = op.stop_trigger
+                    ps.plan_tp = op.tp_final_trigger
+                    ps.plan_strategy = "5m Scalper"
+                    ps.plan_reasons = [signal.setup.direction if signal.setup else ""]
+
+        # Log every evaluation
+        if signal.action == "TRADE":
+            print(f"  [scalp_v2] {signal.summary()}", flush=True)
+        else:
+            reasons_str = "; ".join(signal.rejection_reasons[:3])
+            print(f"  [scalp_v2] {coin} NO TRADE — {reasons_str}", flush=True)
+
+        # Execute if live
+        with STATE.lock:
+            live_enabled = STATE.live_enabled
+            card_live = ps.trading_live if ps else False
+
+        if signal.action == "TRADE" and live_enabled and card_live and signal.order_params:
+            op = signal.order_params
+
+            # Enforce Hyperliquid minimum order value ($10)
+            notional = op.size * op.entry_price
+            if notional < 10.0:
+                log_trade("SKIP", "scalp_v2", op.size, op.entry_price,
+                          f"notional ${notional:.2f} < $10 min")
+                return
+
+            # 1. Set leverage
+            lev_result = hl_client.update_leverage(coin, int(op.leverage))
+            if not lev_result.ok:
+                log_trade("LEV_FAIL", "scalp_v2", 0, 0,
+                          f"leverage {int(op.leverage)}x failed: {lev_result.error}")
+
+            # 2. Place entry order (prefer maker/ALO for retest, IOC for momentum)
+            is_buy = op.side == "buy"
+            if op.entry_order_type == "Alo":
+                entry_result = hl_client.place_order(
+                    coin, is_buy, op.size, price=op.entry_price,
+                    order_type="post_only",
+                )
+            else:
+                entry_result = hl_client.place_order(
+                    coin, is_buy, op.size, order_type="market",
+                )
+
+            log_trade(
+                "BUY" if is_buy else "SELL", "scalp_v2", op.size, op.entry_price,
+                f"conf={signal.confidence}/10 R={signal.effective_r_net:.2f} "
+                f"SL={op.stop_trigger} TP={op.tp_final_trigger}",
+            )
+
+            if entry_result.ok:
+                log_trade("FILLED", "scalp_v2", op.size, op.entry_price,
+                          f"oid={entry_result.order_id}")
+
+                # 3. Place stop loss (trigger + explicit limit)
+                sl_result = hl_client.place_trigger_order(
+                    coin,
+                    is_buy=not is_buy,  # opposite side for exit
+                    size=op.size,
+                    trigger_price=op.stop_trigger,
+                    limit_price=op.stop_limit,
+                    tp_or_sl="sl",
+                    reduce_only=True,
+                )
+                if not sl_result.ok:
+                    log_trade("SL_FAIL", "scalp_v2", op.size, op.stop_trigger,
+                              f"SL placement failed: {sl_result.error} — FLATTENING")
+                    # Failsafe: flatten immediately if SL can't be placed
+                    hl_client.place_order(coin, not is_buy, op.size,
+                                          order_type="market", reduce_only=True)
+                    return
+
+                # 4. Place TP1 (partial exit at 1R)
+                tp1_result = hl_client.place_trigger_order(
+                    coin,
+                    is_buy=not is_buy,
+                    size=op.tp1_size,
+                    trigger_price=op.tp1_trigger,
+                    limit_price=op.tp1_limit,
+                    tp_or_sl="tp",
+                    reduce_only=True,
+                )
+                if tp1_result.ok:
+                    log_trade("TP1_SET", "scalp_v2", op.tp1_size, op.tp1_trigger,
+                              f"partial 30% at 1R")
+
+                # 5. Place TP final (remainder at 1.8R)
+                tp_final_result = hl_client.place_trigger_order(
+                    coin,
+                    is_buy=not is_buy,
+                    size=op.tp_final_size,
+                    trigger_price=op.tp_final_trigger,
+                    limit_price=op.tp_final_limit,
+                    tp_or_sl="tp",
+                    reduce_only=True,
+                )
+                if tp_final_result.ok:
+                    log_trade("TP2_SET", "scalp_v2", op.tp_final_size, op.tp_final_trigger,
+                              f"final 70% at 1.8R")
+            else:
+                log_trade("REJECTED", "scalp_v2", op.size, op.entry_price,
+                          entry_result.error or "unknown")
+
+    except Exception as e:
+        print(f"  [scalp_v2] {coin} cycle error: {e}", flush=True)
+        traceback.print_exc()
+
+
 def trading_loop() -> None:
     """Background loop: fetch data, detect signals, optionally execute trades."""
     # Wait for setup to complete
@@ -467,53 +812,74 @@ def trading_loop() -> None:
                 if ps and not pair_enabled:
                     continue
 
-                price = hl_client.get_mid_price(coin)
-                if price and ps:
-                    with STATE.lock:
-                        ps.last_price = price
+                # Determine which strategy pack this pair uses
+                with STATE.lock:
+                    current_pack_id = ps.pack_id if ps else "trend_pullback"
 
-                candles_1d = hl_client.get_candles(coin, "1d", 30)
-                candles_4h = hl_client.get_candles(coin, "4h", 14)
+                try:
+                    price = hl_client.get_mid_price(coin)
+                    if price and ps:
+                        with STATE.lock:
+                            ps.last_price = price
 
-                sigs = signals.detect_all_signals(candles_1d, candles_4h, price or 0.0, coin=coin)
-                sig_dicts = [
-                    {
-                        "direction": s.direction.value,
-                        "strategy_id": s.strategy_id,
-                        "pack_id": s.pack_id,
-                        "confidence": s.confidence,
-                        "reasons": s.reasons,
-                        "entry_price": s.entry_price,
-                        "stop_loss": s.stop_loss,
-                        "take_profit": s.take_profit,
-                    }
-                    for s in sigs
-                ]
-                if ps:
-                    with STATE.lock:
-                        ps.last_signals = sig_dicts
-                        # Persist trade plan from the strongest active signal
-                        active_sigs = [s for s in sig_dicts if s.get("direction") != "none"]
-                        if active_sigs:
-                            best = max(active_sigs, key=lambda s: s.get("confidence", 0))
-                            ps.plan_entry = best.get("entry_price")
-                            ps.plan_sl = best.get("stop_loss")
-                            ps.plan_tp = best.get("take_profit")
-                            ps.plan_strategy = best.get("strategy_id", "")
-                            ps.plan_reasons = best.get("reasons", [])
+                    # ── Blaze scalp path (1m, test strategy) ──────────
+                    if current_pack_id == "blaze_scalp":
+                        _run_blaze_cycle(coin, ps, price, master_address)
+                        continue
 
-                # Execute trades if live and active
+                    # ── Scalp v2 path ─────────────────────────────────
+                    if current_pack_id == "scalp_v2":
+                        _run_scalp_v2_cycle(coin, ps, price, master_address)
+                        continue
+
+                    # ── Legacy strategy path (1d/4h) ──────────────────
+                    candles_1d = hl_client.get_candles(coin, "1d", 30)
+                    candles_4h = hl_client.get_candles(coin, "4h", 14)
+
+                    sigs = signals.detect_all_signals(candles_1d, candles_4h, price or 0.0, coin=coin)
+                    sig_dicts = [
+                        {
+                            "direction": s.direction.value,
+                            "strategy_id": s.strategy_id,
+                            "pack_id": s.pack_id,
+                            "confidence": s.confidence,
+                            "reasons": s.reasons,
+                            "entry_price": s.entry_price,
+                            "stop_loss": s.stop_loss,
+                            "take_profit": s.take_profit,
+                        }
+                        for s in sigs
+                    ]
+                    if ps:
+                        with STATE.lock:
+                            ps.last_signals = sig_dicts
+                            ps.last_scan_ts = datetime.now(timezone.utc).isoformat()
+                            # Persist trade plan from the strongest active signal
+                            active_sigs = [s for s in sig_dicts if s.get("direction") != "none"]
+                            if active_sigs:
+                                best = max(active_sigs, key=lambda s: s.get("confidence", 0))
+                                ps.plan_entry = best.get("entry_price")
+                                ps.plan_sl = best.get("stop_loss")
+                                ps.plan_tp = best.get("take_profit")
+                                ps.plan_strategy = best.get("strategy_id", "")
+                                ps.plan_reasons = best.get("reasons", [])
+                except Exception as scan_err:
+                    print(f"  [scan] {coin} error: {scan_err}")
+                    continue
+
+                # Execute trades if live and this card is active (legacy strategies)
                 with STATE.lock:
                     live_enabled = STATE.live_enabled
+                    card_live = ps.trading_live if ps else False
                     trading_active = STATE.trading_active
                     loss_limit = STATE.daily_loss_limit_usd()
                     daily_loss = STATE.daily_loss
                     max_daily_loss_pct = STATE.max_daily_loss_pct
-                    max_leverage = STATE.max_leverage
-                    risk_per_trade_pct = STATE.risk_per_trade_pct
+                    max_leverage = ps.max_leverage if ps else STATE.max_leverage
+                    risk_per_trade_pct = ps.risk_per_trade_pct if ps else STATE.risk_per_trade_pct
                     equity = STATE.equity
 
-                if live_enabled and trading_active and price:
+                if live_enabled and card_live and price:
                     if loss_limit > 0 and daily_loss >= loss_limit:
                         with STATE.lock:
                             STATE.trading_active = False
@@ -721,6 +1087,55 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 
 /* ── Expanded Controls ──────────────────────────────────────── */
 .controls{margin-top:12px;padding-top:12px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:12px}
+.watch-edu .edu-section{padding:10px 0;border-bottom:1px solid var(--border)}
+.watch-edu .edu-section:last-child{border-bottom:none;padding-bottom:0}
+.edu-label{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px}
+.edu-strat-name{font-size:15px;font-weight:600;color:var(--text1);margin-bottom:4px}
+.edu-strat-desc{font-size:13px;color:var(--text2);line-height:1.5}
+.edu-risk{font-size:12px;color:var(--text3);margin-top:6px}
+.edu-risk-val{font-weight:600;padding:2px 6px;border-radius:4px;font-size:11px}
+.edu-risk-low{color:#22c55e;background:rgba(34,197,94,0.1)}
+.edu-risk-medium{color:#f59e0b;background:rgba(245,158,11,0.1)}
+.edu-risk-high{color:#ef4444;background:rgba(239,68,68,0.1)}
+.edu-hints{margin:0;padding:0 0 0 18px;list-style:none}
+.edu-hints li{font-size:13px;color:var(--text2);line-height:1.6;position:relative;padding-left:4px}
+.edu-hints li::before{content:'\2192';position:absolute;left:-18px;color:var(--text3)}
+.edu-explain{font-size:13px;color:var(--text2);line-height:1.6;font-style:italic;opacity:0.85}
+.edu-patience{padding-bottom:0!important;border-bottom:none!important}
+.strat-pills{display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap}
+.strat-pill{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:8px;border:1px solid var(--border);background:rgba(255,255,255,0.03);color:var(--text2);font-size:13px;cursor:pointer;transition:all 0.15s}
+.strat-pill:hover{background:rgba(255,255,255,0.06);border-color:rgba(255,255,255,0.15)}
+.strat-pill.active{background:rgba(99,102,241,0.12);border-color:rgba(99,102,241,0.3);color:#a5b4fc}
+.pill-risk{font-size:10px;font-weight:600;padding:1px 5px;border-radius:3px;text-transform:uppercase;letter-spacing:0.3px}
+.pill-risk-low{color:#22c55e;background:rgba(34,197,94,0.12)}
+.pill-risk-medium{color:#f59e0b;background:rgba(245,158,11,0.12)}
+.pill-risk-high{color:#ef4444;background:rgba(239,68,68,0.12)}
+.card-slider-row{display:flex;gap:12px}
+.card-slider-group{flex:1}
+.card-slider-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:12px;color:var(--text3)}
+.card-slider-val{color:var(--text1);font-size:13px}
+.card-slider{width:100%;height:4px;-webkit-appearance:none;appearance:none;background:rgba(255,255,255,0.08);border-radius:2px;outline:none;cursor:pointer}
+.card-slider::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:#6366f1;border:2px solid #1a1b2e;cursor:pointer}
+.card-slider::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:#6366f1;border:2px solid #1a1b2e;cursor:pointer}
+.conf-bar-wrap{margin-bottom:4px}
+.conf-bar{width:100%;height:6px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden;margin-bottom:6px}
+.conf-fill{height:100%;border-radius:3px;transition:width 0.6s ease,background 0.3s ease}
+.conf-meta{display:flex;justify-content:space-between;align-items:center}
+.conf-label{font-size:12px}
+.conf-pct{font-size:13px;font-weight:600}
+.sig-direction{font-size:12px;margin-top:6px;padding:4px 8px;border-radius:6px;display:inline-block}
+.sig-dir-buy{color:var(--green);background:var(--green-bg)}
+.sig-dir-sell{color:var(--red);background:var(--red-bg)}
+.scan-ago{font-size:10px;color:var(--text3);font-weight:400;text-transform:none;letter-spacing:0;margin-left:6px;opacity:0.7}
+.edu-hints li{position:relative;padding-left:18px}
+.edu-hints li::before{display:none}
+.cue-dot{position:absolute;left:0;top:2px;font-size:8px}
+.btn-start-trading{width:100%;padding:10px;border-radius:8px;border:1px solid rgba(34,197,94,0.2);background:rgba(34,197,94,0.1);color:var(--green);font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;transition:all 0.15s}
+.btn-start-trading:hover{background:rgba(34,197,94,0.2);border-color:rgba(34,197,94,0.3)}
+.btn-stop-trading{width:100%;padding:10px;border-radius:8px;border:1px solid rgba(239,68,68,0.2);background:rgba(239,68,68,0.08);color:var(--red);font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;transition:all 0.15s}
+.btn-stop-trading:hover{background:rgba(239,68,68,0.15);border-color:rgba(239,68,68,0.3)}
+.card-live{border-color:rgba(34,197,94,0.2)!important}
+.live-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--green);margin-left:6px;vertical-align:middle;animation:pulse 1.5s infinite}
 .info-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
 .info-cell{padding:8px;border-radius:8px;background:rgba(255,255,255,0.03)}
 .info-cell-label{font-size:11px;color:var(--text3);margin-bottom:2px}
@@ -795,14 +1210,12 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 /* ── Modal ──────────────────────────────────────────────────── */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.7);backdrop-filter:blur(8px);z-index:50;display:none;align-items:center;justify-content:center}
 .modal-overlay.open{display:flex}
-.modal{background:#111;border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:24px;width:100%;max-width:420px;max-height:80vh;overflow-y:auto}
+.modal{background:#111;border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:24px;width:100%;max-width:640px;max-height:80vh;overflow-y:auto}
 .modal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
 .modal-head h3{font-size:15px;font-weight:600}
 .modal-subtitle{font-size:12px;color:var(--text3);margin:-8px 0 16px}
 .token-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.token-option{display:flex;align-items:center;gap:12px;padding:12px;border-radius:var(--radius);border:1px solid var(--border);text-align:left;transition:background 0.15s}
-.token-option:hover{background:rgba(255,255,255,0.03)}
-.token-option .token-icon{width:32px;height:32px;font-size:14px}
+/* token rows are inline-styled */
 .token-sym{font-size:13px;font-weight:500}
 .token-full{font-size:11px;color:var(--text3)}
 .strategy-list{display:flex;flex-direction:column;gap:8px}
@@ -842,6 +1255,22 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 </head>
 <body>
 
+<!-- ── Wallet Connect Overlay ────────────────────────────── -->
+<div id="wallet-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:10000;display:flex;align-items:center;justify-content:center">
+  <div style="max-width:420px;width:100%;padding:2rem;background:#14141f;border:1px solid #2a2a3a;border-radius:16px">
+    <div style="text-align:center;margin-bottom:1.5rem">
+      <div style="font-size:2rem;font-weight:700;color:#4ade80;margin-bottom:0.25rem">H</div>
+      <div style="font-size:1.2rem;font-weight:600;color:#fff;margin-bottom:0.5rem">Connect your wallet</div>
+      <div style="color:#888;font-size:0.85rem">Hyperbot needs your wallet address to show positions and trade on your behalf.</div>
+    </div>
+    <div id="wallet-list" style="margin-bottom:1rem"></div>
+    <div id="wallet-status" style="display:none;padding:0.75rem;border-radius:8px;font-size:0.85rem;margin-bottom:1rem"></div>
+    <div style="text-align:center">
+      <button onclick="skipWalletConnect()" style="background:none;border:none;color:#666;font-size:0.8rem;cursor:pointer;text-decoration:underline">Skip — browse without wallet</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── Header ─────────────────────────────────────────────── -->
 <div class="header">
   <div class="header-left">
@@ -852,6 +1281,9 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
       <span id="d-status-text">Stopped</span>
     </div>
     <div class="badge" id="d-mode-badge" style="background:rgba(59,130,246,0.12);color:#60a5fa">Simulation</div>
+    <button onclick="document.getElementById('wallet-overlay').style.display='flex';window.dispatchEvent(new Event('eip6963:requestProvider'));setTimeout(renderWalletList,300)" class="badge" id="d-wallet-badge" style="background:rgba(255,255,255,0.04);color:#888;cursor:pointer;border:none;font-family:inherit;font-size:inherit">
+      <span id="d-wallet-addr">Connect Wallet</span>
+    </button>
   </div>
   <div class="header-right">
     <div class="stat-block">
@@ -869,10 +1301,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
     <button class="icon-btn" onclick="toggleSettings()">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
     </button>
-    <button class="btn-power" id="btn-startstop" onclick="toggleTrading()" style="background:rgba(34,197,94,0.15);color:var(--green)">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
-      <span id="d-startstop-label">Start</span>
-    </button>
+    <!-- Start button removed — trading is now per-card -->
   </div>
 </div>
 
@@ -985,6 +1414,8 @@ const TOKEN_ICONS = {
 function tokenIcon(coin){return TOKEN_ICONS[coin]||coin.substring(0,2)}
 
 const STRATEGIES = [
+  {id:'blaze_scalp',name:'Blaze Scalp',desc:'Ultra-fast 1-minute test scalper. Fires within minutes on any micro-breakout. For testing execution only \u2014 not optimized for profit.',risk:'High'},
+  {id:'scalp_v2',name:'5m Scalper',desc:'Fast 5-minute breakout scalps with volume + trend confirmation. Targets 3-5 trades/day on liquid pairs.',risk:'Medium'},
   {id:'trend_pullback',name:'Trend Follower',desc:'Rides momentum when multiple timeframes align in the same direction',risk:'Medium'},
   {id:'compression_breakout',name:'Breakout Hunter',desc:'Catches big moves when price breaks key support or resistance levels',risk:'High'},
   {id:'liquidity_sweep_reversal',name:'Mean Reversion',desc:'Buys dips and sells rips when price stretches too far from average',risk:'Low'},
@@ -1064,25 +1495,64 @@ function toggleNotifs(){
 }
 
 // ── Add Token Modal ──────────────────────────────────────────
+let activeTab='perps';
+let marketData={perps:[]};
+
 async function openAddModal(){
   addModalCoin=null;
   document.getElementById('add-step-1').style.display='block';
   document.getElementById('add-step-2').style.display='none';
-  // Fetch available pairs
-  try{
-    const mids=await api('/api/pairs');
-    const existing=lastState?Object.keys(lastState.pairs||{}).map(c=>c.toUpperCase()):[];
-    const tokens=Object.keys(mids).filter(s=>s.includes('-PERP')||s.includes('/'))
-      .map(s=>s.replace('-PERP','').replace('/USD','').replace('/USDC',''))
-      .filter((v,i,a)=>a.indexOf(v)===i&&!existing.includes(v))
-      .sort().slice(0,20);
-    const grid=document.getElementById('d-token-list');
-    grid.innerHTML=tokens.map(coin=>`<button class="token-option" onclick="selectAddToken('${coin}')">
-      <div class="token-icon">${tokenIcon(coin)}</div>
-      <div><div class="token-sym">${coin}</div><div class="token-full">${coin}/USDC</div></div>
-    </button>`).join('');
-  }catch(e){console.error(e)}
+  const grid=document.getElementById('d-token-list');
+  grid.innerHTML=`<div style="text-align:center;padding:2rem;color:#888"><span style="display:inline-block;width:16px;height:16px;border:2px solid #4ade80;border-top-color:transparent;border-radius:50%;animation:spin 0.6s linear infinite;vertical-align:middle;margin-right:8px"></span>Loading markets...</div>`;
   document.getElementById('add-modal').classList.add('open');
+  try{
+    const data=await api('/api/pairs');
+    const existing=lastState?Object.keys(lastState.pairs||{}).map(c=>c.toUpperCase()):[];
+    marketData.perps=(data.perps||[])
+      .filter(m=>m.coin&&!existing.includes(m.coin.toUpperCase()))
+      .map(m=>({coin:m.coin,price:parseFloat(m.price||0),vol:parseFloat(m.dayNtlVlm||0),maxLev:m.maxLeverage||1,type:'perp'}))
+      .sort((a,b)=>b.vol-a.vol);
+    renderTokenTabs();
+  }catch(e){
+    console.error('Failed to load tokens:',e);
+    grid.innerHTML=`<div style="color:var(--red);padding:1rem;text-align:center;font-size:0.85rem">Failed to load markets: ${e.message}<br><br><button onclick="openAddModal()" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.12);border-radius:6px;color:var(--text);padding:8px 16px;cursor:pointer">Retry</button></div>`;
+  }
+}
+
+function renderTokenTabs(){
+  const grid=document.getElementById('d-token-list');
+  grid.innerHTML=`
+    <input type="text" id="token-search" placeholder="Search perps..." style="width:100%;padding:10px 14px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:var(--text);font-size:14px;margin-bottom:12px;outline:none" oninput="filterTokens()">
+    <div id="token-results" style="max-height:420px;overflow-y:auto"></div>`;
+  filterTokens();
+}
+
+function fmtVol(v){
+  if(v>=1e9)return '$'+(v/1e9).toFixed(1)+'B';
+  if(v>=1e6)return '$'+(v/1e6).toFixed(1)+'M';
+  if(v>=1e3)return '$'+(v/1e3).toFixed(0)+'K';
+  return '$'+v.toFixed(0);
+}
+
+function filterTokens(){
+  const q=(document.getElementById('token-search')?.value||'').toUpperCase();
+  const filtered=(marketData.perps||[]).filter(t=>!q||t.coin.toUpperCase().includes(q)).slice(0,80);
+  const el=document.getElementById('token-results');
+  if(!el)return;
+  if(filtered.length===0){
+    el.innerHTML='<div style="color:rgba(255,255,255,0.35);padding:20px;text-align:center">No tokens found</div>';
+    return;
+  }
+  el.innerHTML=filtered.map(t=>{
+    const coin=t.coin;
+    const pair=coin+'/USDC';
+    const priceStr=t.price>=1?'$'+t.price.toLocaleString(undefined,{maximumFractionDigits:2}):(t.price>0?'$'+t.price.toPrecision(4):'—');
+    const volStr=t.vol>0?fmtVol(t.vol):'';
+    const tag=t.maxLev&&t.maxLev>1?`<span style="font-size:11px;color:rgba(255,255,255,0.35)">${t.maxLev}\u00d7</span>`:'';
+    return `<button onclick="selectAddToken('${coin}')" style="display:flex;align-items:center;justify-content:space-between;width:100%;padding:12px 0;background:none;border:none;border-bottom:1px solid rgba(255,255,255,0.06);cursor:pointer;transition:border-color 0.15s" onmouseenter="this.style.borderBottomColor='rgba(255,255,255,0.12)'" onmouseleave="this.style.borderBottomColor='rgba(255,255,255,0.06)'">
+      <div style="display:flex;align-items:center;gap:8px"><span style="font-size:14px;font-weight:500;color:#fff">${pair}</span>${tag}</div>
+      <div style="display:flex;align-items:center;gap:16px"><span class="mono" style="font-size:13px;color:rgba(255,255,255,0.6)">${priceStr}</span>${volStr?`<span class="mono" style="font-size:12px;color:rgba(255,255,255,0.35)">${volStr}</span>`:''}</div>
+    </button>`}).join('');
 }
 function selectAddToken(coin){
   addModalCoin=coin;
@@ -1163,6 +1633,14 @@ function esc(s){return s?String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').re
 function fmt$(v){return v>=0?'+$'+Math.abs(v).toFixed(0):'-$'+Math.abs(v).toFixed(0)}
 function fmtPct(v){return (v>=0?'+':'')+v.toFixed(1)+'%'}
 function fmtPrice(v){if(!v)return '\u2014';if(v>=1000)return '$'+v.toLocaleString(undefined,{maximumFractionDigits:0});if(v>=1)return '$'+v.toFixed(2);return '$'+v.toPrecision(4)}
+function timeAgo(iso){
+  if(!iso)return '';
+  const diff=Math.max(0,Math.floor((Date.now()-new Date(iso).getTime())/1000));
+  if(diff<10)return 'just now';
+  if(diff<60)return diff+'s ago';
+  if(diff<3600)return Math.floor(diff/60)+'m ago';
+  return Math.floor(diff/3600)+'h ago';
+}
 
 function renderCards(s){
   const grid=document.getElementById('d-card-grid');
@@ -1183,21 +1661,23 @@ function renderCards(s){
     const leverage=parseFloat(pos?.leverage?.value||ps.max_leverage||4);
     const slPx=ps.plan_sl||null;
     const tpPx=ps.plan_tp||null;
-    const strategy=ps.plan_strategy||'Watching';
+    const stratObj=STRATEGIES.find(s=>s.id===(ps.pack_id||'trend_pullback'));
+    const strategy=ps.plan_strategy||(stratObj?stratObj.name:'Watching');
     const pnlPct=entryPx>0?((markPx-entryPx)/entryPx*100*(direction==='SHORT'?-1:1)):0;
+    const cardLive=!!ps.trading_live;
 
     if(inTrade){activeCount++;totalPnl+=pnl}else{watchingCount++}
 
-    html+=`<div class="card ${isExp?'expanded':''} ${inTrade?'clickable':''}" ${inTrade?`onclick="toggleCard('${coin}')"`:''}>`
+    html+=`<div class="card ${isExp?'expanded':''} ${cardLive?'card-live':''} clickable" onclick="toggleCard('${coin}')">`
 
     // Header
     html+=`<div class="card-head">
       <div class="card-token">
         <div class="token-icon">${tokenIcon(coin)}</div>
-        <div><div class="token-name">${coin}</div><div class="token-strategy">${esc(strategy)}</div></div>
+        <div><div class="token-name">${coin}${cardLive?'<span class="live-dot"></span>':''}</div><div class="token-strategy">${esc(strategy)}</div></div>
       </div>
       <div class="card-actions">
-        ${inTrade?`<svg class="chevron ${isExp?'open':''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>`:''}
+        <svg class="chevron ${isExp?'open':''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
         <button class="btn-x" onclick="event.stopPropagation();removePair('${coin}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
       </div>
     </div>`;
@@ -1222,7 +1702,93 @@ function renderCards(s){
       html+=`<div class="last-trade">\u23F1 Scanning ${coin} across all timeframes...</div>`;
     }
 
-    // Expanded controls
+    // Expanded controls — Watching cards (educational + settings)
+    if(isExp&&!inTrade){
+      const curPack=ps.pack_id||'trend_pullback';
+      const strat=STRATEGIES.find(s=>s.id===curPack)||STRATEGIES[0];
+      const pairLev=ps.max_leverage||4;
+      const pairRisk=ps.risk_per_trade_pct||1;
+      // Pull live signal data for this pair's strategy
+      const sigForPack=(ps.last_signals||[]).find(s=>s.pack_id===curPack);
+      const sigConf=sigForPack?Math.round((sigForPack.confidence||0)*100):0;
+      const sigDir=sigForPack?sigForPack.direction:'none';
+      const sigReasons=sigForPack&&sigForPack.reasons?sigForPack.reasons:[];
+      const hasScan=sigReasons.length>0;
+      const scanTs=ps.last_scan_ts;
+      const scanAgo=scanTs?timeAgo(scanTs):'waiting for first scan\u2026';
+
+      // Fallback educational hints when no scan data yet
+      const fallbackHints={
+        'trend_pullback':['Waiting for first scan \u2014 will check trend direction across multiple timeframes'],
+        'compression_breakout':['Waiting for first scan \u2014 will monitor Bollinger Band width for squeeze conditions'],
+        'liquidity_sweep_reversal':['Waiting for first scan \u2014 will look for wick rejections below recent swing lows']
+      };
+
+      // Build dynamic cues from real reasons
+      const liveCues=hasScan?sigReasons:fallbackHints[curPack]||fallbackHints['trend_pullback'];
+
+      // Confidence bar color
+      const confColor=sigConf>=70?'var(--green)':sigConf>=40?'var(--yellow)':sigConf>0?'var(--text3)':'var(--text3)';
+      const confLabel=sigConf>=70?'Setup forming \u2014 entry imminent':sigConf>=50?'Most conditions met':sigConf>=25?'Some conditions met':sigConf>0?'Few conditions met':'Scanning\u2026';
+
+      html+=`<div class="controls watch-edu">
+        <div class="edu-section">
+          <div class="edu-label">Strategy</div>
+          <div class="strat-pills">
+            ${STRATEGIES.map(s=>`<button class="strat-pill ${s.id===curPack?'active':''}" onclick="event.stopPropagation();setCardStrategy('${coin}','${s.id}')">${esc(s.name)}<span class="pill-risk pill-risk-${s.risk.toLowerCase()}">${s.risk}</span></button>`).join('')}
+          </div>
+          <div class="edu-strat-desc">${esc(strat.desc)}</div>
+        </div>
+        <div class="edu-section">
+          <div class="edu-label">Signal Strength</div>
+          <div class="conf-bar-wrap">
+            <div class="conf-bar"><div class="conf-fill" style="width:${sigConf}%;background:${confColor}"></div></div>
+            <div class="conf-meta">
+              <span class="conf-label" style="color:${confColor}">${confLabel}</span>
+              <span class="conf-pct mono" style="color:${confColor}">${sigConf}%</span>
+            </div>
+          </div>
+          ${sigDir!=='none'?`<div class="sig-direction sig-dir-${sigDir}">
+            ${sigDir==='buy'?'\u2197 Leaning long':'\u2198 Leaning short'} \u2014 waiting for confirmation
+          </div>`:''}
+        </div>
+        <div class="edu-section">
+          <div class="edu-label">Live Analysis <span class="scan-ago">${esc(scanAgo)}</span></div>
+          <ul class="edu-hints">
+            ${liveCues.map(r=>{
+              const neg=r.includes('\u2264')||r.includes('\u2265')||r.includes('< ')||r.includes('> max')||r.includes('not ')||r.includes('Outside')||r.includes('wrong')||r.includes('diverging')||r.includes('ranging')||r.includes('chop')||r.includes('below')||r.includes('insufficient')||r.includes('No ');
+              const pos=r.includes('above')||r.includes('bullish')||r.includes('confirms')||r.includes('aligned')||r.includes('Net R')||r.includes('Confidence');
+              const dotColor=pos?'var(--green)':neg?'var(--red)':'var(--text3)';
+              return `<li><span class="cue-dot" style="color:${dotColor}">\u25CF</span> ${esc(r)}</li>`;
+            }).join('')}
+          </ul>
+        </div>
+        <div class="edu-section">
+          <div class="edu-label">Risk Settings</div>
+          <div class="card-slider-row">
+            <div class="card-slider-group">
+              <div class="card-slider-head"><span>Max Leverage</span><span class="mono card-slider-val" id="cv-lev-${coin}">${pairLev}x</span></div>
+              <input type="range" class="card-slider" min="1" max="20" step="1" value="${pairLev}"
+                onclick="event.stopPropagation()"
+                oninput="document.getElementById('cv-lev-${coin}').textContent=this.value+'x'"
+                onchange="event.stopPropagation();setCardRisk('${coin}',parseFloat(this.value),null)">
+            </div>
+            <div class="card-slider-group">
+              <div class="card-slider-head"><span>Risk per Trade</span><span class="mono card-slider-val" id="cv-risk-${coin}">${pairRisk}%</span></div>
+              <input type="range" class="card-slider" min="0.5" max="5" step="0.5" value="${pairRisk}"
+                onclick="event.stopPropagation()"
+                oninput="document.getElementById('cv-risk-${coin}').textContent=this.value+'%'"
+                onchange="event.stopPropagation();setCardRisk('${coin}',null,parseFloat(this.value))">
+            </div>
+          </div>
+        </div>
+        <button class="${cardLive?'btn-stop-trading':'btn-start-trading'}" onclick="event.stopPropagation();toggleCardTrading('${coin}')">
+          ${cardLive?'<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg> Stop Trading':'<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg> Start Trading'}
+        </button>
+      </div>`;
+    }
+
+    // Expanded controls — Position cards
     if(isExp&&inTrade){
       html+=`<div class="controls">
         <div class="info-grid">
@@ -1282,6 +1848,47 @@ async function removePair(coin){
   addNotification('system','system',`Removed ${coin} from dashboard`,`${coin} will no longer be monitored. Any open positions remain on your Hyperliquid account.`,coin);
 }
 
+// ── Per-card Trading Toggle ──────────────────────────────────
+async function toggleCardTrading(coin){
+  const ps=lastState&&lastState.pairs?lastState.pairs[coin]:null;
+  if(!ps)return;
+  const goLive=!ps.trading_live;
+  if(goLive&&!confirm(`Go live on ${coin}? The bot will execute real trades when signals fire.`))return;
+  try{
+    await api('/api/pair-settings','POST',{coin,trading_live:goLive});
+    if(goLive){
+      addNotification('action','entry',`${coin} is now live`,
+        `The bot will actively trade ${coin} when entry conditions are met. You can stop trading from the card at any time.`,coin);
+    }else{
+      addNotification('system','system',`${coin} trading stopped`,
+        `The bot will continue scanning ${coin} but will not open new positions.`,coin);
+    }
+  }catch(e){console.error(e)}
+}
+
+// ── Per-card Strategy & Risk ─────────────────────────────────
+async function setCardStrategy(coin,packId){
+  try{
+    const strat=STRATEGIES.find(s=>s.id===packId);
+    await api('/api/pair-settings','POST',{coin,pack_id:packId,plan_strategy:strat?strat.name:packId});
+    addNotification('action','system',`Strategy changed for ${coin}`,
+      `Now using ${strat?strat.name:packId}. ${strat?strat.desc:''}`,coin);
+  }catch(e){console.error(e)}
+}
+async function setCardRisk(coin,lev,risk){
+  try{
+    const body={coin};
+    if(lev!==null)body.max_leverage=lev;
+    if(risk!==null)body.risk_per_trade_pct=risk;
+    await api('/api/pair-settings','POST',body);
+    const parts=[];
+    if(lev!==null)parts.push(`leverage ${lev}x`);
+    if(risk!==null)parts.push(`risk ${risk}%`);
+    addNotification('info','system',`Risk updated for ${coin}: ${parts.join(', ')}`,
+      `These settings override the global defaults for ${coin} only. They apply to the next trade the bot opens on this pair.`,coin);
+  }catch(e){console.error(e)}
+}
+
 // ── SL/TP Adjustments (placeholder — wired to notification) ──
 function adjustSl(coin,dir){
   addNotification('info','sl',`Stop loss ${dir==='tighter'?'tightened':'widened'} for ${coin}`,
@@ -1331,10 +1938,7 @@ async function dashPoll(){
     if(s.live_enabled){modeBadge.style.background='rgba(34,197,94,0.12)';modeBadge.style.color='var(--green)';modeBadge.textContent='Mainnet'}
     else{modeBadge.style.background='rgba(59,130,246,0.12)';modeBadge.style.color='#60a5fa';modeBadge.textContent='Simulation'}
 
-    // Start/Stop button
-    const btn=document.getElementById('btn-startstop');
-    if(running){btn.style.background='rgba(239,68,68,0.15)';btn.style.color='var(--red)';document.getElementById('d-startstop-label').textContent='Stop'}
-    else{btn.style.background='rgba(34,197,94,0.15)';btn.style.color='var(--green)';document.getElementById('d-startstop-label').textContent='Start'}
+    // Per-card trading state is rendered inside renderCards()
 
     // Thinking bar
     const thinkEl=document.getElementById('d-thinking');
@@ -1382,21 +1986,149 @@ function generateWhy(tag,action,detail,entry){
   return detail||'The trading engine took an action based on current market conditions and your strategy settings.';
 }
 
+// ── Wallet Connect (EIP-6963) ────────────────────────────────
+let connectedAddress=null;
+const discoveredWallets=new Map();
+
+window.addEventListener('eip6963:announceProvider',(event)=>{
+  const {info,provider}=event.detail;
+  if(!discoveredWallets.has(info.rdns)){
+    discoveredWallets.set(info.rdns,{info,provider});
+    renderWalletList();
+  }
+});
+
+function renderWalletList(){
+  const el=document.getElementById('wallet-list');
+  if(!el)return;
+  let html='';
+  if(discoveredWallets.size===0){
+    html=`<div style="color:#666;text-align:center;padding:1rem;font-size:0.85rem">No browser wallets detected.<br>Install MetaMask, Rabby, or another EVM wallet extension.</div>`;
+  }else{
+    html+=`<div style="font-size:0.75rem;color:#666;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem">Browser wallets detected</div>`;
+    for(const [rdns,{info}] of discoveredWallets){
+      html+=`<button onclick="connectWallet('${rdns}')" style="display:flex;align-items:center;gap:0.75rem;width:100%;padding:0.85rem 1.25rem;background:#1a1a2e;border:1px solid #3a3a4a;border-radius:8px;color:#e0e0e0;font-size:0.95rem;cursor:pointer;margin-bottom:0.5rem;transition:all 0.2s">
+        <img src="${info.icon}" width="28" height="28" style="border-radius:6px">
+        ${info.name}
+      </button>`;
+    }
+  }
+  // Manual address entry
+  html+=`<div style="text-align:center;color:#555;font-size:0.8rem;margin:1rem 0;position:relative"><span style="background:#14141f;padding:0 0.5rem;position:relative;z-index:1">OR</span><div style="position:absolute;top:50%;left:0;right:0;height:1px;background:#2a2a3a"></div></div>`;
+  html+=`<div style="display:flex;gap:0.5rem"><input type="text" id="manual-address" placeholder="Paste wallet address (0x...)" style="flex:1;padding:0.65rem 0.75rem;background:#1a1a2a;border:1px solid #3a3a4a;border-radius:8px;color:#e0e0e0;font-family:monospace;font-size:0.8rem;outline:none"><button onclick="connectManualAddress()" style="padding:0.65rem 1rem;background:#4ade80;color:#0a0a0f;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:0.85rem">Go</button></div>`;
+  el.innerHTML=html;
+}
+
+async function connectWallet(rdns){
+  const wallet=discoveredWallets.get(rdns);
+  if(!wallet)return;
+  const statusEl=document.getElementById('wallet-status');
+  try{
+    statusEl.style.display='block';
+    statusEl.style.background='#15152a';statusEl.style.border='1px solid #20205a';statusEl.style.color='#60a5fa';
+    statusEl.textContent='Connecting to '+wallet.info.name+'...';
+    const accounts=await wallet.provider.request({method:'eth_requestAccounts'});
+    const addr=accounts[0].toLowerCase();
+    await setWalletAddress(addr);
+  }catch(e){
+    statusEl.style.background='#2a1515';statusEl.style.border='1px solid #5a2020';statusEl.style.color='#f87171';
+    statusEl.textContent='Error: '+e.message;
+  }
+}
+
+async function connectManualAddress(){
+  const input=document.getElementById('manual-address');
+  const addr=(input?.value||'').trim().toLowerCase();
+  if(!addr.startsWith('0x')||addr.length!==42){
+    const statusEl=document.getElementById('wallet-status');
+    statusEl.style.display='block';
+    statusEl.style.background='#2a1515';statusEl.style.border='1px solid #5a2020';statusEl.style.color='#f87171';
+    statusEl.textContent='Invalid address. Must be 0x... (42 characters)';
+    return;
+  }
+  await setWalletAddress(addr);
+}
+
+function skipWalletConnect(){
+  document.getElementById('wallet-overlay').style.display='none';
+  addNotification('system','system','Welcome to Hyperbot!',
+    'No wallet connected. Add tokens manually with the + button, or connect your wallet anytime from the header.',null);
+  startPolling();
+}
+
+async function setWalletAddress(addr){
+  connectedAddress=addr;
+  try{
+    await api('/api/set-wallet','POST',{address:addr});
+  }catch(e){console.error('set-wallet failed:',e)}
+  document.getElementById('wallet-overlay').style.display='none';
+  // Update header with truncated address
+  const walletEl=document.getElementById('d-wallet-addr');
+  if(walletEl) walletEl.textContent=addr.substring(0,6)+'...'+addr.substring(38);
+  await detectPositions();
+  startPolling();
+}
+
+async function detectPositions(){
+  try{
+    const liveData=await api('/api/positions');
+    const positions=liveData.positions||[];
+    const orders=liveData.orders||[];
+    if(positions.length>0||orders.length>0){
+      const posCoins=positions.map(p=>p.coin.toUpperCase());
+      const orderCoins=orders.map(o=>o.coin.toUpperCase());
+      const allCoins=[...new Set([...posCoins,...orderCoins])];
+      for(const coin of allCoins){
+        try{await api('/api/add-pair','POST',{coin,symbol:coin+'/USDC'})}catch(e){}
+      }
+      if(positions.length>0){
+        addNotification('system','system',
+          `Found ${positions.length} open position${positions.length>1?'s':''}`,
+          `Detected positions for ${posCoins.join(', ')} on your Hyperliquid account.`,null);
+      }
+      if(orders.length>0){
+        const uniqueOrderCoins=[...new Set(orderCoins)].filter(c=>!posCoins.includes(c));
+        if(uniqueOrderCoins.length>0){
+          addNotification('info','scan',
+            `Found ${orders.length} open order${orders.length>1?'s':''}`,
+            `Detected pending orders for ${uniqueOrderCoins.join(', ')}.`,null);
+        }
+      }
+    }else{
+      addNotification('system','system','Wallet connected!',
+        'No open positions found. Add your first token using the + button below.',null);
+    }
+  }catch(e){
+    console.error('Position detection failed:',e);
+  }
+}
+
+function startPolling(){
+  dashPoll();
+  pollTimer=setInterval(dashPoll,3000);
+}
+
 // ── Init ─────────────────────────────────────────────────────
 async function init(){
-  // Check if workspace is set up
+  // Check if backend already has a wallet address (e.g. from Keychain)
   try{
-    const ws=await api('/api/workspace-status');
-    if(!ws.pairs||ws.pairs.length===0){
-      // Empty workspace — show welcome message
-      addNotification('system','system','Welcome to Hyperbot!',
-        'Add your first token using the + button below. Pick a token and a strategy, and the bot will start watching for trading opportunities.',null);
+    const s=await api('/api/state');
+    if(s.master_address){
+      connectedAddress=s.master_address;
+      document.getElementById('wallet-overlay').style.display='none';
+      const walletEl=document.getElementById('d-wallet-addr');
+      if(walletEl) walletEl.textContent=s.master_address.substring(0,6)+'...'+s.master_address.substring(38);
+      await detectPositions();
+      startPolling();
+      return;
     }
   }catch(e){}
 
-  // Start polling
-  dashPoll();
-  pollTimer=setInterval(dashPoll,3000);
+  // No wallet — show connect overlay
+  document.getElementById('wallet-overlay').style.display='flex';
+  window.dispatchEvent(new Event('eip6963:requestProvider'));
+  // Give wallets 500ms to announce themselves
+  setTimeout(renderWalletList,500);
 }
 
 init();
@@ -1436,12 +2168,59 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json(STATE.to_dict())
 
         elif path == "/api/pairs":
-            # Return live mid prices for all pairs
+            # Return full categorized market universe
             try:
-                mids = hl_client.get_all_mids()
-                self._json(mids)
+                markets = hl_client.get_all_markets()
+                self._json(markets)
             except Exception as e:
-                self._json({"error": str(e)}, 500)
+                # Fallback to basic allMids if full market fetch fails
+                try:
+                    mids = hl_client.get_all_mids()
+                    perps = [{"coin": k, "price": v} for k, v in mids.items()]
+                    self._json({"perps": perps, "spot": []})
+                except Exception as e2:
+                    self._json({"error": str(e2)}, 500)
+
+        elif path == "/api/positions":
+            # Fetch live positions from Hyperliquid for the connected wallet
+            try:
+                address = STATE.master_address
+                if not address:
+                    self._json({"positions": [], "orders": []})
+                    return
+                ch = hl_client.get_clearinghouse_state(address)
+                positions = []
+                for p in ch.get("assetPositions", []):
+                    info = p.get("position", {})
+                    szi = float(info.get("szi", "0"))
+                    if szi == 0:
+                        continue
+                    positions.append({
+                        "coin": info.get("coin", ""),
+                        "size": szi,
+                        "entry_price": info.get("entryPx", "0"),
+                        "unrealized_pnl": info.get("unrealizedPnl", "0"),
+                        "leverage": (info.get("leverage") or {}).get("value", "1"),
+                        "liq_price": info.get("liquidationPx"),
+                        "margin_used": info.get("marginUsed", "0"),
+                    })
+                # Also fetch open orders
+                orders = []
+                try:
+                    open_orders = hl_client._info_post({"type": "openOrders", "user": address})
+                    for o in open_orders:
+                        orders.append({
+                            "coin": o.get("coin", ""),
+                            "side": o.get("side", ""),
+                            "sz": o.get("sz", "0"),
+                            "limit_px": o.get("limitPx", "0"),
+                            "oid": o.get("oid"),
+                        })
+                except Exception:
+                    pass
+                self._json({"positions": positions, "orders": orders})
+            except Exception as e:
+                self._json({"error": str(e), "positions": [], "orders": []}, 500)
 
         elif path == "/api/workspace-status":
             # Check if workspace was pre-built (has pairs in manifest)
@@ -1474,7 +2253,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         path = self.path.split("?")[0]
 
-        if path == "/api/start":
+        if path == "/api/set-wallet":
+            address = body.get("address", "").strip().lower()
+            if not address or not address.startswith("0x") or len(address) != 42:
+                self._json({"ok": False, "error": "Invalid wallet address"}, 400)
+                return
+            with STATE.lock:
+                STATE.master_address = address
+            log_trade("WALLET", "operator", 0, 0, f"Wallet connected: {address}")
+            self._json({"ok": True, "address": address})
+
+        elif path == "/api/start":
             if STATE.live_enabled:
                 STATE.trading_active = True
                 log_trade("START", "operator", 0, STATE.last_price or 0, "live trading activated")
@@ -1520,6 +2309,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     ps.max_leverage = float(body["max_leverage"])
                 if "risk_per_trade_pct" in body:
                     ps.risk_per_trade_pct = float(body["risk_per_trade_pct"])
+                if "pack_id" in body:
+                    ps.pack_id = str(body["pack_id"])
+                    ps.plan_strategy = str(body.get("plan_strategy", ps.plan_strategy))
+                if "trading_live" in body:
+                    ps.trading_live = bool(body["trading_live"])
+                    # Also ensure global trading_active is set when any card goes live
+                    if ps.trading_live:
+                        STATE.trading_active = True
             log_trade("SETTINGS", "operator", 0, 0,
                       f"{coin}: enabled={ps.enabled} lev={ps.max_leverage}x risk={ps.risk_per_trade_pct}%")
             self._json({"ok": True, "coin": coin})
@@ -1546,7 +2343,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if coin in STATE.pairs:
                     self._json({"ok": False, "error": f"{coin} is already added"}, 400)
                     return
-                STATE.add_pair(coin, symbol)
+                ps_new = STATE.add_pair(coin, symbol)
+                req_pack = body.get("pack_id", "trend_pullback").strip()
+                if ps_new and req_pack:
+                    ps_new.pack_id = req_pack
                 if not STATE.setup_complete:
                     STATE.setup_complete = True
             # Install strategy configs for the new pair
@@ -1630,9 +2430,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return
             try:
                 # Get current position size to close
-                positions = hl_client.get_user_state().get("assetPositions", [])
+                address = STATE.master_address
+                if not address:
+                    self._json({"ok": False, "error": "No wallet connected"}, 400)
+                    return
+                ch = hl_client.get_clearinghouse_state(address)
                 pos_size = 0.0
-                for p in positions:
+                is_long = True
+                for p in ch.get("assetPositions", []):
                     info = p.get("position", {})
                     if info.get("coin", "").upper() == coin:
                         pos_size = abs(float(info.get("szi", "0")))

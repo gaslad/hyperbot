@@ -20,15 +20,20 @@ No LLM API tokens are required for any core functionality.
 
 ## Architecture
 
-- `scripts/hyperbot.py` — CLI entrypoint (`dashboard`, `connect`, `run`, `validate`, `list-packs`)
+- `scripts/hyperbot.py` — CLI entrypoint (`dashboard`, `connect`, `run`, `validate`, `list-packs`). Auto-syncs template scripts into workspace on every launch.
 - `scripts/create_workspace.py` — workspace generator (template path: `templates/hyperbot-multi`)
 - `scripts/connect/` — wallet connect server + browser UI (see Wallet Connect Flow below)
 - `scripts/deploy.sh` — Netlify deploy script for landing page
 - `strategy-packs/` — installable strategy-pack definitions with `pack_id` in each config
+  - `trend_pullback/`, `compression_breakout/`, `liquidity_sweep_reversal/` — legacy 1D/4H strategies
+  - `scalp_v2/` — 5-minute breakout scalping strategy (see Scalp Strategy v2 below)
 - `templates/hyperbot-multi/` — workspace skeleton copied into generated workspaces
-  - `scripts/dashboard.py` — single-page web app (5-step wizard + live trading dashboard)
-  - `scripts/hl_client.py` — Hyperliquid API client (orders, portfolio, candles)
-  - `scripts/signals.py` — deterministic signal engine (SMA, Bollinger, ATR, wick analysis)
+  - `scripts/dashboard.py` — card-based web dashboard with inline HTML/CSS/JS + trading loop
+  - `scripts/hl_client.py` — Hyperliquid API client (orders, trigger orders, portfolio, candles, L2 book)
+  - `scripts/signals.py` — legacy signal engine (SMA, Bollinger, ATR, wick analysis) for 1D/4H strategies
+  - `scripts/scalp_strategy_v2.py` — standalone scalp strategy module (5m/15m, self-contained)
+  - `scripts/scalp_strategy_v2_prompt.py` — full strategy specification / rules reference
+  - `scripts/blaze_scalp.py` — ultra-fast 1m test scalper for pipeline verification
 - `config/policy/operator-policy.json` — risk policy for auto-apply decisions
 - `install.sh` — one-command installer for new users (installs to ~/Desktop/Hyperbot)
 - `docs/wallet-integration-guide.md` — full EIP-6963/WalletConnect/EIP-712 reference
@@ -57,7 +62,7 @@ No LLM API tokens are required for any core functionality.
 - Order formatting: `szDecimals` per asset for size, 5 significant figures for price
 - API wallet flow: `wallet=agent_wallet, account_address=master_address`
 - Portfolio: perps clearinghouse + spot clearinghouse combined for full equity
-- Signal dispatch: `pack_id` field in strategy config maps to detector functions in `signals.py`
+- Signal dispatch: `pack_id` field in strategy config maps to detector functions in `signals.py` (legacy) or `scalp_strategy_v2.py` (scalp_v2)
 - Credentials: macOS Keychain via `security` CLI, fallback to `~/.hyperbot/credentials/`
 
 ## Wallet Connect Flow
@@ -157,6 +162,55 @@ The dashboard is being redesigned from a 3-column professional trading terminal 
 - Educational transparency — every action explains what and why in plain English
 - Progressive disclosure — simple status on cards, controls on expand, education in notifications
 
+## Blaze Scalp (1-Minute Test Strategy)
+
+Ultra-fast test strategy for verifying the execution pipeline. NOT designed for profitability.
+
+- `blaze_scalp.py` — standalone module, same interface as scalp_v2
+- Uses 1m candles, EMA(8)/EMA(21) crossover for direction
+- Minimal filters: RVOL ≥ 0.5x, spread < 0.1%, micro-breakout over last 5 candles
+- 1:1 R:R (1 ATR stop, 1 ATR target) — resolves in minutes
+- No time-of-day filter, no ADX/VWAP/CVD/choppiness gates
+- Single TP (no partials) — simplest possible execution flow
+- Risk: 0.2% equity per trade, max 5x leverage
+- Pack ID: `blaze_scalp`
+
+## Scalp Strategy v2 (5-Minute Breakout)
+
+The primary active strategy, designed for 3–5 trades/day on liquid Hyperliquid perps.
+
+### Architecture
+
+- `scalp_strategy_v2.py` is a standalone module exposing `ScalpStrategy.evaluate(symbol, market_data) -> TradeSignal`
+- The trading loop in `dashboard.py` branches on `pack_id == "scalp_v2"` — calls the scalp strategy directly instead of the legacy `signals.detect_all_signals()`
+- A shared `SCALP_STRATEGY` instance tracks consecutive losses and rolling performance across the session
+
+### How It Works
+
+1. **Regime filter** (all 8 must pass): 15m EMA alignment, ADX > 20, Choppiness < 55, VWAP side, ATR above median, RVOL ≥ 1.5x, CVD confirming, time-of-day window
+2. **Setup detection**: 5m breakout/breakdown beyond recent range, not overextended, minimum 1.5R to next structure
+3. **Entry**: ALO (maker) limit at retest level preferred, IOC (taker) for strong momentum
+4. **Exit**: SL with explicit limit price (wider of structural or 1.0–1.5 ATR), partial TP at 1R (30%), final TP at 1.8R (70%)
+5. **Risk**: 0.3% equity per trade, max 10x leverage (derived from stop distance), 1.5% daily loss halt, 3 consecutive loss cooldown
+
+### Execution on Hyperliquid
+
+- Entry → `place_order()` (ALO or IOC)
+- SL → `place_trigger_order(tp_or_sl="sl")` with explicit limit price (0.3% buffer)
+- TP1 → `place_trigger_order(tp_or_sl="tp")` for 30% partial
+- TP final → `place_trigger_order(tp_or_sl="tp")` for remaining 70%
+- Failsafe: if SL placement fails after entry, position is immediately flattened via market IOC
+
+### hl_client.py Extensions (for scalp_v2)
+
+- `get_best_bid_ask(coin)` — L2 book top-of-book for spread checks
+- `update_leverage(coin, leverage)` — sets cross leverage before entry
+- `place_trigger_order(coin, is_buy, size, trigger_price, limit_price, tp_or_sl)` — TP/SL with explicit limit prices
+
+### Workspace Script Sync
+
+`hyperbot.py dashboard` now auto-syncs template `.py` files into the workspace on every launch, comparing file contents. This means edits to template scripts take effect on the next dashboard restart without needing to delete and recreate the workspace.
+
 ## Build & Test
 
 ```bash
@@ -181,7 +235,7 @@ append a task to their inbox (`.tasks/claude.md` or `.tasks/gemini.md`).
 
 ## Branch
 
-Active development is on `feature/web3-wallet-connect`.
+Active development is on `main`.
 
 ## Install Script
 
