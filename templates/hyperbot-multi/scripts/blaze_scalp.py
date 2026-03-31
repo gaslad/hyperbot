@@ -47,7 +47,7 @@ class BlazeConfig:
     ema_fast_1m: int = 8
     ema_slow_1m: int = 21
     atr_period: int = 10
-    rvol_min: float = 0.0                   # disabled — let price action decide
+    rvol_min: float = 0.5                   # require at least 0.5x recent relative volume
     max_spread_pct: float = 0.001           # 0.1% spread tolerance (2x normal)
 
     # Entry — trigger on tiny breakouts
