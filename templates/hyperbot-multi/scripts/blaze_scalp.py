@@ -47,7 +47,7 @@ class BlazeConfig:
     ema_fast_1m: int = 8
     ema_slow_1m: int = 21
     atr_period: int = 10
-    rvol_min: float = 0.5                   # basically always passes
+    rvol_min: float = 0.0                   # disabled — let price action decide
     max_spread_pct: float = 0.001           # 0.1% spread tolerance (2x normal)
 
     # Entry — trigger on tiny breakouts
@@ -93,7 +93,7 @@ class BlazeRegime:
         if not self.ema_aligned:
             reasons.append(f"1m EMAs flat (fast={self.ema_fast_val:.2f} slow={self.ema_slow_val:.2f})")
         if not self.rvol_ok:
-            reasons.append(f"RVOL {self.rvol:.2f}x < {0.5}x")
+            reasons.append(f"RVOL {self.rvol:.2f}x < threshold")
         if not self.spread_ok:
             reasons.append("Spread too wide")
         return reasons
@@ -318,17 +318,22 @@ class BlazeScalp:
 
         # --- Position sizing ---
         size_mult = 0.5 if self._consecutive_losses >= 3 else 1.0
-        risk_amount = equity * cfg.risk_per_trade_pct * size_mult
+        # Use dashboard per-pair risk if provided (as percentage), else config default (as decimal)
+        override_risk = market_data.get("risk_per_trade_pct")
+        effective_risk = (override_risk / 100.0) if override_risk is not None else cfg.risk_per_trade_pct
+        risk_amount = equity * effective_risk * size_mult
         stop_distance_pct = abs(setup.entry_price - setup.stop_price) / setup.entry_price
         if stop_distance_pct <= 0:
             return BlazeSignal(action="NO_TRADE", symbol=symbol, timestamp=ts,
                                rejection_reasons=["Zero stop distance"])
 
         position_value = risk_amount / stop_distance_pct
+        override_lev = market_data.get("max_leverage")
+        max_lev = override_lev if override_lev is not None else cfg.max_leverage
         leverage = position_value / equity if equity > 0 else 0
-        if leverage > cfg.max_leverage:
-            position_value = equity * cfg.max_leverage
-            leverage = cfg.max_leverage
+        if leverage > max_lev:
+            position_value = equity * max_lev
+            leverage = max_lev
         leverage = round(leverage, 1)
         size = position_value / setup.entry_price if setup.entry_price > 0 else 0
 

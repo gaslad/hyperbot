@@ -626,7 +626,7 @@ def place_trigger_order(
             rp_limit,
             {
                 "trigger": {
-                    "triggerPx": str(rp_trigger),
+                    "triggerPx": rp_trigger,
                     "isMarket": False,
                     "tpsl": tp_or_sl,
                 }

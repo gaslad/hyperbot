@@ -94,7 +94,9 @@ class PairState:
 
 class TradingState:
     def __init__(self) -> None:
-        self.lock = threading.Lock()
+        # Some API handlers log while already mutating state; use an RLock to
+        # avoid deadlocking on those nested state updates.
+        self.lock = threading.RLock()
         self.live_enabled = False
         self.trading_active = False
         self.last_update: str = ""
@@ -463,6 +465,10 @@ def _run_blaze_cycle(coin: str, ps, price: float | None, master_address: str | N
             equity = STATE.equity
             daily_loss = STATE.daily_loss
 
+        with STATE.lock:
+            pair_risk = ps.risk_per_trade_pct if ps else STATE.risk_per_trade_pct
+            pair_leverage = ps.max_leverage if ps else STATE.max_leverage
+
         market_data = {
             "candles_1m": candles_1m,
             "account_equity": equity,
@@ -471,6 +477,8 @@ def _run_blaze_cycle(coin: str, ps, price: float | None, master_address: str | N
             "best_bid": best_bid,
             "best_ask": best_ask,
             "open_position": {"side": "long"} if has_open else None,
+            "risk_per_trade_pct": pair_risk,
+            "max_leverage": pair_leverage,
         }
 
         signal = BLAZE_STRATEGY.evaluate(coin, market_data)
@@ -2264,9 +2272,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json({"ok": True, "address": address})
 
         elif path == "/api/start":
-            if STATE.live_enabled:
-                STATE.trading_active = True
-                log_trade("START", "operator", 0, STATE.last_price or 0, "live trading activated")
+            STATE.live_enabled = True
+            STATE.trading_active = True
+            log_trade("START", "operator", 0, STATE.last_price or 0, "live trading activated")
             self._json({"ok": True, "trading_active": STATE.trading_active})
 
         elif path == "/api/stop":
@@ -2314,9 +2322,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     ps.plan_strategy = str(body.get("plan_strategy", ps.plan_strategy))
                 if "trading_live" in body:
                     ps.trading_live = bool(body["trading_live"])
-                    # Also ensure global trading_active is set when any card goes live
+                    # Auto-enable global live trading when first card goes live
                     if ps.trading_live:
                         STATE.trading_active = True
+                        if not STATE.live_enabled:
+                            STATE.live_enabled = True
+                            log_trade("SETTINGS", "operator", 0, 0,
+                                      "Live trading auto-enabled (first card went live)")
             log_trade("SETTINGS", "operator", 0, 0,
                       f"{coin}: enabled={ps.enabled} lev={ps.max_leverage}x risk={ps.risk_per_trade_pct}%")
             self._json({"ok": True, "coin": coin})

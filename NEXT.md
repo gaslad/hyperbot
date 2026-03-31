@@ -2,71 +2,54 @@
 
 Last updated: 2026-03-31
 
-## Current State
-
-**Scalp strategy v2 is integrated and running live on the dashboard.** BTC, ETH, SOL, HYPE tested — strategy evaluates every 15s, shows live regime analysis (ADX, VWAP, RVOL, CVD, choppiness), signal strength proximity bar, and rejection reasons. No trades have fired yet (correct — market conditions haven't met all 8 regime filters simultaneously).
-
-Dashboard v2 (card-based UI) is fully functional. Workspace script sync is in place — template changes auto-propagate on dashboard restart.
-
 ## Just Completed (This Session)
 
-### Scalp Strategy v2 Integration
-- Added `scalp_strategy_v2.py` to workspace template — standalone 5m/15m breakout strategy (~890 lines)
-- Added `scalp_strategy_v2_prompt.py` — full strategy rules reference
-- Created `strategy-packs/scalp_v2/` with pack.json and config template
-- Extended `hl_client.py`: `get_best_bid_ask()`, `update_leverage()`, `place_trigger_order()` (TP/SL with explicit limit prices)
-- Added `_run_scalp_v2_cycle()` to dashboard trading loop — branches on `pack_id == "scalp_v2"`
-- Full execution flow: set leverage → entry (ALO/IOC) → SL trigger → TP1 partial (30% at 1R) → TP final (70% at 1.8R)
-- Failsafe: if SL placement fails, position is immediately flattened
+### Blaze Scalp — RVOL Filter Removed
+- **Problem:** BTC was never triggering because RVOL (current candle vol / 20-candle avg) was consistently 0.02x–0.37x, failing the 0.5x threshold
+- **Fix:** Set `rvol_min = 0.0` in `blaze_scalp.py:50` — RVOL filter effectively disabled, price action alone decides
+- **Also fixed:** Hardcoded `{0.5}` in log message at `blaze_scalp.py:96` — was showing wrong threshold in rejection logs
 
-### Dashboard Improvements
-- Signal strength now shows regime proximity (0–70%) even on NO_TRADE signals
-- Live analysis dot colors: red for failing conditions, green for passing
-- "5m Scalper" appears first in strategy picker
+### Live Trading Auto-Enable (No More --live Flag Required)
+- **Problem:** Dashboard required `--live --confirm-risk` CLI flags for orders to execute. Without them, `STATE.live_enabled = False` and all orders were silently dropped
+- **Fix:** Two changes in `dashboard.py`:
+  - `/api/pair-settings` handler (~line 2318): When a card's "Go Live" toggle is activated, auto-sets `STATE.live_enabled = True` with a log message
+  - `/api/start` handler (~line 2267): Start Trading button also auto-enables `STATE.live_enabled`
+- The per-card confirm dialog ("Go live on X? The bot will execute real trades...") still fires as a safety check
 
-### Blaze Scalp (Test Strategy)
-- Added `blaze_scalp.py` — ultra-fast 1m test scalper for verifying execution pipeline
-- Minimal filters (RVOL ≥ 0.5x, spread < 0.1%, 5-candle micro-breakout), no time/ADX/VWAP gates
-- 1:1 R:R with 1 ATR stop/target — should fire and resolve within minutes
-- Wired into dashboard with `pack_id == "blaze_scalp"`, appears first in strategy picker
-
-### Infrastructure
-- `hyperbot.py` auto-syncs template scripts into workspace on every launch (no more stale copies)
-- Fixed candle column mapping: Hyperliquid returns `o,h,l,c,v` → renamed to `open,high,low,close,volume`
-- Adjusted time windows for AEST operator (UTC+10): nearly 24h coverage, only 06:00–08:00 UTC blocked
-
-### Docs
-- Updated AGENTS.md with scalp_v2 architecture, hl_client extensions, workspace sync docs
-- Fixed branch reference (was `feature/web3-wallet-connect`, now `main`)
+### Position Sizing — Dashboard Risk % Passthrough
+- **Problem:** Blaze strategy used its own hardcoded `risk_per_trade_pct = 0.002` (0.2%) instead of the dashboard's per-pair risk setting (0.5–1%). With $99.80 equity, 0.2% = $0.20 risk → BTC position size rounded to zero
+- **Fix:**
+  - `blaze_scalp.py:321-323`: Now reads `market_data["risk_per_trade_pct"]` (from dashboard, as percentage) and converts to decimal. Falls back to config default if not present
+  - `blaze_scalp.py:332`: Same passthrough for `max_leverage`
+  - `dashboard.py:466-474`: `_run_blaze_cycle()` now passes `pair_risk` and `pair_leverage` from the dashboard's per-pair settings into `market_data`
 
 ## Key Files Changed
 
-| File | What Changed |
-|------|-------------|
-| `templates/hyperbot-multi/scripts/scalp_strategy_v2.py` | NEW — full scalp strategy module |
-| `templates/hyperbot-multi/scripts/scalp_strategy_v2_prompt.py` | NEW — strategy rules reference |
-| `templates/hyperbot-multi/scripts/blaze_scalp.py` | NEW — 1m test scalper for pipeline verification |
-| `templates/hyperbot-multi/scripts/dashboard.py` | Scalp v2 integration, signal proximity, improved live analysis |
-| `templates/hyperbot-multi/scripts/hl_client.py` | Trigger orders, leverage, bid/ask |
-| `scripts/hyperbot.py` | Workspace script sync on launch |
-| `strategy-packs/scalp_v2/` | NEW — pack definition + config |
-| `AGENTS.md` | Scalp v2 docs, branch fix |
+| File | Lines | What Changed |
+|------|-------|-------------|
+| `templates/hyperbot-multi/scripts/blaze_scalp.py` | 50, 96, 321-323, 332 | RVOL disabled, log fix, risk/leverage passthrough |
+| `templates/hyperbot-multi/scripts/dashboard.py` | 466-474, 2267-2270, 2318-2323 | Risk passthrough to blaze, auto-enable live trading |
 
-## Pending — Next Session
+## Pending — Ready to Pick Up
 
-1. **Run live with `--live --confirm-risk` and monitor first trade execution.** Strategy is evaluating correctly but no trade has fired yet. Need to observe during peak hours (08:00–17:00 UTC / 18:00–03:00 AEST) when RVOL and ADX conditions are more likely to be met.
+1. **Verify the "Go Live" → auto-enable → order execution flow end-to-end.** The three fixes above haven't been tested together yet. Rebuild workspace (`rm -rf ~/Projects/hyperbot-workspace`) and restart dashboard. Add BTC, set risk to 0.5% or 1%, click "Go Live" on the BTC card. Confirm:
+   - Log shows "Live trading auto-enabled (first card went live)"
+   - Next blaze signal with action=TRADE actually submits to Hyperliquid
+   - Trade appears in HL order/trade history
+   - Check for "notional < $10 min" skip at `dashboard.py:529` — with 0.5% risk on $99.80, notional should be ~$830 for BTC which clears it
 
-2. **Add position monitoring to scalp_v2 cycle.** Currently the strategy places entry + TP/SL but doesn't monitor for partial fills, SL adjustments after TP1 hit (move SL to breakeven), or trailing stop logic. The TP/SL triggers handle basic exits but the "move stop to breakeven after TP1" flow needs implementation.
+2. **Add position monitoring to scalp_v2 cycle.** Currently places entry + TP/SL but doesn't monitor for partial fills or "move SL to breakeven after TP1" flow.
 
-3. **Dashboard: show passing conditions too.** Currently only rejection reasons are shown in Live Analysis. When 5/8 conditions pass, show the 5 green ones alongside the 3 red ones for better transparency.
+3. **Dashboard: show passing conditions too.** Currently only rejection reasons shown in Live Analysis.
 
-4. **Backtest scalp_v2.** The existing `backtest.py` only supports legacy strategies. Needs a parallel path for scalp_v2 using 5m/15m candle data.
+4. **Backtest scalp_v2.** Existing `backtest.py` only supports legacy strategies.
 
-5. **Commit the 2 unpushed commits + this session's work, push to GitHub.**
+## Blockers
+
+- **Workspace rebuild required after every template edit.** The sync logic (hyperbot.py:141-154) correctly copies on byte mismatch, but if the workspace was created from the same template before the edit, files match and nothing syncs. Workaround: `rm -rf ~/Projects/hyperbot-workspace` before restart. Long-term: add a `--force-sync` flag or template version hash.
 
 ## Decisions Made
 
-- **RVOL threshold stays at 1.5x** — operator decision, no reduction for testing
-- **Time windows expanded for AEST** — nearly 24/7, only 06:00–08:00 UTC dead zone
-- **Template script sync** — workspace scripts are always overwritten from templates on launch (user config in workspace manifest is preserved)
-- **Signal proximity score** — counts passing regime conditions / 8, scaled to 70% max (setup validation needed for higher)
+- **RVOL filter disabled entirely (0.0)** — BTC 1m volume is too thin/inconsistent relative to its own 20-candle average. Let breakout logic alone gate entries.
+- **`--live --confirm-risk` CLI flags no longer required** — live trading auto-enables when the first card "Go Live" button is clicked. The per-card confirm dialog remains as the safety gate.
+- **Dashboard per-pair risk % is now source of truth for blaze sizing** — the strategy's hardcoded `risk_per_trade_pct` is only a fallback. This means changing risk in the UI takes effect on the next signal evaluation without a restart.
