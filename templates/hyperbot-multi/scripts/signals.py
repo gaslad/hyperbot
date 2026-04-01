@@ -117,7 +117,7 @@ def detect_trend_pullback(config: dict, candles_1d: list[dict], candles_4h: list
 
     sma_period = entry_cfg.get("sma_period", 20)
     pullback_zone_pct = entry_cfg.get("pullback_zone_pct", 3.0)
-    min_pullback_pct = filters_cfg.get("min_pullback_pct", 2.0)
+    min_pullback_pct = filters_cfg.get("min_pullback_pct", 1.0)  # lowered to allow more setups
     invalidation_pct = risk_cfg.get("invalidation_below_sma_pct", 2.0)
 
     daily_closes = closes(candles_1d)
@@ -222,11 +222,11 @@ def detect_compression_breakout(config: dict, candles_1d: list[dict], candles_4h
     atr_val = atr(candles_1d)
     if atr_val and len(candles_1d) >= 2:
         last_range = float(candles_1d[-1].get("h", candles_1d[-1].get("high", 0))) - float(candles_1d[-1].get("l", candles_1d[-1].get("low", 0)))
-        if last_range > atr_val * 1.5:
+        if last_range > atr_val * 1.0:  # lowered to 1.0x ATR to catch intraday moves
             reasons.append("expansion candle confirms breakout")
             score += 0.2
 
-    direction = direction_hint if score >= 0.6 else Direction.NONE
+    direction = direction_hint if score >= 0.4 else Direction.NONE  # Trigger on breakout alone
     stop_loss = None
     take_profit = None
     if direction == Direction.BUY:
@@ -251,7 +251,7 @@ def detect_liquidity_sweep(config: dict, candles_1d: list[dict], candles_4h: lis
     risk_cfg = config.get("risk", {})
 
     lookback = entry_cfg.get("sweep_lookback_bars", 20)
-    wick_ratio_min = entry_cfg.get("wick_rejection_ratio", 2.0)
+    wick_ratio_min = entry_cfg.get("wick_rejection_ratio", 1.0)  # reduced from 2.0 to catch shorter sweeps
 
     daily_highs = highs(candles_1d)
     daily_lows = lows(candles_1d)

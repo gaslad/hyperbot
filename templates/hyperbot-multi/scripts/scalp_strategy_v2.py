@@ -59,9 +59,9 @@ class StrategyConfig:
     max_session_losses: int = 5              # full halt after 5 losses
 
     # Regime
-    adx_min: float = 20.0
-    choppiness_max: float = 55.0
-    rvol_min: float = 1.5
+    adx_min: float = 15.0                    # reduced from 20.0 to fire more often
+    choppiness_max: float = 60.0             # increased from 55.0
+    rvol_min: float = 1.0                    # reduced from 1.5 to catch more breakouts
     atr_period: int = 10                     # ATR(10) not ATR(14)
     ema_fast_15m: int = 20
     ema_slow_15m: int = 50
@@ -97,13 +97,11 @@ class StrategyConfig:
     max_latency_ms: int = 500
 
     # Time filters (UTC hours, inclusive)
-    # Adjusted for AEST (UTC+10) operator — covers London open through NY close
+    # Adjusted for crypto 24/7 market
     session_windows: list = field(default_factory=lambda: [
-        (8, 17),    # London open → NY afternoon (18:00–03:00 AEST)
-        (22, 24),   # Asia morning session (08:00–10:00 AEST)
-        (0, 6),     # Asia/early London (10:00–16:00 AEST)
+        (0, 24),    # 24/7 crypto sessions
     ])
-    blocked_hours: list = field(default_factory=lambda: [6, 7])  # 16:00–18:00 AEST dead zone
+    blocked_hours: list = field(default_factory=list)  # No dead zones
 
     # Spread / breakout
     breakout_lookback: int = 8              # candles to look back for high/low range

@@ -52,14 +52,14 @@ class BlazeConfig:
 
     # Entry — trigger on tiny breakouts
     breakout_lookback: int = 5              # only 5 candles
-    min_r_distance: float = 1.0             # 1R minimum (not 1.5R)
+    min_r_distance: float = 1.5             # 1.5R minimum R:R check
     max_chase_atr: float = 1.5              # allow more chasing
 
-    # Stop/TP — tight for fast resolution
+    # Stop/TP — better RR for fast resolution offsetting fees
     stop_atr_mult: float = 1.0              # 1 ATR stop
-    tp_atr_mult: float = 1.0               # 1 ATR take profit (1:1 R:R)
-    sl_limit_buffer_pct: float = 0.005      # 0.5% buffer on SL limit
-    tp_limit_buffer_pct: float = 0.002      # 0.2% buffer on TP limit
+    tp_atr_mult: float = 1.5               # 1.5 ATR take profit (1:1.5 R:R)
+    sl_limit_buffer_pct: float = 0.002      # 0.2% buffer on SL limit
+    tp_limit_buffer_pct: float = 0.001      # 0.1% buffer on TP limit
 
     # Fees
     taker_fee: float = 0.00045
@@ -67,7 +67,7 @@ class BlazeConfig:
     estimated_slippage: float = 0.0010
 
     # Execution
-    ioc_price_offset_pct: float = 0.002     # 0.2% offset for IOC
+    ioc_price_offset_pct: float = 0.0005    # 0.05% offset for IOC
 
 
 # ---------------------------------------------------------------------------
