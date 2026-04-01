@@ -80,5 +80,56 @@ class DetectAllSignalsCoinFilterTests(unittest.TestCase):
         self.assertEqual(len(result), 0)
 
 
+class TrendPullbackRegressionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.config = {
+            "strategy_id": "tao_trend_pullback",
+            "pack_id": "trend_pullback",
+            "entry": {"sma_period": 10, "pullback_zone_pct": 5.0},
+            "filters": {"min_pullback_pct": 3.0},
+            "risk": {"invalidation_below_sma_pct": 3.0},
+        }
+
+    def test_does_not_buy_when_price_is_extended_without_real_pullback(self) -> None:
+        candles_1d = [
+            {"o": 100, "h": 102, "l": 99, "c": 100},
+            {"o": 101, "h": 103, "l": 100, "c": 101},
+            {"o": 102, "h": 104, "l": 101, "c": 102},
+            {"o": 103, "h": 105, "l": 102, "c": 103},
+            {"o": 104, "h": 106, "l": 103, "c": 104},
+            {"o": 105, "h": 107, "l": 104, "c": 105},
+            {"o": 106, "h": 108, "l": 105, "c": 106},
+            {"o": 107, "h": 109, "l": 106, "c": 107},
+            {"o": 108, "h": 110, "l": 107, "c": 108},
+            {"o": 109, "h": 111, "l": 108, "c": 109},
+        ]
+        candles_4h = [{"o": 100 + i, "h": 101 + i, "l": 99 + i, "c": 100 + i} for i in range(60)]
+
+        signal = signals.detect_trend_pullback(self.config, candles_1d, candles_4h, current_price=109.0)
+
+        self.assertEqual(signal.direction, signals.Direction.NONE)
+        self.assertIn("needs 3.0%", " ".join(signal.reasons))
+
+    def test_buys_after_pullback_into_zone_with_swing_high_retracement(self) -> None:
+        candles_1d = [
+            {"o": 100, "h": 101, "l": 99, "c": 100},
+            {"o": 101, "h": 102, "l": 100, "c": 101},
+            {"o": 102, "h": 103, "l": 101, "c": 102},
+            {"o": 103, "h": 104, "l": 102, "c": 103},
+            {"o": 104, "h": 105, "l": 103, "c": 104},
+            {"o": 105, "h": 106, "l": 104, "c": 105},
+            {"o": 106, "h": 107, "l": 105, "c": 106},
+            {"o": 107, "h": 112, "l": 106, "c": 107},
+            {"o": 106, "h": 108, "l": 104, "c": 106},
+            {"o": 104, "h": 106, "l": 103, "c": 104},
+        ]
+        candles_4h = [{"o": 90 + i * 0.1, "h": 91 + i * 0.1, "l": 89 + i * 0.1, "c": 90 + i * 0.1} for i in range(60)]
+
+        signal = signals.detect_trend_pullback(self.config, candles_1d, candles_4h, current_price=104.0)
+
+        self.assertEqual(signal.direction, signals.Direction.BUY)
+        self.assertAlmostEqual(signal.entry_price, 104.0)
+
+
 if __name__ == "__main__":
     unittest.main()

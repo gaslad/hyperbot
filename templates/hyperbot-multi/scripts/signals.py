@@ -117,7 +117,7 @@ def detect_trend_pullback(config: dict, candles_1d: list[dict], candles_4h: list
 
     sma_period = entry_cfg.get("sma_period", 20)
     pullback_zone_pct = entry_cfg.get("pullback_zone_pct", 3.0)
-    min_pullback_pct = filters_cfg.get("min_pullback_pct", 1.0)  # lowered to allow more setups
+    min_pullback_pct = filters_cfg.get("min_pullback_pct", 3.0)
     invalidation_pct = risk_cfg.get("invalidation_below_sma_pct", 2.0)
 
     daily_closes = closes(candles_1d)
@@ -136,30 +136,40 @@ def detect_trend_pullback(config: dict, candles_1d: list[dict], candles_4h: list
     else:
         return Signal(Direction.NONE, strategy_id, "trend_pullback", 0.0, current_price, ["price below SMA — no uptrend"])
 
-    # Check pullback: price within pullback zone of SMA
+    # A pullback entry must actually retrace back toward the daily SMA.
     pullback_pct = ((current_price - sma_val) / sma_val) * 100
-    if pullback_pct <= pullback_zone_pct:
+    in_pullback_zone = pullback_pct <= pullback_zone_pct
+    if in_pullback_zone:
         reasons.append(f"pullback {pullback_pct:.1f}% within zone ({pullback_zone_pct}%)")
         score += 0.3
     else:
         reasons.append(f"price {pullback_pct:.1f}% above SMA — not in pullback zone")
 
-    # Check minimum pullback from recent high
+    # Measure the retracement from recent swing highs, not just daily closes.
+    pulled_back_enough = False
     if len(daily_closes) >= 5:
-        recent_high = max(daily_closes[-5:])
+        recent_high = max(highs(candles_1d[-5:]))
         drop_from_high = ((recent_high - current_price) / recent_high) * 100
         if drop_from_high >= min_pullback_pct:
             reasons.append(f"pulled back {drop_from_high:.1f}% from recent high")
             score += 0.2
+            pulled_back_enough = True
+        else:
+            reasons.append(f"only {drop_from_high:.1f}% off recent high — needs {min_pullback_pct:.1f}%")
+    else:
+        reasons.append("insufficient daily history to confirm pullback depth")
 
     # 4H trend confirmation
     h4_closes = closes(candles_4h)
     h4_sma = sma(h4_closes, 50)
-    if h4_sma and current_price > h4_sma:
+    h4_confirmed = bool(h4_sma and current_price > h4_sma)
+    if h4_confirmed:
         reasons.append("4H price above SMA50")
         score += 0.2
+    else:
+        reasons.append("4H trend not confirmed")
 
-    direction = Direction.BUY if score >= 0.5 else Direction.NONE
+    direction = Direction.BUY if in_pullback_zone and pulled_back_enough and h4_confirmed else Direction.NONE
     stop_loss = sma_val * (1 - invalidation_pct / 100) if direction == Direction.BUY else None
     take_profit = current_price * 1.04 if direction == Direction.BUY else None  # 4% target
 

@@ -940,6 +940,43 @@ def trading_loop() -> None:
                         result = hl_client.place_order(coin, is_buy, size, order_type="market")
                         if result.ok:
                             log_trade("FILLED", sig_obj.strategy_id, size, price, f"oid={result.order_id}")
+                            if sig_obj.stop_loss:
+                                sl_trigger = float(sig_obj.stop_loss)
+                                sl_limit = _legacy_trigger_limit(sl_trigger, is_buy_entry=is_buy, tp_or_sl="sl")
+                                sl_result = hl_client.place_trigger_order(
+                                    coin,
+                                    is_buy=not is_buy,
+                                    size=size,
+                                    trigger_price=sl_trigger,
+                                    limit_price=sl_limit,
+                                    tp_or_sl="sl",
+                                    reduce_only=True,
+                                )
+                                if not sl_result.ok:
+                                    log_trade("SL_FAIL", sig_obj.strategy_id, size, sl_trigger,
+                                              f"SL placement failed: {sl_result.error} — FLATTENING")
+                                    hl_client.place_order(coin, not is_buy, size,
+                                                          order_type="market", reduce_only=True)
+                                    continue
+                                log_trade("SL_SET", sig_obj.strategy_id, size, sl_trigger, "reduce-only trigger")
+
+                            if sig_obj.take_profit:
+                                tp_trigger = float(sig_obj.take_profit)
+                                tp_limit = _legacy_trigger_limit(tp_trigger, is_buy_entry=is_buy, tp_or_sl="tp")
+                                tp_result = hl_client.place_trigger_order(
+                                    coin,
+                                    is_buy=not is_buy,
+                                    size=size,
+                                    trigger_price=tp_trigger,
+                                    limit_price=tp_limit,
+                                    tp_or_sl="tp",
+                                    reduce_only=True,
+                                )
+                                if tp_result.ok:
+                                    log_trade("TP_SET", sig_obj.strategy_id, size, tp_trigger, "reduce-only trigger")
+                                else:
+                                    log_trade("TP_FAIL", sig_obj.strategy_id, size, tp_trigger,
+                                              tp_result.error or "unknown")
                         else:
                             log_trade("REJECTED", sig_obj.strategy_id, size, price, result.error or "unknown")
 
@@ -1011,6 +1048,18 @@ def log_trade(action: str, strategy: str, size: float, price: float, note: str =
     with STATE.lock:
         STATE.trade_log.append(entry)
     print(f"  [{action}] {strategy} size={size:.6f} price={price:.2f} {note}", flush=True)
+
+
+def _legacy_trigger_limit(trigger_price: float, is_buy_entry: bool, tp_or_sl: str) -> float:
+    """Derive a conservative explicit limit price for legacy exit triggers.
+
+    Hyperliquid trigger orders need a real limit price. For exits, the limit
+    should be slightly worse than the trigger so fills are more likely once the
+    trigger fires.
+    """
+    if tp_or_sl == "sl":
+        return trigger_price * (0.997 if is_buy_entry else 1.003)
+    return trigger_price * (0.999 if is_buy_entry else 1.001)
 
 
 # ---------------------------------------------------------------------------
