@@ -760,7 +760,7 @@ class HyperliquidExecutor:
         results = {}
 
         # 1. Set leverage
-        self.exchange.update_leverage(op.leverage, op.symbol)
+        self.exchange.update_leverage(op.leverage, op.symbol, is_cross=False)
 
         # 2. Entry order (ALO = maker, IOC = aggressive taker)
         entry_order = {

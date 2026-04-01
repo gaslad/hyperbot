@@ -564,15 +564,22 @@ def get_best_bid_ask(coin: str, base_url: str = HL_MAINNET) -> dict:
 # Leverage management
 # ---------------------------------------------------------------------------
 
-def update_leverage(coin: str, leverage: int, base_url: str = HL_MAINNET) -> OrderResult:
-    """Set cross leverage for a coin. Leverage must be an integer."""
+def update_leverage(
+    coin: str,
+    leverage: int,
+    margin_mode: str = "isolated",
+    base_url: str = HL_MAINNET,
+) -> OrderResult:
+    """Set leverage and explicit margin mode for a coin."""
     try:
         exchange = _get_exchange_client(base_url)
-        result = exchange.update_leverage(int(leverage), coin)
-        print(f"  [order] Set leverage {coin} → {leverage}x: {result}", flush=True)
+        mode = str(margin_mode or "isolated").strip().lower()
+        is_cross = mode == "cross"
+        result = exchange.update_leverage(int(leverage), coin, is_cross=is_cross)
+        print(f"  [order] Set leverage {coin} → {leverage}x mode={mode}: {result}", flush=True)
         return OrderResult(ok=result.get("status") == "ok", raw=result)
     except Exception as e:
-        print(f"  [order] update_leverage({coin}, {leverage}) error: {e}", flush=True)
+        print(f"  [order] update_leverage({coin}, {leverage}, margin_mode={margin_mode}) error: {e}", flush=True)
         return OrderResult(ok=False, error=str(e))
 
 

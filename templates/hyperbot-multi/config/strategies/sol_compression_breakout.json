@@ -27,7 +27,8 @@
     "invalidation_below_sma_pct": 3.0,
     "position_sizing": {
       "risk_per_trade_pct": 1.5,
-      "max_leverage": 4.0
+      "max_leverage": 4.0,
+      "margin_mode": "isolated"
     }
   },
   "take_profit": {

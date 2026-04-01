@@ -16,7 +16,8 @@
   "default_risk": {
     "risk_per_trade_pct": 1.5,
     "capital_allocation_pct": 100,
-    "max_leverage": 4
+    "max_leverage": 4,
+    "margin_mode": "isolated"
   },
   "default_exits": {
     "tp1_r_multiple": 1.0,

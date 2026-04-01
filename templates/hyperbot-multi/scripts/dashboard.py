@@ -43,6 +43,11 @@ ROOT = Path(__file__).resolve().parents[1]
 POLICY_PATH = ROOT / "config" / "policy" / "operator-policy.json"
 MANIFEST_PATH = ROOT / "hyperbot.workspace.json"
 
+
+def normalize_margin_mode(value: Any, default: str = "isolated") -> str:
+    mode = str(value or default).strip().lower()
+    return mode if mode in {"isolated", "cross"} else default
+
 # ---------------------------------------------------------------------------
 # Global state
 # ---------------------------------------------------------------------------
@@ -60,6 +65,7 @@ class PairState:
         # Per-pair risk settings (defaults inherited from global)
         self.max_leverage: float = 4.0
         self.risk_per_trade_pct: float = 1.0
+        self.margin_mode: str = "isolated"
         # Persisted trade plan from the originating signal
         self.plan_entry: float | None = None
         self.plan_sl: float | None = None
@@ -81,6 +87,7 @@ class PairState:
             "enabled": self.enabled,
             "max_leverage": self.max_leverage,
             "risk_per_trade_pct": self.risk_per_trade_pct,
+            "margin_mode": self.margin_mode,
             "plan_entry": self.plan_entry,
             "plan_sl": self.plan_sl,
             "plan_tp": self.plan_tp,
@@ -112,6 +119,7 @@ class TradingState:
         self.thinking: str = ""  # rotating system status message
         self.max_leverage: float = 4.0
         self.risk_per_trade_pct: float = 1.0
+        self.margin_mode: str = "isolated"
         self.start_of_day_equity: float = 0.0
         self.master_address: str = ""
         self.network: str = "mainnet"
@@ -127,6 +135,9 @@ class TradingState:
 
     def add_pair(self, coin: str, symbol: str) -> PairState:
         ps = PairState(coin, symbol)
+        ps.max_leverage = self.max_leverage
+        ps.risk_per_trade_pct = self.risk_per_trade_pct
+        ps.margin_mode = self.margin_mode
         self.pairs[coin] = ps
         if not self.active_coin:
             self.active_coin = coin
@@ -183,6 +194,7 @@ class TradingState:
             "thinking": self.thinking,
             "max_leverage": self.max_leverage,
             "risk_per_trade_pct": self.risk_per_trade_pct,
+            "margin_mode": self.margin_mode,
             "master_address": self.master_address,
             "network": self.network,
             # Multi-pair data
@@ -326,7 +338,7 @@ def build_workspace_background(config: dict) -> None:
                     "runner": {"source": "hyperliquid_candles", "anchor_timeframe": "1D", "trigger_timeframe": "4H", "confirmation_timeframe": "1H"},
                     "entry": {"sma_period": 10, "pullback_zone_pct": 5.0, "confirmation_type": "close_above_prev_high"},
                     "filters": {"overextension_max_pct": 20.0, "min_pullback_pct": 3.0},
-                    "risk": {"invalidation_below_sma_pct": 3.0, "position_sizing": {"risk_per_trade_pct": 1.5, "max_leverage": 4.0}},
+                    "risk": {"invalidation_below_sma_pct": 3.0, "position_sizing": {"risk_per_trade_pct": 1.5, "max_leverage": 4.0, "margin_mode": "isolated"}},
                     "take_profit": {"tp1_r_multiple": 1.0, "tp2_r_multiple": 2.0},
                 }
                 (config_dir / f"{new_id}.json").write_text(json.dumps(cfg, indent=2), encoding="utf-8")
@@ -381,6 +393,11 @@ def build_workspace_background(config: dict) -> None:
         STATE.max_daily_loss_pct = config.get("max_daily_loss_pct", 5.0)
         STATE.max_leverage = config.get("max_leverage", 4.0)
         STATE.risk_per_trade_pct = config.get("risk_per_trade_pct", 1.0)
+        STATE.margin_mode = normalize_margin_mode(config.get("margin_mode", "isolated"))
+        for ps in STATE.pairs.values():
+            ps.max_leverage = STATE.max_leverage
+            ps.risk_per_trade_pct = STATE.risk_per_trade_pct
+            ps.margin_mode = STATE.margin_mode
 
     except Exception as e:
         STATE.build_status = "error"
@@ -529,6 +546,7 @@ def _run_blaze_cycle(coin: str, ps, price: float | None, master_address: str | N
         with STATE.lock:
             live_enabled = STATE.live_enabled
             card_live = ps.trading_live if ps else False
+            margin_mode = ps.margin_mode if ps else STATE.margin_mode
 
         if signal.action == "TRADE" and live_enabled and card_live and signal.order_params:
             op = signal.order_params
@@ -540,7 +558,7 @@ def _run_blaze_cycle(coin: str, ps, price: float | None, master_address: str | N
                 return
 
             # Set leverage
-            hl_client.update_leverage(coin, int(op.leverage))
+            hl_client.update_leverage(coin, int(op.leverage), margin_mode=margin_mode)
 
             # Entry — always IOC (taker) for speed
             is_buy = op.side == "buy"
@@ -684,6 +702,7 @@ def _run_scalp_v2_cycle(coin: str, ps, price: float | None, master_address: str 
         with STATE.lock:
             live_enabled = STATE.live_enabled
             card_live = ps.trading_live if ps else False
+            margin_mode = ps.margin_mode if ps else STATE.margin_mode
 
         if signal.action == "TRADE" and live_enabled and card_live and signal.order_params:
             op = signal.order_params
@@ -696,7 +715,7 @@ def _run_scalp_v2_cycle(coin: str, ps, price: float | None, master_address: str 
                 return
 
             # 1. Set leverage
-            lev_result = hl_client.update_leverage(coin, int(op.leverage))
+            lev_result = hl_client.update_leverage(coin, int(op.leverage), margin_mode=margin_mode)
             if not lev_result.ok:
                 log_trade("LEV_FAIL", "scalp_v2", 0, 0,
                           f"leverage {int(op.leverage)}x failed: {lev_result.error}")
@@ -885,6 +904,7 @@ def trading_loop() -> None:
                     max_daily_loss_pct = STATE.max_daily_loss_pct
                     max_leverage = ps.max_leverage if ps else STATE.max_leverage
                     risk_per_trade_pct = ps.risk_per_trade_pct if ps else STATE.risk_per_trade_pct
+                    margin_mode = ps.margin_mode if ps else STATE.margin_mode
                     equity = STATE.equity
 
                 if live_enabled and card_live and price:
@@ -936,6 +956,12 @@ def trading_loop() -> None:
                         is_buy = sig_obj.direction == signals.Direction.BUY
                         log_trade("BUY" if is_buy else "SELL", sig_obj.strategy_id, size, price,
                                   f"confidence={sig_obj.confidence:.2f}, SL={sig_obj.stop_loss:.2f}")
+
+                        lev_result = hl_client.update_leverage(coin, int(max_leverage), margin_mode=margin_mode)
+                        if not lev_result.ok:
+                            log_trade("LEV_FAIL", sig_obj.strategy_id, 0, 0,
+                                      f"leverage {int(max_leverage)}x {margin_mode} failed: {lev_result.error}")
+                            continue
 
                         result = hl_client.place_order(coin, is_buy, size, order_type="market")
                         if result.ok:
@@ -2336,6 +2362,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 STATE.max_leverage = body.get("max_leverage", STATE.max_leverage)
                 STATE.risk_per_trade_pct = body.get("risk_per_trade_pct", STATE.risk_per_trade_pct)
                 STATE.max_daily_loss_pct = body.get("max_daily_loss_pct", STATE.max_daily_loss_pct)
+                STATE.margin_mode = normalize_margin_mode(body.get("margin_mode", STATE.margin_mode))
                 # Persist to policy file
                 if POLICY_PATH.exists():
                     policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
@@ -2345,7 +2372,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     safe["max_daily_loss_pct"] = STATE.max_daily_loss_pct
                     POLICY_PATH.write_text(json.dumps(policy, indent=2), encoding="utf-8")
                 log_trade("SETTINGS", "operator", 0, STATE.last_price or 0,
-                          f"lev={STATE.max_leverage}x risk={STATE.risk_per_trade_pct}% daily={STATE.max_daily_loss_pct}%")
+                          f"lev={STATE.max_leverage}x risk={STATE.risk_per_trade_pct}% daily={STATE.max_daily_loss_pct}% mode={STATE.margin_mode}")
                 self._json({"ok": True})
             except Exception as e:
                 self._json({"ok": False, "error": str(e)}, 400)
@@ -2366,6 +2393,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     ps.max_leverage = float(body["max_leverage"])
                 if "risk_per_trade_pct" in body:
                     ps.risk_per_trade_pct = float(body["risk_per_trade_pct"])
+                if "margin_mode" in body:
+                    ps.margin_mode = normalize_margin_mode(body["margin_mode"], ps.margin_mode)
                 if "pack_id" in body:
                     ps.pack_id = str(body["pack_id"])
                     ps.plan_strategy = str(body.get("plan_strategy", ps.plan_strategy))
@@ -2379,7 +2408,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             log_trade("SETTINGS", "operator", 0, 0,
                                       "Live trading auto-enabled (first card went live)")
             log_trade("SETTINGS", "operator", 0, 0,
-                      f"{coin}: enabled={ps.enabled} lev={ps.max_leverage}x risk={ps.risk_per_trade_pct}%")
+                      f"{coin}: enabled={ps.enabled} lev={ps.max_leverage}x risk={ps.risk_per_trade_pct}% mode={ps.margin_mode}")
             self._json({"ok": True, "coin": coin})
 
         elif path == "/api/switch-pair":
@@ -2408,6 +2437,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 req_pack = body.get("pack_id", "trend_pullback").strip()
                 if ps_new and req_pack:
                     ps_new.pack_id = req_pack
+                ps_new.margin_mode = normalize_margin_mode(body.get("margin_mode", STATE.margin_mode))
                 if not STATE.setup_complete:
                     STATE.setup_complete = True
             # Install strategy configs for the new pair
@@ -2442,7 +2472,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "runner": {"source": "hyperliquid_candles", "anchor_timeframe": "1D", "trigger_timeframe": "4H", "confirmation_timeframe": "1H"},
                     "entry": {"sma_period": 10, "pullback_zone_pct": 5.0},
                     "filters": {"overextension_max_pct": 20.0, "min_pullback_pct": 3.0},
-                    "risk": {"invalidation_below_sma_pct": 3.0, "position_sizing": {"risk_per_trade_pct": 1.5, "max_leverage": 4.0}},
+                    "risk": {"invalidation_below_sma_pct": 3.0, "position_sizing": {"risk_per_trade_pct": 1.5, "max_leverage": 4.0, "margin_mode": ps_new.margin_mode}},
                     "take_profit": {"tp1_r_multiple": 1.0, "tp2_r_multiple": 2.0},
                 }
                 (config_dir / f"{new_id}.json").write_text(json.dumps(cfg, indent=2), encoding="utf-8")

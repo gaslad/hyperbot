@@ -9,6 +9,9 @@
     "execution": "5m"
   },
   "risk_profile": "medium",
+  "default_risk": {
+    "margin_mode": "isolated"
+  },
   "min_equity_usd": 500,
   "recommended_symbols": ["BTC", "ETH", "SOL", "HYPE", "SUI", "DOGE", "AVAX", "ARB"],
   "features": [
