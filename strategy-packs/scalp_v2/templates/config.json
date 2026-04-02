@@ -12,7 +12,7 @@
   "strategy": {
     "risk_per_trade_pct": 0.003,
     "max_daily_loss_pct": 0.015,
-    "max_leverage": 10.0,
+    "max_leverage": 2.0,
     "margin_mode": "isolated",
     "max_consecutive_losses": 3,
     "max_session_losses": 5,

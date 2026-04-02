@@ -48,6 +48,19 @@ def normalize_margin_mode(value: Any, default: str = "isolated") -> str:
     mode = str(value or default).strip().lower()
     return mode if mode in {"isolated", "cross"} else default
 
+
+LIVE_MAX_LEVERAGE_CAP = 2.0
+PAIR_COOLDOWN_SECONDS = 30 * 60
+BREAKEVEN_BUFFER_PCT = 0.0012
+
+
+def clamp_live_leverage(value: Any) -> float:
+    try:
+        lev = float(value)
+    except (TypeError, ValueError):
+        lev = LIVE_MAX_LEVERAGE_CAP
+    return max(1.0, min(LIVE_MAX_LEVERAGE_CAP, lev))
+
 # ---------------------------------------------------------------------------
 # Global state
 # ---------------------------------------------------------------------------
@@ -63,9 +76,12 @@ class PairState:
         self.pnl: float = 0.0
         self.enabled: bool = True
         # Per-pair risk settings (defaults inherited from global)
-        self.max_leverage: float = 4.0
+        self.max_leverage: float = LIVE_MAX_LEVERAGE_CAP
         self.risk_per_trade_pct: float = 1.0
         self.margin_mode: str = "isolated"
+        self.cooldown_until: str = ""
+        self.last_position_size: float = 0.0
+        self.managed_position: dict | None = None
         # Persisted trade plan from the originating signal
         self.plan_entry: float | None = None
         self.plan_sl: float | None = None
@@ -88,6 +104,8 @@ class PairState:
             "max_leverage": self.max_leverage,
             "risk_per_trade_pct": self.risk_per_trade_pct,
             "margin_mode": self.margin_mode,
+            "cooldown_until": self.cooldown_until,
+            "managed_position": self.managed_position,
             "plan_entry": self.plan_entry,
             "plan_sl": self.plan_sl,
             "plan_tp": self.plan_tp,
@@ -117,7 +135,7 @@ class TradingState:
         self.build_status: str = ""  # for step 5 progress
         self.build_log: list[str] = []
         self.thinking: str = ""  # rotating system status message
-        self.max_leverage: float = 4.0
+        self.max_leverage: float = LIVE_MAX_LEVERAGE_CAP
         self.risk_per_trade_pct: float = 1.0
         self.margin_mode: str = "isolated"
         self.start_of_day_equity: float = 0.0
@@ -304,7 +322,7 @@ def build_workspace_background(config: dict) -> None:
         if POLICY_PATH.exists():
             policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
             safe = policy.get("auto_apply", {}).get("safe_bands", {})
-            safe["leverage_max"] = config.get("max_leverage", 4.0)
+            safe["leverage_max"] = clamp_live_leverage(config.get("max_leverage", LIVE_MAX_LEVERAGE_CAP))
             safe["risk_per_trade_pct_max"] = config.get("risk_per_trade_pct", 1.0)
             safe["max_daily_loss_pct"] = config.get("max_daily_loss_pct", 5.0)
             POLICY_PATH.write_text(json.dumps(policy, indent=2), encoding="utf-8")
@@ -338,7 +356,7 @@ def build_workspace_background(config: dict) -> None:
                     "runner": {"source": "hyperliquid_candles", "anchor_timeframe": "1D", "trigger_timeframe": "4H", "confirmation_timeframe": "1H"},
                     "entry": {"sma_period": 10, "pullback_zone_pct": 5.0, "confirmation_type": "close_above_prev_high"},
                     "filters": {"overextension_max_pct": 20.0, "min_pullback_pct": 3.0},
-                    "risk": {"invalidation_below_sma_pct": 3.0, "position_sizing": {"risk_per_trade_pct": 1.5, "max_leverage": 4.0, "margin_mode": "isolated"}},
+                    "risk": {"invalidation_below_sma_pct": 3.0, "position_sizing": {"risk_per_trade_pct": 1.5, "max_leverage": LIVE_MAX_LEVERAGE_CAP, "margin_mode": "isolated"}},
                     "take_profit": {"tp1_r_multiple": 1.0, "tp2_r_multiple": 2.0},
                 }
                 (config_dir / f"{new_id}.json").write_text(json.dumps(cfg, indent=2), encoding="utf-8")
@@ -391,7 +409,7 @@ def build_workspace_background(config: dict) -> None:
         STATE.symbol = symbol
         STATE.setup_complete = True
         STATE.max_daily_loss_pct = config.get("max_daily_loss_pct", 5.0)
-        STATE.max_leverage = config.get("max_leverage", 4.0)
+        STATE.max_leverage = clamp_live_leverage(config.get("max_leverage", LIVE_MAX_LEVERAGE_CAP))
         STATE.risk_per_trade_pct = config.get("risk_per_trade_pct", 1.0)
         STATE.margin_mode = normalize_margin_mode(config.get("margin_mode", "isolated"))
         for ps in STATE.pairs.values():
@@ -547,9 +565,12 @@ def _run_blaze_cycle(coin: str, ps, price: float | None, master_address: str | N
             live_enabled = STATE.live_enabled
             card_live = ps.trading_live if ps else False
             margin_mode = ps.margin_mode if ps else STATE.margin_mode
+            if ps and _is_in_cooldown(ps):
+                return
 
         if signal.action == "TRADE" and live_enabled and card_live and signal.order_params:
             op = signal.order_params
+            op.leverage = clamp_live_leverage(op.leverage)
 
             notional = op.size * op.entry_price
             if notional < 10.0:
@@ -703,9 +724,20 @@ def _run_scalp_v2_cycle(coin: str, ps, price: float | None, master_address: str 
             live_enabled = STATE.live_enabled
             card_live = ps.trading_live if ps else False
             margin_mode = ps.margin_mode if ps else STATE.margin_mode
+            if ps and _is_in_cooldown(ps):
+                return
 
         if signal.action == "TRADE" and live_enabled and card_live and signal.order_params:
             op = signal.order_params
+            if signal.effective_r_net < 0.9:
+                log_trade("SKIP", "scalp_v2", 0, op.entry_price,
+                          f"net edge {signal.effective_r_net:.2f}R below 0.90R threshold")
+                return
+            if signal.confidence < 7:
+                log_trade("SKIP", "scalp_v2", 0, op.entry_price,
+                          f"confidence {signal.confidence}/10 below live threshold")
+                return
+            op.leverage = clamp_live_leverage(op.leverage)
 
             # Enforce Hyperliquid minimum order value ($10)
             notional = op.size * op.entry_price
@@ -787,6 +819,20 @@ def _run_scalp_v2_cycle(coin: str, ps, price: float | None, master_address: str 
                 if tp_final_result.ok:
                     log_trade("TP2_SET", "scalp_v2", op.tp_final_size, op.tp_final_trigger,
                               f"final 70% at 1.8R")
+                if ps:
+                    with STATE.lock:
+                        ps.managed_position = {
+                            "strategy_id": "scalp_v2",
+                            "side": op.side,
+                            "entry_price": op.entry_price,
+                            "initial_size": op.size,
+                            "tp1_size": op.tp1_size,
+                            "tp2_size": op.tp_final_size,
+                            "sl_oid": sl_result.order_id,
+                            "tp1_oid": tp1_result.order_id if tp1_result.ok else None,
+                            "tp2_oid": tp_final_result.order_id if tp_final_result.ok else None,
+                            "tp1_moved": False,
+                        }
             else:
                 log_trade("REJECTED", "scalp_v2", op.size, op.entry_price,
                           entry_result.error or "unknown")
@@ -908,6 +954,8 @@ def trading_loop() -> None:
                     equity = STATE.equity
 
                 if live_enabled and card_live and price:
+                    if ps and _is_in_cooldown(ps):
+                        continue
                     if loss_limit > 0 and daily_loss >= loss_limit:
                         with STATE.lock:
                             STATE.trading_active = False
@@ -927,6 +975,10 @@ def trading_loop() -> None:
                             continue
                         if sig_obj.confidence < 0.5:
                             continue
+                        if coin == "TAO" and sig_obj.pack_id == "trend_pullback":
+                            log_trade("BLOCK", sig_obj.strategy_id, 0, price,
+                                      "TAO trend_pullback live trading disabled pending better sample")
+                            continue
                         if equity <= 0 or not sig_obj.stop_loss:
                             continue
 
@@ -940,7 +992,8 @@ def trading_loop() -> None:
                             continue
 
                         size = risk_amount / price_risk
-                        max_notional = equity * max_leverage
+                        live_max_leverage = clamp_live_leverage(max_leverage)
+                        max_notional = equity * live_max_leverage
                         max_size = max_notional / price if price else 0
                         size = min(size, max_size)
                         if size <= 0:
@@ -957,10 +1010,10 @@ def trading_loop() -> None:
                         log_trade("BUY" if is_buy else "SELL", sig_obj.strategy_id, size, price,
                                   f"confidence={sig_obj.confidence:.2f}, SL={sig_obj.stop_loss:.2f}")
 
-                        lev_result = hl_client.update_leverage(coin, int(max_leverage), margin_mode=margin_mode)
+                        lev_result = hl_client.update_leverage(coin, int(live_max_leverage), margin_mode=margin_mode)
                         if not lev_result.ok:
                             log_trade("LEV_FAIL", sig_obj.strategy_id, 0, 0,
-                                      f"leverage {int(max_leverage)}x {margin_mode} failed: {lev_result.error}")
+                                      f"leverage {int(live_max_leverage)}x {margin_mode} failed: {lev_result.error}")
                             continue
 
                         result = hl_client.place_order(coin, is_buy, size, order_type="market")
@@ -986,23 +1039,60 @@ def trading_loop() -> None:
                                     continue
                                 log_trade("SL_SET", sig_obj.strategy_id, size, sl_trigger, "reduce-only trigger")
 
-                            if sig_obj.take_profit:
-                                tp_trigger = float(sig_obj.take_profit)
-                                tp_limit = _legacy_trigger_limit(tp_trigger, is_buy_entry=is_buy, tp_or_sl="tp")
-                                tp_result = hl_client.place_trigger_order(
+                            risk_dist = abs(price - float(sig_obj.stop_loss))
+                            tp1_trigger = float(sig_obj.take_profit or (price + risk_dist if is_buy else price - risk_dist))
+                            tp2_trigger = price + (2 * risk_dist if is_buy else -2 * risk_dist)
+                            tp1_size = size * 0.5
+                            tp2_size = size - tp1_size
+
+                            tp1_limit = _legacy_trigger_limit(tp1_trigger, is_buy_entry=is_buy, tp_or_sl="tp")
+                            tp1_result = hl_client.place_trigger_order(
+                                coin,
+                                is_buy=not is_buy,
+                                size=tp1_size,
+                                trigger_price=tp1_trigger,
+                                limit_price=tp1_limit,
+                                tp_or_sl="tp",
+                                reduce_only=True,
+                            )
+                            if tp1_result.ok:
+                                log_trade("TP1_SET", sig_obj.strategy_id, tp1_size, tp1_trigger, "reduce-only trigger")
+                            else:
+                                log_trade("TP1_FAIL", sig_obj.strategy_id, tp1_size, tp1_trigger,
+                                          tp1_result.error or "unknown")
+
+                            tp2_result = None
+                            if tp2_size > 0:
+                                tp2_limit = _legacy_trigger_limit(tp2_trigger, is_buy_entry=is_buy, tp_or_sl="tp")
+                                tp2_result = hl_client.place_trigger_order(
                                     coin,
                                     is_buy=not is_buy,
-                                    size=size,
-                                    trigger_price=tp_trigger,
-                                    limit_price=tp_limit,
+                                    size=tp2_size,
+                                    trigger_price=tp2_trigger,
+                                    limit_price=tp2_limit,
                                     tp_or_sl="tp",
                                     reduce_only=True,
                                 )
-                                if tp_result.ok:
-                                    log_trade("TP_SET", sig_obj.strategy_id, size, tp_trigger, "reduce-only trigger")
+                                if tp2_result.ok:
+                                    log_trade("TP2_SET", sig_obj.strategy_id, tp2_size, tp2_trigger, "reduce-only trigger")
                                 else:
-                                    log_trade("TP_FAIL", sig_obj.strategy_id, size, tp_trigger,
-                                              tp_result.error or "unknown")
+                                    log_trade("TP2_FAIL", sig_obj.strategy_id, tp2_size, tp2_trigger,
+                                              tp2_result.error or "unknown")
+
+                            if ps:
+                                with STATE.lock:
+                                    ps.managed_position = {
+                                        "strategy_id": sig_obj.strategy_id,
+                                        "side": "buy" if is_buy else "sell",
+                                        "entry_price": price,
+                                        "initial_size": size,
+                                        "tp1_size": tp1_size,
+                                        "tp2_size": tp2_size,
+                                        "sl_oid": sl_result.order_id if sig_obj.stop_loss else None,
+                                        "tp1_oid": tp1_result.order_id if tp1_result.ok else None,
+                                        "tp2_oid": tp2_result.order_id if tp2_result and tp2_result.ok else None,
+                                        "tp1_moved": False,
+                                    }
                         else:
                             log_trade("REJECTED", sig_obj.strategy_id, size, price, result.error or "unknown")
 
@@ -1027,8 +1117,15 @@ def trading_loop() -> None:
                             if pc in pair_positions:
                                 pair_positions[pc].append(pos)
                         for c, ps in STATE.pairs.items():
+                            prev_size = ps.last_position_size
                             ps.positions = pair_positions.get(c, [])
                             ps.pnl = sum(float(p.get("unrealized_pnl", 0)) for p in ps.positions)
+                            ps.last_position_size = _position_size(ps)
+                            if prev_size > 0 and ps.last_position_size <= 0:
+                                ps.managed_position = None
+                                _arm_pair_cooldown(ps, ps.plan_strategy or ps.pack_id, f"{c} trade closed; cooling down")
+                            elif prev_size <= 0 and ps.last_position_size > 0:
+                                ps.cooldown_until = ""
                         if portfolio.get("error"):
                             STATE.error = f"Portfolio partial: {portfolio['error']}"
                         if STATE.start_of_day_equity <= 0 and STATE.equity > 0:
@@ -1043,6 +1140,14 @@ def trading_loop() -> None:
                     with STATE.lock:
                         STATE.error = f"Account sync error: {e}"
                     print(f"[dashboard] Account fetch error: {e}", flush=True)
+            with STATE.lock:
+                managed_pairs = [(coin, ps) for coin, ps in STATE.pairs.items() if ps.managed_position and ps.last_position_size > 0]
+            for coin, ps in managed_pairs:
+                try:
+                    _manage_pair_position(coin, ps)
+                except Exception as manage_err:
+                    log_trade("MANAGE_FAIL", ps.plan_strategy or ps.pack_id, ps.last_position_size, ps.last_price or 0,
+                              f"{coin}: {manage_err}")
             else:
                 if cycle <= 1:
                     print("[dashboard] WARNING: No master_address in Keychain. Account data unavailable.", flush=True)
@@ -1076,6 +1181,30 @@ def log_trade(action: str, strategy: str, size: float, price: float, note: str =
     print(f"  [{action}] {strategy} size={size:.6f} price={price:.2f} {note}", flush=True)
 
 
+def _position_size(ps: PairState | None) -> float:
+    if not ps or not ps.positions:
+        return 0.0
+    try:
+        return abs(sum(float(p.get("size", 0)) for p in ps.positions))
+    except Exception:
+        return 0.0
+
+
+def _is_in_cooldown(ps: PairState | None) -> bool:
+    if not ps or not ps.cooldown_until:
+        return False
+    try:
+        return datetime.now(timezone.utc) < datetime.fromisoformat(ps.cooldown_until)
+    except ValueError:
+        return False
+
+
+def _arm_pair_cooldown(ps: PairState, strategy: str, note: str) -> None:
+    until = datetime.now(timezone.utc).timestamp() + PAIR_COOLDOWN_SECONDS
+    ps.cooldown_until = datetime.fromtimestamp(until, tz=timezone.utc).isoformat()
+    log_trade("COOLDOWN", strategy, 0, ps.last_price or 0, note)
+
+
 def _legacy_trigger_limit(trigger_price: float, is_buy_entry: bool, tp_or_sl: str) -> float:
     """Derive a conservative explicit limit price for legacy exit triggers.
 
@@ -1086,6 +1215,63 @@ def _legacy_trigger_limit(trigger_price: float, is_buy_entry: bool, tp_or_sl: st
     if tp_or_sl == "sl":
         return trigger_price * (0.997 if is_buy_entry else 1.003)
     return trigger_price * (0.999 if is_buy_entry else 1.001)
+
+
+def _breakeven_trigger_limit(entry_price: float, is_long: bool, size: float) -> tuple[float, float]:
+    trigger = entry_price * (1 + BREAKEVEN_BUFFER_PCT) if is_long else entry_price * (1 - BREAKEVEN_BUFFER_PCT)
+    limit_price = _legacy_trigger_limit(trigger, is_buy_entry=is_long, tp_or_sl="sl")
+    return trigger, limit_price
+
+
+def _manage_pair_position(coin: str, ps: PairState) -> None:
+    managed = ps.managed_position
+    if not managed:
+        return
+
+    current_size = _position_size(ps)
+    if current_size <= 0:
+        strategy = managed.get("strategy_id", ps.pack_id)
+        ps.managed_position = None
+        _arm_pair_cooldown(ps, strategy, f"{coin} position closed; pause new entries for {PAIR_COOLDOWN_SECONDS//60}m")
+        return
+
+    if managed.get("tp1_moved"):
+        return
+
+    tp2_size = float(managed.get("tp2_size", 0) or 0)
+    tolerance = max(float(managed.get("initial_size", 0) or 0) * 0.05, 1e-6)
+    if current_size > tp2_size + tolerance:
+        return
+
+    sl_oid = managed.get("sl_oid")
+    if sl_oid:
+        cancel_result = hl_client.cancel_order(coin, int(sl_oid))
+        if not cancel_result.ok:
+            log_trade("MANAGE_FAIL", managed.get("strategy_id", ps.pack_id), current_size, ps.last_price or 0,
+                      f"Could not cancel old SL oid={sl_oid}: {cancel_result.error}")
+            return
+
+    is_long = managed.get("side") == "buy"
+    trigger, limit_price = _breakeven_trigger_limit(float(managed["entry_price"]), is_long, current_size)
+    new_sl = hl_client.place_trigger_order(
+        coin,
+        is_buy=not is_long,
+        size=current_size,
+        trigger_price=trigger,
+        limit_price=limit_price,
+        tp_or_sl="sl",
+        reduce_only=True,
+    )
+    if not new_sl.ok:
+        log_trade("MANAGE_FAIL", managed.get("strategy_id", ps.pack_id), current_size, trigger,
+                  f"Breakeven SL replace failed: {new_sl.error}")
+        return
+
+    managed["sl_oid"] = new_sl.order_id
+    managed["tp1_moved"] = True
+    ps.plan_sl = trigger
+    log_trade("SL_MOVE", managed.get("strategy_id", ps.pack_id), current_size, trigger,
+              "Moved SL to breakeven + fee buffer after TP1")
 
 
 # ---------------------------------------------------------------------------
@@ -1461,8 +1647,8 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
       <button class="btn-x" onclick="toggleSettings()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
     </div>
     <div class="settings-group">
-      <div style="display:flex;justify-content:space-between"><span class="settings-label">Max Leverage</span><span class="settings-value mono" id="d-set-lev">4x</span></div>
-      <input type="range" class="settings-slider" id="set-lev" min="1" max="20" value="4" oninput="document.getElementById('d-set-lev').textContent=this.value+'x'">
+      <div style="display:flex;justify-content:space-between"><span class="settings-label">Max Leverage</span><span class="settings-value mono" id="d-set-lev">2x</span></div>
+      <input type="range" class="settings-slider" id="set-lev" min="1" max="2" step="0.5" value="2" oninput="document.getElementById('d-set-lev').textContent=this.value+'x'">
     </div>
     <div class="settings-group">
       <div style="display:flex;justify-content:space-between"><span class="settings-label">Risk per Trade</span><span class="settings-value mono" id="d-set-risk">1.0%</span></div>
@@ -1681,8 +1867,8 @@ function toggleSettings(){
   const m=document.getElementById('settings-modal');
   m.classList.toggle('open');
   if(m.classList.contains('open')&&lastState){
-    document.getElementById('set-lev').value=lastState.max_leverage||4;
-    document.getElementById('d-set-lev').textContent=(lastState.max_leverage||4)+'x';
+    document.getElementById('set-lev').value=lastState.max_leverage||2;
+    document.getElementById('d-set-lev').textContent=(lastState.max_leverage||2)+'x';
     document.getElementById('set-risk').value=lastState.risk_per_trade_pct||1;
     document.getElementById('d-set-risk').textContent=(lastState.risk_per_trade_pct||1)+'%';
     document.getElementById('set-daily').value=lastState.max_daily_loss_pct||5;
@@ -1741,7 +1927,7 @@ function renderCards(s){
     const pnl=parseFloat(pos?.unrealized_pnl||ps.pnl||0);
     const entryPx=parseFloat(pos?.entry_px||ps.plan_entry||0);
     const markPx=ps.last_price||0;
-    const leverage=parseFloat(pos?.leverage?.value||ps.max_leverage||4);
+    const leverage=parseFloat(pos?.leverage?.value||ps.max_leverage||2);
     const slPx=ps.plan_sl||null;
     const tpPx=ps.plan_tp||null;
     const stratObj=STRATEGIES.find(s=>s.id===(ps.pack_id||'trend_pullback'));
@@ -1789,7 +1975,7 @@ function renderCards(s){
     if(isExp&&!inTrade){
       const curPack=ps.pack_id||'trend_pullback';
       const strat=STRATEGIES.find(s=>s.id===curPack)||STRATEGIES[0];
-      const pairLev=ps.max_leverage||4;
+      const pairLev=ps.max_leverage||2;
       const pairRisk=ps.risk_per_trade_pct||1;
       // Pull live signal data for this pair's strategy
       const sigForPack=(ps.last_signals||[]).find(s=>s.pack_id===curPack);
@@ -1851,7 +2037,7 @@ function renderCards(s){
           <div class="card-slider-row">
             <div class="card-slider-group">
               <div class="card-slider-head"><span>Max Leverage</span><span class="mono card-slider-val" id="cv-lev-${coin}">${pairLev}x</span></div>
-              <input type="range" class="card-slider" min="1" max="20" step="1" value="${pairLev}"
+              <input type="range" class="card-slider" min="1" max="2" step="0.5" value="${pairLev}"
                 onclick="event.stopPropagation()"
                 oninput="document.getElementById('cv-lev-${coin}').textContent=this.value+'x'"
                 onchange="event.stopPropagation();setCardRisk('${coin}',parseFloat(this.value),null)">
@@ -2359,7 +2545,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         elif path == "/api/settings":
             try:
-                STATE.max_leverage = body.get("max_leverage", STATE.max_leverage)
+                STATE.max_leverage = clamp_live_leverage(body.get("max_leverage", STATE.max_leverage))
                 STATE.risk_per_trade_pct = body.get("risk_per_trade_pct", STATE.risk_per_trade_pct)
                 STATE.max_daily_loss_pct = body.get("max_daily_loss_pct", STATE.max_daily_loss_pct)
                 STATE.margin_mode = normalize_margin_mode(body.get("margin_mode", STATE.margin_mode))
@@ -2390,7 +2576,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if "enabled" in body:
                     ps.enabled = bool(body["enabled"])
                 if "max_leverage" in body:
-                    ps.max_leverage = float(body["max_leverage"])
+                    ps.max_leverage = clamp_live_leverage(body["max_leverage"])
                 if "risk_per_trade_pct" in body:
                     ps.risk_per_trade_pct = float(body["risk_per_trade_pct"])
                 if "margin_mode" in body:
@@ -2399,6 +2585,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     ps.pack_id = str(body["pack_id"])
                     ps.plan_strategy = str(body.get("plan_strategy", ps.plan_strategy))
                 if "trading_live" in body:
+                    if coin == "TAO" and ps.pack_id == "trend_pullback" and bool(body["trading_live"]):
+                        self._json({"ok": False, "error": "TAO trend_pullback live trading is disabled pending better sample quality"}, 400)
+                        return
                     ps.trading_live = bool(body["trading_live"])
                     # Auto-enable global live trading when first card goes live
                     if ps.trading_live:
@@ -2438,6 +2627,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if ps_new and req_pack:
                     ps_new.pack_id = req_pack
                 ps_new.margin_mode = normalize_margin_mode(body.get("margin_mode", STATE.margin_mode))
+                ps_new.max_leverage = clamp_live_leverage(body.get("max_leverage", STATE.max_leverage))
                 if not STATE.setup_complete:
                     STATE.setup_complete = True
             # Install strategy configs for the new pair
@@ -2472,7 +2662,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "runner": {"source": "hyperliquid_candles", "anchor_timeframe": "1D", "trigger_timeframe": "4H", "confirmation_timeframe": "1H"},
                     "entry": {"sma_period": 10, "pullback_zone_pct": 5.0},
                     "filters": {"overextension_max_pct": 20.0, "min_pullback_pct": 3.0},
-                    "risk": {"invalidation_below_sma_pct": 3.0, "position_sizing": {"risk_per_trade_pct": 1.5, "max_leverage": 4.0, "margin_mode": ps_new.margin_mode}},
+                    "risk": {"invalidation_below_sma_pct": 3.0, "position_sizing": {"risk_per_trade_pct": 1.5, "max_leverage": ps_new.max_leverage, "margin_mode": ps_new.margin_mode}},
                     "take_profit": {"tp1_r_multiple": 1.0, "tp2_r_multiple": 2.0},
                 }
                 (config_dir / f"{new_id}.json").write_text(json.dumps(cfg, indent=2), encoding="utf-8")

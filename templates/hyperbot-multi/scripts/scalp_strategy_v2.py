@@ -53,7 +53,7 @@ class StrategyConfig:
     # Risk
     risk_per_trade_pct: float = 0.003        # 0.30% of equity per trade
     max_daily_loss_pct: float = 0.015        # 1.5%
-    max_leverage: float = 10.0
+    max_leverage: float = 2.0
     max_consecutive_losses: int = 3
     post_loss_size_multiplier: float = 0.5   # 50% size after 3 losses
     max_session_losses: int = 5              # full halt after 5 losses
