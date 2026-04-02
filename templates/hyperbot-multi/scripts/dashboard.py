@@ -52,6 +52,19 @@ def normalize_margin_mode(value: Any, default: str = "isolated") -> str:
 LIVE_MAX_LEVERAGE_CAP = 2.0
 PAIR_COOLDOWN_SECONDS = 30 * 60
 BREAKEVEN_BUFFER_PCT = 0.0012
+AUTO_STRATEGY_PACK_IDS = (
+    "scalp_v2",
+    "trend_pullback",
+    "compression_breakout",
+    "liquidity_sweep_reversal",
+)
+STRATEGY_LABELS = {
+    "blaze_scalp": "Blaze Scalp",
+    "scalp_v2": "5m Scalper",
+    "trend_pullback": "Trend Follower",
+    "compression_breakout": "Breakout Hunter",
+    "liquidity_sweep_reversal": "Mean Reversion",
+}
 
 
 def clamp_live_leverage(value: Any) -> float:
@@ -60,6 +73,114 @@ def clamp_live_leverage(value: Any) -> float:
     except (TypeError, ValueError):
         lev = LIVE_MAX_LEVERAGE_CAP
     return max(1.0, min(LIVE_MAX_LEVERAGE_CAP, lev))
+
+
+def strategy_label(pack_id: str) -> str:
+    return STRATEGY_LABELS.get(pack_id, pack_id.replace("_", " ").title())
+
+
+def _signal_confidence(sig: dict) -> float:
+    try:
+        return float(sig.get("confidence", 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _signal_rank(sig: dict) -> tuple[int, float, int]:
+    direction_rank = 1 if sig.get("direction") not in {None, "", "none"} else 0
+    confidence = _signal_confidence(sig)
+    pack_id = str(sig.get("pack_id", ""))
+    preference = {
+        "scalp_v2": 4,
+        "compression_breakout": 3,
+        "trend_pullback": 2,
+        "liquidity_sweep_reversal": 1,
+        "blaze_scalp": 0,
+    }.get(pack_id, 0)
+    return (direction_rank, confidence, preference)
+
+
+def _best_signal(sig_dicts: list[dict], *, actionable_only: bool = False) -> dict | None:
+    candidates = [
+        sig for sig in sig_dicts
+        if (not actionable_only or sig.get("direction") not in {None, "", "none"})
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=_signal_rank)
+
+
+def _find_signal_by_pack(sig_dicts: list[dict], pack_id: str) -> dict | None:
+    for sig in sig_dicts:
+        if str(sig.get("pack_id", "")) == pack_id:
+            return sig
+    return None
+
+
+def _update_pair_plan_from_signal(ps: PairState, sig: dict | None) -> None:
+    if not sig:
+        ps.plan_entry = None
+        ps.plan_sl = None
+        ps.plan_tp = None
+        ps.plan_strategy = strategy_label(ps.selected_pack_id or ps.pack_id)
+        ps.plan_reasons = []
+        return
+    ps.plan_entry = sig.get("entry_price")
+    ps.plan_sl = sig.get("stop_loss")
+    ps.plan_tp = sig.get("take_profit")
+    ps.plan_strategy = strategy_label(str(sig.get("pack_id", ps.pack_id)))
+    ps.plan_reasons = list(sig.get("reasons", []) or [])
+
+
+def _update_pair_bot_context(ps: PairState) -> None:
+    selected_pack = ps.selected_pack_id or ps.pack_id
+    selected_signal = None
+    for sig in ps.last_signals:
+        if str(sig.get("pack_id")) == selected_pack:
+            selected_signal = sig
+            break
+    if selected_signal is None:
+        selected_signal = _best_signal(ps.last_signals)
+
+    details: list[str] = []
+    note = "Waiting for the first scan."
+
+    if ps.positions:
+        managed = ps.managed_position or {}
+        strategy_name = strategy_label(selected_pack)
+        if managed.get("tp1_moved"):
+            note = f"Managing {strategy_name}: TP1 was reached and the stop has been moved to breakeven plus fees."
+        else:
+            note = f"Managing {strategy_name}: the bot is protecting the open position and waiting for TP or SL."
+        if ps.plan_sl:
+            details.append(f"Protective stop is staged around ${ps.plan_sl:.2f}.")
+        if ps.plan_tp:
+            details.append(f"Profit target is staged around ${ps.plan_tp:.2f}.")
+    elif _is_in_cooldown(ps):
+        try:
+            cool_until = datetime.fromisoformat(ps.cooldown_until)
+            note = f"Cooling down after the last trade until {cool_until.astimezone().strftime('%H:%M')}."
+        except ValueError:
+            note = "Cooling down after the last trade before allowing another entry."
+    elif selected_signal:
+        strategy_name = strategy_label(str(selected_signal.get("pack_id", selected_pack)))
+        reasons = list(selected_signal.get("reasons", []) or [])
+        if ps.auto_strategy:
+            if selected_signal.get("direction") not in {None, "", "none"}:
+                note = f"Auto mode prefers {strategy_name} right now because it has the strongest live setup."
+            else:
+                note = f"Auto mode is waiting. {strategy_name} is the closest valid setup, but conditions are not complete yet."
+        else:
+            note = f"Manual mode is watching {strategy_name} and will only enter if this exact setup confirms."
+        details.extend(reasons[:3])
+    elif ps.auto_strategy:
+        note = "Auto mode is scanning all approved strategies and waiting for a clean setup."
+    else:
+        note = f"Manual mode is watching {strategy_label(ps.pack_id)}."
+
+    details.append(f"Risk is capped at {ps.risk_per_trade_pct:.2f}% with max {ps.max_leverage:.1f}x {ps.margin_mode} margin.")
+    ps.bot_note = note
+    ps.bot_details = details[:4]
 
 # ---------------------------------------------------------------------------
 # Global state
@@ -89,6 +210,10 @@ class PairState:
         self.plan_strategy: str = ""
         self.plan_reasons: list[str] = []
         self.pack_id: str = "trend_pullback"
+        self.auto_strategy: bool = True
+        self.selected_pack_id: str = "trend_pullback"
+        self.bot_note: str = ""
+        self.bot_details: list[str] = []
         self.last_scan_ts: str = ""
         self.trading_live: bool = False  # Per-card trading toggle
 
@@ -112,6 +237,10 @@ class PairState:
             "plan_strategy": self.plan_strategy,
             "plan_reasons": list(self.plan_reasons),
             "pack_id": self.pack_id,
+            "auto_strategy": self.auto_strategy,
+            "selected_pack_id": self.selected_pack_id,
+            "bot_note": self.bot_note,
+            "bot_details": list(self.bot_details),
             "last_scan_ts": self.last_scan_ts,
             "trading_live": self.trading_live,
         }
@@ -474,6 +603,88 @@ def _thinking_message(cycle: int, state: TradingState) -> str:
     return msgs[cycle % len(msgs)]
 
 
+def _evaluate_scalp_v2_signal(coin: str, ps, price: float | None) -> tuple[Any | None, dict | None]:
+    candles_5m = hl_client.get_candles(coin, "5m", 1)
+    candles_15m = hl_client.get_candles(coin, "15m", 2)
+    if not candles_5m or not candles_15m:
+        print(f"  [scalp_v2] {coin}: insufficient candle data", flush=True)
+        return None, None
+
+    bba = hl_client.get_best_bid_ask(coin)
+    best_bid = bba["best_bid"]
+    best_ask = bba["best_ask"]
+    mark_price = price or 0.0
+    if not best_bid or not best_ask or not mark_price:
+        print(f"  [scalp_v2] {coin}: no price/book data", flush=True)
+        return None, None
+
+    with STATE.lock:
+        coin_positions = ps.positions if ps else []
+        has_open_position = any(abs(float(p.get("size", 0))) > 0 for p in coin_positions)
+        equity = STATE.equity
+        daily_loss = STATE.daily_loss
+
+    market_data = {
+        "candles_5m": candles_5m,
+        "candles_15m": candles_15m,
+        "account_equity": equity,
+        "session_daily_loss": daily_loss,
+        "session_consecutive_losses": SCALP_STRATEGY._consecutive_losses,
+        "session_trade_count": len(SCALP_STRATEGY._performance),
+        "mark_price": mark_price,
+        "best_bid": best_bid,
+        "best_ask": best_ask,
+        "open_position": {"side": "long", "entry": 0, "size": 0} if has_open_position else None,
+    }
+    signal = SCALP_STRATEGY.evaluate(coin, market_data)
+
+    if signal.action == "TRADE":
+        proximity = signal.confidence / 10.0
+    elif signal.regime:
+        r = signal.regime
+        checks = [r.ema_aligned, r.adx_ok, r.choppiness_ok, r.vwap_ok,
+                  r.atr_above_median, r.rvol_ok, r.cvd_confirming, r.time_ok]
+        passing = sum(1 for c in checks if c)
+        proximity = (passing / len(checks)) * 0.7
+    else:
+        proximity = 0.0
+
+    sig_dict = {
+        "direction": signal.direction or "none",
+        "strategy_id": "scalp_v2",
+        "pack_id": "scalp_v2",
+        "confidence": proximity,
+        "reasons": signal.rejection_reasons if signal.action == "NO_TRADE" else [
+            f"Net R: {signal.effective_r_net:.2f}",
+            f"Confidence: {signal.confidence}/10",
+        ],
+        "entry_price": signal.order_params.entry_price if signal.order_params else None,
+        "stop_loss": signal.order_params.stop_trigger if signal.order_params else None,
+        "take_profit": signal.order_params.tp_final_trigger if signal.order_params else None,
+    }
+    return signal, sig_dict
+
+
+def _evaluate_legacy_signals(coin: str, price: float) -> tuple[list[Any], list[dict]]:
+    candles_1d = hl_client.get_candles(coin, "1d", 30)
+    candles_4h = hl_client.get_candles(coin, "4h", 14)
+    sigs = signals.detect_all_signals(candles_1d, candles_4h, price, coin=coin)
+    sig_dicts = [
+        {
+            "direction": s.direction.value,
+            "strategy_id": s.strategy_id,
+            "pack_id": s.pack_id,
+            "confidence": s.confidence,
+            "reasons": s.reasons,
+            "entry_price": s.entry_price,
+            "stop_loss": s.stop_loss,
+            "take_profit": s.take_profit,
+        }
+        for s in sigs
+    ]
+    return sigs, sig_dicts
+
+
 def _run_blaze_cycle(coin: str, ps, price: float | None, master_address: str | None) -> None:
     """Run one evaluation cycle of the blaze_scalp test strategy.
 
@@ -546,6 +757,7 @@ def _run_blaze_cycle(coin: str, ps, price: float | None, master_address: str | N
             with STATE.lock:
                 ps.last_signals = [sig_dict]
                 ps.last_scan_ts = datetime.now(timezone.utc).isoformat()
+                ps.selected_pack_id = "blaze_scalp"
                 if signal.action == "TRADE" and signal.order_params:
                     op = signal.order_params
                     ps.plan_entry = op.entry_price
@@ -553,6 +765,7 @@ def _run_blaze_cycle(coin: str, ps, price: float | None, master_address: str | N
                     ps.plan_tp = op.tp_trigger
                     ps.plan_strategy = "Blaze Scalp"
                     ps.plan_reasons = [signal.direction or ""]
+                _update_pair_bot_context(ps)
 
         if signal.action == "TRADE":
             print(f"  [blaze] {signal.summary()}", flush=True)
@@ -629,81 +842,14 @@ def _run_scalp_v2_cycle(coin: str, ps, price: float | None, master_address: str 
     submits entry + TP/SL trigger orders via hl_client.
     """
     try:
-        # Fetch 5m candles (need 80+, ~7 hours → lookback 1 day is plenty)
-        candles_5m = hl_client.get_candles(coin, "5m", 1)
-        candles_15m = hl_client.get_candles(coin, "15m", 2)
-
-        if not candles_5m or not candles_15m:
-            print(f"  [scalp_v2] {coin}: insufficient candle data", flush=True)
+        signal, sig_dict = _evaluate_scalp_v2_signal(coin, ps, price)
+        if not signal or not sig_dict:
             return
-
-        # Get best bid/ask for spread checking
-        bba = hl_client.get_best_bid_ask(coin)
-        best_bid = bba["best_bid"]
-        best_ask = bba["best_ask"]
-        mark_price = price or 0.0
-
-        if not best_bid or not best_ask or not mark_price:
-            print(f"  [scalp_v2] {coin}: no price/book data", flush=True)
-            return
-
-        # Check for open position on this coin
-        with STATE.lock:
-            coin_positions = ps.positions if ps else []
-            has_open_position = any(
-                abs(float(p.get("size", 0))) > 0 for p in coin_positions
-            )
-            equity = STATE.equity
-            daily_loss = STATE.daily_loss
-
-        # Build the market_data dict that ScalpStrategy.evaluate() expects
-        market_data = {
-            "candles_5m": candles_5m,
-            "candles_15m": candles_15m,
-            "account_equity": equity,
-            "session_daily_loss": daily_loss,
-            "session_consecutive_losses": SCALP_STRATEGY._consecutive_losses,
-            "session_trade_count": len(SCALP_STRATEGY._performance),
-            "mark_price": mark_price,
-            "best_bid": best_bid,
-            "best_ask": best_ask,
-            "open_position": {"side": "long", "entry": 0, "size": 0} if has_open_position else None,
-        }
-
-        signal = SCALP_STRATEGY.evaluate(coin, market_data)
-
-        # Compute signal proximity: how close are we to a valid trade?
-        # Even on NO_TRADE, show how many regime conditions pass (0-1 scale)
-        if signal.action == "TRADE":
-            proximity = signal.confidence / 10.0  # 0.5–1.0 for valid trades
-        elif signal.regime:
-            r = signal.regime
-            checks = [r.ema_aligned, r.adx_ok, r.choppiness_ok, r.vwap_ok,
-                       r.atr_above_median, r.rvol_ok, r.cvd_confirming, r.time_ok]
-            passing = sum(1 for c in checks if c)
-            # Scale: 0/8 = 0%, 8/8 = ~70% (needs setup too for higher)
-            proximity = (passing / len(checks)) * 0.7
-        else:
-            proximity = 0.0
-
-        # Update pair state with signal info
-        sig_dict = {
-            "direction": signal.direction or "none",
-            "strategy_id": "scalp_v2",
-            "pack_id": "scalp_v2",
-            "confidence": proximity,
-            "reasons": signal.rejection_reasons if signal.action == "NO_TRADE" else [
-                f"Net R: {signal.effective_r_net:.2f}",
-                f"Confidence: {signal.confidence}/10",
-            ],
-            "entry_price": signal.order_params.entry_price if signal.order_params else None,
-            "stop_loss": signal.order_params.stop_trigger if signal.order_params else None,
-            "take_profit": signal.order_params.tp_final_trigger if signal.order_params else None,
-        }
         if ps:
             with STATE.lock:
                 ps.last_signals = [sig_dict]
                 ps.last_scan_ts = datetime.now(timezone.utc).isoformat()
+                ps.selected_pack_id = "scalp_v2"
                 if signal.action == "TRADE" and signal.order_params:
                     op = signal.order_params
                     ps.plan_entry = op.entry_price
@@ -711,6 +857,7 @@ def _run_scalp_v2_cycle(coin: str, ps, price: float | None, master_address: str 
                     ps.plan_tp = op.tp_final_trigger
                     ps.plan_strategy = "5m Scalper"
                     ps.plan_reasons = [signal.setup.direction if signal.setup else ""]
+                _update_pair_bot_context(ps)
 
         # Log every evaluation
         if signal.action == "TRADE":
@@ -888,6 +1035,7 @@ def trading_loop() -> None:
                 # Determine which strategy pack this pair uses
                 with STATE.lock:
                     current_pack_id = ps.pack_id if ps else "trend_pullback"
+                    auto_strategy = ps.auto_strategy if ps else True
 
                 try:
                     price = hl_client.get_mid_price(coin)
@@ -896,48 +1044,49 @@ def trading_loop() -> None:
                             ps.last_price = price
 
                     # ── Blaze scalp path (1m, test strategy) ──────────
-                    if current_pack_id == "blaze_scalp":
+                    if not auto_strategy and current_pack_id == "blaze_scalp":
                         _run_blaze_cycle(coin, ps, price, master_address)
                         continue
 
-                    # ── Scalp v2 path ─────────────────────────────────
-                    if current_pack_id == "scalp_v2":
-                        _run_scalp_v2_cycle(coin, ps, price, master_address)
-                        continue
+                    scalp_signal = None
+                    scalp_sig_dict = None
+                    if auto_strategy or current_pack_id == "scalp_v2":
+                        scalp_signal, scalp_sig_dict = _evaluate_scalp_v2_signal(coin, ps, price)
 
-                    # ── Legacy strategy path (1d/4h) ──────────────────
-                    candles_1d = hl_client.get_candles(coin, "1d", 30)
-                    candles_4h = hl_client.get_candles(coin, "4h", 14)
+                    sigs, sig_dicts = _evaluate_legacy_signals(coin, price or 0.0)
+                    legacy_by_pack = {s.pack_id: s for s in sigs}
 
-                    sigs = signals.detect_all_signals(candles_1d, candles_4h, price or 0.0, coin=coin)
-                    sig_dicts = [
-                        {
-                            "direction": s.direction.value,
-                            "strategy_id": s.strategy_id,
-                            "pack_id": s.pack_id,
-                            "confidence": s.confidence,
-                            "reasons": s.reasons,
-                            "entry_price": s.entry_price,
-                            "stop_loss": s.stop_loss,
-                            "take_profit": s.take_profit,
-                        }
-                        for s in sigs
-                    ]
-                    if ps:
-                        with STATE.lock:
-                            ps.last_signals = sig_dicts
-                            ps.last_scan_ts = datetime.now(timezone.utc).isoformat()
-                            # Persist trade plan from the strongest active signal
-                            active_sigs = [s for s in sig_dicts if s.get("direction") != "none"]
-                            if active_sigs:
-                                best = max(active_sigs, key=lambda s: s.get("confidence", 0))
-                                ps.plan_entry = best.get("entry_price")
-                                ps.plan_sl = best.get("stop_loss")
-                                ps.plan_tp = best.get("take_profit")
-                                ps.plan_strategy = best.get("strategy_id", "")
-                                ps.plan_reasons = best.get("reasons", [])
+                    if auto_strategy:
+                        combined_sig_dicts = [sig for sig in sig_dicts if sig.get("pack_id") in AUTO_STRATEGY_PACK_IDS]
+                        if scalp_sig_dict:
+                            combined_sig_dicts.append(scalp_sig_dict)
+                        selected_sig = _best_signal(combined_sig_dicts) or {"pack_id": current_pack_id, "direction": "none", "reasons": []}
+                        selected_pack_id = str(selected_sig.get("pack_id", current_pack_id))
+                        if ps:
+                            with STATE.lock:
+                                ps.last_signals = combined_sig_dicts
+                                ps.last_scan_ts = datetime.now(timezone.utc).isoformat()
+                                ps.selected_pack_id = selected_pack_id
+                                _update_pair_plan_from_signal(ps, selected_sig)
+                                _update_pair_bot_context(ps)
+                    else:
+                        selected_pack_id = current_pack_id
+                        selected_sig = _find_signal_by_pack(sig_dicts, current_pack_id)
+                        if current_pack_id == "scalp_v2" and scalp_sig_dict:
+                            selected_sig = scalp_sig_dict
+                        if ps:
+                            with STATE.lock:
+                                ps.last_signals = [scalp_sig_dict] if current_pack_id == "scalp_v2" and scalp_sig_dict else sig_dicts
+                                ps.last_scan_ts = datetime.now(timezone.utc).isoformat()
+                                ps.selected_pack_id = current_pack_id
+                                _update_pair_plan_from_signal(ps, selected_sig or _best_signal(ps.last_signals))
+                                _update_pair_bot_context(ps)
                 except Exception as scan_err:
                     print(f"  [scan] {coin} error: {scan_err}")
+                    continue
+
+                if not auto_strategy and current_pack_id == "scalp_v2":
+                    _run_scalp_v2_cycle(coin, ps, price, master_address)
                     continue
 
                 # Execute trades if live and this card is active (legacy strategies)
@@ -970,7 +1119,13 @@ def trading_loop() -> None:
                             abs(float(p.get("size", 0))) > 0 for p in coin_positions
                         )
 
+                    if auto_strategy and selected_pack_id == "scalp_v2" and selected_sig.get("direction") != "none":
+                        _run_scalp_v2_cycle(coin, ps, price, master_address)
+                        continue
+
                     for sig_data, sig_obj in zip(sig_dicts, sigs):
+                        if sig_obj.pack_id != selected_pack_id:
+                            continue
                         if sig_obj.direction == signals.Direction.NONE:
                             continue
                         if sig_obj.confidence < 0.5:
@@ -1494,6 +1649,15 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .strategy-name{font-size:13px;font-weight:500}
 .risk-tag{font-size:11px;padding:2px 6px;border-radius:4px}
 .strategy-desc{font-size:12px;color:var(--text3);margin-top:4px;line-height:1.5}
+.card-footnote{margin-top:12px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.06);font-size:11px;color:var(--text3);line-height:1.5}
+.card-footnote strong{color:rgba(255,255,255,0.72);font-weight:500}
+.mode-pills{display:flex;gap:8px;flex-wrap:wrap}
+.mode-pill{padding:8px 10px;border-radius:999px;border:1px solid var(--border);background:rgba(255,255,255,0.02);color:var(--text3);font-size:11px}
+.mode-pill.active{border-color:rgba(34,197,94,0.25);background:rgba(34,197,94,0.08);color:var(--green)}
+.bot-view{padding:12px;border-radius:12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.05)}
+.bot-view-title{font-size:11px;color:var(--text3);margin-bottom:6px}
+.bot-view-note{font-size:12px;color:rgba(255,255,255,0.8);line-height:1.55}
+.bot-view-list{margin-top:8px;padding-left:16px;color:var(--text2);font-size:11px;line-height:1.5}
 
 /* ── Settings Modal ─────────────────────────────────────────── */
 .settings-group{margin-bottom:16px}
@@ -1829,7 +1993,14 @@ function selectAddToken(coin){
   document.getElementById('add-step-1').style.display='none';
   document.getElementById('add-step-2').style.display='block';
   const list=document.getElementById('d-strategy-list');
-  list.innerHTML=STRATEGIES.map(s=>{
+  const autoCard=`<button class="strategy-option" onclick="addTokenWithStrategy('auto')">
+      <div class="strategy-header">
+        <span class="strategy-name">Auto-pick best setup</span>
+        <span class="risk-tag" style="background:var(--green-bg);color:var(--green)">Recommended</span>
+      </div>
+      <div class="strategy-desc">The bot will scan all supported strategies, choose the strongest live setup, and only enter when that setup still looks good at execution time.</div>
+    </button>`;
+  list.innerHTML=autoCard+STRATEGIES.map(s=>{
     const rc=s.risk==='Low'?'var(--green)':s.risk==='Medium'?'var(--yellow)':'var(--red)';
     const rbg=s.risk==='Low'?'var(--green-bg)':s.risk==='Medium'?'var(--yellow-bg)':'var(--red-bg)';
     return `<button class="strategy-option" onclick="addTokenWithStrategy('${s.id}')">
@@ -1930,10 +2101,14 @@ function renderCards(s){
     const leverage=parseFloat(pos?.leverage?.value||ps.max_leverage||2);
     const slPx=ps.plan_sl||null;
     const tpPx=ps.plan_tp||null;
-    const stratObj=STRATEGIES.find(s=>s.id===(ps.pack_id||'trend_pullback'));
+    const displayPack=ps.selected_pack_id||ps.pack_id||'trend_pullback';
+    const stratObj=STRATEGIES.find(s=>s.id===displayPack);
     const strategy=ps.plan_strategy||(stratObj?stratObj.name:'Watching');
     const pnlPct=entryPx>0?((markPx-entryPx)/entryPx*100*(direction==='SHORT'?-1:1)):0;
     const cardLive=!!ps.trading_live;
+    const modeLabel=ps.auto_strategy?'Auto':'Manual';
+    const botNote=ps.bot_note||`${modeLabel} mode is scanning ${coin}.`;
+    const botDetails=(ps.bot_details||[]).slice(0,3);
 
     if(inTrade){activeCount++;totalPnl+=pnl}else{watchingCount++}
 
@@ -1950,6 +2125,8 @@ function renderCards(s){
         <button class="btn-x" onclick="event.stopPropagation();removePair('${coin}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
       </div>
     </div>`;
+
+    html+=`<div class="card-footnote"><strong>${modeLabel}:</strong> ${esc(botNote)}</div>`;
 
     // Status badge
     const badgeBg=inTrade?(direction==='LONG'?'var(--green-bg)':'var(--red-bg)'):'rgba(255,255,255,0.04)';
@@ -1973,7 +2150,7 @@ function renderCards(s){
 
     // Expanded controls — Watching cards (educational + settings)
     if(isExp&&!inTrade){
-      const curPack=ps.pack_id||'trend_pullback';
+      const curPack=displayPack;
       const strat=STRATEGIES.find(s=>s.id===curPack)||STRATEGIES[0];
       const pairLev=ps.max_leverage||2;
       const pairRisk=ps.risk_per_trade_pct||1;
@@ -2002,11 +2179,22 @@ function renderCards(s){
 
       html+=`<div class="controls watch-edu">
         <div class="edu-section">
+          <div class="bot-view">
+            <div class="bot-view-title">Bot View</div>
+            <div class="bot-view-note">${esc(botNote)}</div>
+            ${botDetails.length?`<ul class="bot-view-list">${botDetails.map(r=>`<li>${esc(r)}</li>`).join('')}</ul>`:''}
+          </div>
+        </div>
+        <div class="edu-section">
           <div class="edu-label">Strategy</div>
+          <div class="mode-pills" style="margin-bottom:10px">
+            <button class="mode-pill ${ps.auto_strategy?'active':''}" onclick="event.stopPropagation();setCardAutoStrategy('${coin}',true)">Auto-pick best setup</button>
+            <button class="mode-pill ${!ps.auto_strategy?'active':''}" onclick="event.stopPropagation();setCardAutoStrategy('${coin}',false)">Manual override</button>
+          </div>
           <div class="strat-pills">
             ${STRATEGIES.map(s=>`<button class="strat-pill ${s.id===curPack?'active':''}" onclick="event.stopPropagation();setCardStrategy('${coin}','${s.id}')">${esc(s.name)}<span class="pill-risk pill-risk-${s.risk.toLowerCase()}">${s.risk}</span></button>`).join('')}
           </div>
-          <div class="edu-strat-desc">${esc(strat.desc)}</div>
+          <div class="edu-strat-desc">${esc(ps.auto_strategy?`The bot is currently favoring ${strat.name}. You can pin a manual strategy if you want to override routing.`:strat.desc)}</div>
         </div>
         <div class="edu-section">
           <div class="edu-label">Signal Strength</div>
@@ -2060,6 +2248,11 @@ function renderCards(s){
     // Expanded controls — Position cards
     if(isExp&&inTrade){
       html+=`<div class="controls">
+        <div class="bot-view" style="margin-bottom:12px">
+          <div class="bot-view-title">Bot View</div>
+          <div class="bot-view-note">${esc(botNote)}</div>
+          ${botDetails.length?`<ul class="bot-view-list">${botDetails.map(r=>`<li>${esc(r)}</li>`).join('')}</ul>`:''}
+        </div>
         <div class="info-grid">
           <div class="info-cell"><div class="info-cell-label">Entry</div><div class="info-cell-value mono">${fmtPrice(entryPx)}</div></div>
           <div class="info-cell"><div class="info-cell-label">Mark</div><div class="info-cell-value mono">${fmtPrice(markPx)}</div></div>
@@ -2139,9 +2332,21 @@ async function toggleCardTrading(coin){
 async function setCardStrategy(coin,packId){
   try{
     const strat=STRATEGIES.find(s=>s.id===packId);
-    await api('/api/pair-settings','POST',{coin,pack_id:packId,plan_strategy:strat?strat.name:packId});
+    await api('/api/pair-settings','POST',{coin,pack_id:packId,auto_strategy:false,plan_strategy:strat?strat.name:packId});
     addNotification('action','system',`Strategy changed for ${coin}`,
-      `Now using ${strat?strat.name:packId}. ${strat?strat.desc:''}`,coin);
+      `Manual override enabled. Now using ${strat?strat.name:packId}. ${strat?strat.desc:''}`,coin);
+  }catch(e){console.error(e)}
+}
+async function setCardAutoStrategy(coin,isAuto){
+  try{
+    const ps=lastState&&lastState.pairs?lastState.pairs[coin]:null;
+    const body={coin,auto_strategy:isAuto};
+    if(!isAuto&&ps)body.pack_id=ps.selected_pack_id||ps.pack_id||'trend_pullback';
+    await api('/api/pair-settings','POST',body);
+    addNotification('info','system',`${coin} ${isAuto?'returned to auto mode':'left in manual mode'}`,
+      isAuto
+        ?`The bot will rank supported strategies for ${coin} each cycle and trade only the best live setup.`
+        :`Manual mode keeps the current pinned strategy until you change it or re-enable auto mode.`,coin);
   }catch(e){console.error(e)}
 }
 async function setCardRisk(coin,lev,risk){
@@ -2581,11 +2786,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     ps.risk_per_trade_pct = float(body["risk_per_trade_pct"])
                 if "margin_mode" in body:
                     ps.margin_mode = normalize_margin_mode(body["margin_mode"], ps.margin_mode)
+                if "auto_strategy" in body:
+                    ps.auto_strategy = bool(body["auto_strategy"])
                 if "pack_id" in body:
                     ps.pack_id = str(body["pack_id"])
                     ps.plan_strategy = str(body.get("plan_strategy", ps.plan_strategy))
+                    if "auto_strategy" not in body:
+                        ps.auto_strategy = False
                 if "trading_live" in body:
-                    if coin == "TAO" and ps.pack_id == "trend_pullback" and bool(body["trading_live"]):
+                    effective_pack = ps.selected_pack_id if ps.auto_strategy else ps.pack_id
+                    if coin == "TAO" and effective_pack == "trend_pullback" and bool(body["trading_live"]):
                         self._json({"ok": False, "error": "TAO trend_pullback live trading is disabled pending better sample quality"}, 400)
                         return
                     ps.trading_live = bool(body["trading_live"])
@@ -2597,7 +2807,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             log_trade("SETTINGS", "operator", 0, 0,
                                       "Live trading auto-enabled (first card went live)")
             log_trade("SETTINGS", "operator", 0, 0,
-                      f"{coin}: enabled={ps.enabled} lev={ps.max_leverage}x risk={ps.risk_per_trade_pct}% mode={ps.margin_mode}")
+                      f"{coin}: enabled={ps.enabled} lev={ps.max_leverage}x risk={ps.risk_per_trade_pct}% mode={ps.margin_mode} auto={ps.auto_strategy}")
             self._json({"ok": True, "coin": coin})
 
         elif path == "/api/switch-pair":
@@ -2623,9 +2833,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._json({"ok": False, "error": f"{coin} is already added"}, 400)
                     return
                 ps_new = STATE.add_pair(coin, symbol)
-                req_pack = body.get("pack_id", "trend_pullback").strip()
-                if ps_new and req_pack:
+                req_pack = body.get("pack_id", "").strip()
+                ps_new.auto_strategy = not req_pack or req_pack == "auto"
+                if ps_new and req_pack and req_pack != "auto":
                     ps_new.pack_id = req_pack
+                if ps_new and ps_new.auto_strategy:
+                    ps_new.selected_pack_id = "scalp_v2"
                 ps_new.margin_mode = normalize_margin_mode(body.get("margin_mode", STATE.margin_mode))
                 ps_new.max_leverage = clamp_live_leverage(body.get("max_leverage", STATE.max_leverage))
                 if not STATE.setup_complete:
@@ -2636,19 +2849,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             installed_packs = []
             # Use the pack_id from the request if provided, otherwise scan existing
             requested_pack = body.get("pack_id", "").strip()
-            if requested_pack:
+            if requested_pack and requested_pack != "auto":
                 target_pack_ids: set[str] = {requested_pack}
             else:
-                # Determine which pack_ids are in use from existing configs
-                target_pack_ids = set()
-                for f in config_dir.glob("*.json"):
-                    try:
-                        cfg = json.loads(f.read_text(encoding="utf-8"))
-                        pid = cfg.get("pack_id", "")
-                        if pid:
-                            target_pack_ids.add(pid)
-                    except Exception:
-                        pass
+                target_pack_ids = set(AUTO_STRATEGY_PACK_IDS)
             if not target_pack_ids:
                 target_pack_ids = {"trend_pullback"}
             for pack_id in sorted(target_pack_ids):

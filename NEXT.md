@@ -1,27 +1,26 @@
 # Next — Hyperbot Session Handoff
 
-Last updated: 2026-03-31
+Last updated: 2026-04-02
 
 ## Just Completed
-- Confirmed the BTC card `Go Live` path now auto-enables both `STATE.live_enabled` and `STATE.trading_active`, and the trade log records `Live trading auto-enabled (first card went live)`.
-- Fixed a deadlock in [templates/hyperbot-multi/scripts/dashboard.py](/Users/gaston/Projects/hyperbot/templates/hyperbot-multi/scripts/dashboard.py) at line 99 by changing the global state lock to `threading.RLock()`. The `trading_live` toggle was hanging because `/api/pair-settings` logged while already holding the lock.
-- Fixed trigger-order payload formatting in [templates/hyperbot-multi/scripts/hl_client.py](/Users/gaston/Projects/hyperbot/templates/hyperbot-multi/scripts/hl_client.py) at line 629 by sending `triggerPx` as a float instead of a string.
-- A real blaze signal fired during verification on mainnet: the entry filled, SL placement failed on the pre-fix code path, and the failsafe flatten logic immediately closed the position. This proved the live execution branch was reachable and exposed the trigger bug.
-- Hyperbot was launched successfully in explicit live mode with `python3 scripts/hyperbot.py dashboard /tmp/hyperbot-workspace --live --confirm-risk --port 8765`.
+- Added pair-level auto strategy routing in [dashboard.py](/Users/gaston/Projects/hyperbot/templates/hyperbot-multi/scripts/dashboard.py): cards can now run in `auto` mode, evaluate `scalp_v2` plus the legacy packs every cycle, and prefer the strongest live setup instead of relying on a stale manual preselection.
+- Added educational card explainers in [dashboard.py](/Users/gaston/Projects/hyperbot/templates/hyperbot-multi/scripts/dashboard.py): each card now shows a collapsed footnote plus an expanded `Bot View` with what the bot sees, why it is acting or waiting, and the active risk guardrails.
+- Updated the add-token modal to recommend `Auto-pick best setup`, while manual override still exists per card for pinning a specific strategy.
+- Relaunched the live dashboard from `/tmp/hyperbot-workspace` on `http://127.0.0.1:8765`; the current launcher session in this Codex run is `73959`.
 
 ## Pending — Ready to Pick Up
-1. Re-run one real blaze trade after the `triggerPx` fix and confirm both SL and TP trigger orders are accepted by Hyperliquid. Start from `/tmp/hyperbot-workspace` or recreate a clean workspace, then watch the next live BTC blaze signal.
-2. Add position monitoring to `scalp_v2` so partial fills and the `move SL to breakeven after TP1` flow are actually managed instead of only placing entry + TP/SL orders.
-3. Update the dashboard Live Analysis to show passing conditions as well as rejection reasons.
-4. Backtest `scalp_v2`; the current `backtest.py` only supports legacy strategies.
+1. Verify the new auto router on live scans by watching `/api/state` or the dashboard UI and confirming each pair’s `selected_pack_id`, `bot_note`, and `last_signals` are coherent across BTC, ETH, SOL, HYPE, and TAO.
+2. Decide whether `compression_breakout` and `liquidity_sweep_reversal` are good enough to keep in auto mode, or whether the router should be limited to `scalp_v2` plus one legacy strategy until there is better realized-trade evidence.
+3. Commit the daily review loop into a persistent automation if the UI keeps failing to create it from the suggested directive. The intended schedule is daily at 8:00 AM Brisbane time.
+4. Consider adding an explicit net-edge ranking model for legacy strategies so auto mode does more than compare raw confidence.
 
 ## Blockers
-- Real end-to-end verification depends on live market conditions. Blaze must emit another `TRADE` signal before the fixed trigger-order path can be confirmed on-chain.
-- Default workspace creation targets `/Users/gaston/Projects/hyperbot-workspace`, which was outside the writable sandbox in this session. I used `/tmp/hyperbot-workspace` for testing.
-- Launching the local dashboard server required escalation because binding `127.0.0.1:8765` was denied inside the sandbox.
+- There is no reliable realized-trade sample yet for the new auto selector. The ranking logic is heuristic and needs live observation before treating it as trustworthy.
+- The automation UI has been flaky: the user reported the `Open` action did not create the automation even after regenerating the directive.
+- Dashboard relaunch still requires escalation because binding the local server is restricted inside the sandbox.
 
 ## Decisions Made
-- Blaze RVOL is currently back at `rvol_min = 0.5`; the next live verification should confirm whether this suppresses trades too aggressively again.
-- Keep dashboard per-pair risk % as the source of truth for blaze sizing.
-- Keep live auto-enable on the first card `Go Live` action, but rely on the per-card confirmation dialog as the safety gate.
-- Use `threading.RLock()` for dashboard state because handlers can legitimately log while mutating state.
+- `Blaze Scalp` is excluded from auto selection and remains manual-only because it is still a pipeline/test strategy, not a candidate for live routing preference.
+- Auto mode currently considers `scalp_v2`, `trend_pullback`, `compression_breakout`, and `liquidity_sweep_reversal`, then selects the strongest current signal using a simple rank based on direction, confidence, and pack preference.
+- Each pair still obeys hard guardrails from the operator: max leverage stays capped at `2x`, risk stays capped per card, and margin mode remains explicit.
+- Educational transparency is now part of the card surface, not hidden only in logs or the notification center.
