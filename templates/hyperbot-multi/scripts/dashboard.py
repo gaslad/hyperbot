@@ -1500,14 +1500,13 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .btn-x:hover{color:var(--text2)}
 .btn-x svg{width:14px;height:14px}
 
-.status-badge{display:inline-flex;align-items:center;gap:5px;padding:3px 8px;border-radius:6px;font-size:12px}
-.pnl-row{display:flex;align-items:center;justify-content:space-between;padding-top:4px;border-top:1px solid var(--border)}
-.pnl-label{font-size:12px;color:var(--text3)}
-.pnl-value{font-size:18px;font-weight:600}
+.summary-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:4px;border-top:1px solid var(--border)}
+.status-badge{display:inline-flex;align-items:center;gap:5px;padding:3px 8px;border-radius:6px;font-size:12px;flex-shrink:0}
+.summary-main{min-width:0;display:flex;align-items:center;gap:8px}
+.summary-side{min-width:0;text-align:right}
+.summary-value{font-size:18px;font-weight:600}
+.summary-subvalue{font-size:11px;color:var(--text4);margin-top:2px;white-space:nowrap}
 .pnl-pct{font-size:12px;font-weight:400;margin-left:4px;opacity:0.6}
-.risk-label{font-size:12px;color:var(--text3)}
-.risk-value{font-size:13px;color:var(--text2)}
-.last-trade{font-size:12px;color:var(--text3);display:flex;align-items:center;gap:6px;padding-top:4px;border-top:1px solid var(--border)}
 
 /* ── Expanded Controls ──────────────────────────────────────── */
 .controls{margin-top:12px;padding-top:12px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:12px}
@@ -1547,6 +1546,14 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .conf-meta{display:flex;justify-content:space-between;align-items:center}
 .conf-label{font-size:12px}
 .conf-pct{font-size:13px;font-weight:600}
+.explain-block{padding:12px;border-radius:12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.05)}
+.explain-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}
+.explain-title{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px}
+.explain-summary{font-size:12px;color:rgba(255,255,255,0.8);line-height:1.55;margin-bottom:10px}
+.explain-list{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:8px}
+.explain-item{display:flex;align-items:flex-start;gap:8px;font-size:13px;color:var(--text2);line-height:1.5}
+.explain-kicker{font-size:10px;font-weight:600;letter-spacing:0.4px;text-transform:uppercase;color:var(--text4);margin-bottom:2px}
+.explain-body{flex:1;min-width:0}
 .sig-direction{font-size:12px;margin-top:6px;padding:4px 8px;border-radius:6px;display:inline-block}
 .sig-dir-buy{color:var(--green);background:var(--green-bg)}
 .sig-dir-sell{color:var(--red);background:var(--red-bg)}
@@ -1558,6 +1565,9 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .btn-start-trading:hover{background:rgba(34,197,94,0.2);border-color:rgba(34,197,94,0.3)}
 .btn-stop-trading{width:100%;padding:10px;border-radius:8px;border:1px solid rgba(239,68,68,0.2);background:rgba(239,68,68,0.08);color:var(--red);font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;transition:all 0.15s}
 .btn-stop-trading:hover{background:rgba(239,68,68,0.15);border-color:rgba(239,68,68,0.3)}
+.card-action-row{display:flex;gap:8px}
+.btn-secondary{flex:1;padding:10px;border-radius:8px;border:1px solid var(--border);background:rgba(255,255,255,0.03);color:var(--text2);font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;transition:all 0.15s}
+.btn-secondary:hover{background:rgba(255,255,255,0.06);border-color:rgba(255,255,255,0.15)}
 .card-live{border-color:rgba(34,197,94,0.2)!important}
 .live-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--green);margin-left:6px;vertical-align:middle;animation:pulse 1.5s infinite}
 .info-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
@@ -1649,8 +1659,6 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .strategy-name{font-size:13px;font-weight:500}
 .risk-tag{font-size:11px;padding:2px 6px;border-radius:4px}
 .strategy-desc{font-size:12px;color:var(--text3);margin-top:4px;line-height:1.5}
-.card-footnote{margin-top:12px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.06);font-size:11px;color:var(--text3);line-height:1.5}
-.card-footnote strong{color:rgba(255,255,255,0.72);font-weight:500}
 .mode-pills{display:flex;gap:8px;flex-wrap:wrap}
 .mode-pill{padding:8px 10px;border-radius:999px;border:1px solid var(--border);background:rgba(255,255,255,0.02);color:var(--text3);font-size:11px}
 .mode-pill.active{border-color:rgba(34,197,94,0.25);background:rgba(34,197,94,0.08);color:var(--green)}
@@ -1807,7 +1815,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 <div class="modal-overlay" id="settings-modal">
   <div class="modal">
     <div class="modal-head">
-      <h3>Settings</h3>
+      <h3 id="settings-modal-title">Settings</h3>
       <button class="btn-x" onclick="toggleSettings()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
     </div>
     <div class="settings-group">
@@ -1818,11 +1826,11 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
       <div style="display:flex;justify-content:space-between"><span class="settings-label">Risk per Trade</span><span class="settings-value mono" id="d-set-risk">1.0%</span></div>
       <input type="range" class="settings-slider" id="set-risk" min="0.5" max="5" step="0.5" value="1" oninput="document.getElementById('d-set-risk').textContent=this.value+'%'">
     </div>
-    <div class="settings-group">
+    <div class="settings-group" id="settings-daily-group">
       <div style="display:flex;justify-content:space-between"><span class="settings-label">Daily Loss Limit</span><span class="settings-value mono" id="d-set-daily">5.0%</span></div>
       <input type="range" class="settings-slider" id="set-daily" min="1" max="15" step="0.5" value="5" oninput="document.getElementById('d-set-daily').textContent=this.value+'%'">
     </div>
-    <button class="btn-save" onclick="saveSettings()">Save Settings</button>
+    <button class="btn-save" id="settings-save-btn" onclick="saveSettings()">Save Settings</button>
   </div>
 </div>
 
@@ -1835,6 +1843,7 @@ let addModalCoin = null;
 let notifications = [];
 let lastState = null;
 let pollTimer = null;
+let settingsCoin = null;
 
 // Token metadata (icon lookup)
 const TOKEN_ICONS = {
@@ -2034,25 +2043,82 @@ function closeAddModal(){
 }
 
 // ── Settings Modal ───────────────────────────────────────────
-function toggleSettings(){
-  const m=document.getElementById('settings-modal');
-  m.classList.toggle('open');
-  if(m.classList.contains('open')&&lastState){
-    document.getElementById('set-lev').value=lastState.max_leverage||2;
-    document.getElementById('d-set-lev').textContent=(lastState.max_leverage||2)+'x';
-    document.getElementById('set-risk').value=lastState.risk_per_trade_pct||1;
-    document.getElementById('d-set-risk').textContent=(lastState.risk_per_trade_pct||1)+'%';
-    document.getElementById('set-daily').value=lastState.max_daily_loss_pct||5;
-    document.getElementById('d-set-daily').textContent=(lastState.max_daily_loss_pct||5)+'%';
+function getSettingsModalEls(){
+  return {
+    modal:document.getElementById('settings-modal'),
+    title:document.getElementById('settings-modal-title'),
+    dailyGroup:document.getElementById('settings-daily-group'),
+    saveBtn:document.getElementById('settings-save-btn'),
+    lev:document.getElementById('set-lev'),
+    levValue:document.getElementById('d-set-lev'),
+    risk:document.getElementById('set-risk'),
+    riskValue:document.getElementById('d-set-risk'),
+    daily:document.getElementById('set-daily'),
+    dailyValue:document.getElementById('d-set-daily'),
+  };
+}
+function populateSettingsInputs(vals){
+  const els=getSettingsModalEls();
+  els.lev.value=vals.lev;
+  els.levValue.textContent=vals.lev+'x';
+  els.risk.value=vals.risk;
+  els.riskValue.textContent=vals.risk+'%';
+  if(vals.daily!==null && vals.daily!==undefined){
+    els.daily.value=vals.daily;
+    els.dailyValue.textContent=vals.daily+'%';
+  }
+}
+function configureSettingsModal(mode, coin=null){
+  const els=getSettingsModalEls();
+  const pairState=coin && lastState && lastState.pairs ? lastState.pairs[coin] : null;
+  if(mode==='pair' && pairState){
+    els.title.textContent=`Risk Settings · ${coin}`;
+    els.saveBtn.textContent='Save Risk Settings';
+    els.dailyGroup.style.display='none';
+    populateSettingsInputs({
+      lev: pairState.max_leverage||lastState.max_leverage||2,
+      risk: pairState.risk_per_trade_pct||lastState.risk_per_trade_pct||1,
+      daily: null,
+    });
+    return;
+  }
+  els.title.textContent='Settings';
+  els.saveBtn.textContent='Save Settings';
+  els.dailyGroup.style.display='';
+  populateSettingsInputs({
+    lev: lastState.max_leverage||2,
+    risk: lastState.risk_per_trade_pct||1,
+    daily: lastState.max_daily_loss_pct||5,
+  });
+}
+function toggleSettings(coin=null){
+  const {modal}=getSettingsModalEls();
+  const willOpen=!modal.classList.contains('open') || coin!==null;
+  if(!willOpen){
+    modal.classList.remove('open');
+    settingsCoin=null;
+    return;
+  }
+  settingsCoin=coin;
+  modal.classList.add('open');
+  if(lastState){
+    configureSettingsModal(settingsCoin ? 'pair' : 'global', settingsCoin);
   }
 }
 async function saveSettings(){
-  const lev=parseFloat(document.getElementById('set-lev').value);
-  const risk=parseFloat(document.getElementById('set-risk').value);
-  const daily=parseFloat(document.getElementById('set-daily').value);
-  await api('/api/settings','POST',{max_leverage:lev,risk_per_trade_pct:risk,max_daily_loss_pct:daily});
-  addNotification('system','system',`Settings updated: ${lev}x leverage, ${risk}% risk, ${daily}% daily limit`,
-    `These settings apply to all new trades. Leverage caps how much the bot can borrow. Risk per trade limits how much equity is at stake per position. The daily loss limit pauses all trading if losses exceed this threshold.`,null);
+  const {lev:levInput,risk:riskInput,daily:dailyInput}=getSettingsModalEls();
+  const lev=parseFloat(levInput.value);
+  const risk=parseFloat(riskInput.value);
+  if(settingsCoin){
+    await api('/api/pair-settings','POST',{coin:settingsCoin,max_leverage:lev,risk_per_trade_pct:risk});
+    addNotification('info','system',`Risk updated for ${settingsCoin}: ${lev}x leverage, ${risk}% risk`,
+      `These overrides apply only to ${settingsCoin}. They affect the next trade the bot opens on this pair.`,settingsCoin);
+  }else{
+    const daily=parseFloat(dailyInput.value);
+    await api('/api/settings','POST',{max_leverage:lev,risk_per_trade_pct:risk,max_daily_loss_pct:daily});
+    addNotification('system','system',`Settings updated: ${lev}x leverage, ${risk}% risk, ${daily}% daily limit`,
+      `These settings apply to all new trades. Leverage caps how much the bot can borrow. Risk per trade limits how much equity is at stake per position. The daily loss limit pauses all trading if losses exceed this threshold.`,null);
+  }
   toggleSettings();
 }
 
@@ -2109,6 +2175,10 @@ function renderCards(s){
     const modeLabel=ps.auto_strategy?'Auto':'Manual';
     const botNote=ps.bot_note||`${modeLabel} mode is scanning ${coin}.`;
     const botDetails=(ps.bot_details||[]).slice(0,3);
+    const hasSignal=!!(ps.last_signals&&ps.last_signals.some(sig=>sig.direction!=='none'));
+    const scanAgoCompact=ps.last_scan_ts?timeAgo(ps.last_scan_ts):'waiting';
+    const headerSubtitle=inTrade?modeLabel+' mode':strategy;
+    const hasCustomBotContext=!!ps.bot_note||botDetails.length>0;
 
     if(inTrade){activeCount++;totalPnl+=pnl}else{watchingCount++}
 
@@ -2118,7 +2188,7 @@ function renderCards(s){
     html+=`<div class="card-head">
       <div class="card-token">
         <div class="token-icon">${tokenIcon(coin)}</div>
-        <div><div class="token-name">${coin}${cardLive?'<span class="live-dot"></span>':''}</div><div class="token-strategy">${esc(strategy)}</div></div>
+        <div><div class="token-name">${coin}${cardLive?'<span class="live-dot"></span>':''}</div><div class="token-strategy">${esc(headerSubtitle)}</div></div>
       </div>
       <div class="card-actions">
         <svg class="chevron ${isExp?'open':''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
@@ -2126,27 +2196,26 @@ function renderCards(s){
       </div>
     </div>`;
 
-    html+=`<div class="card-footnote"><strong>${modeLabel}:</strong> ${esc(botNote)}</div>`;
-
     // Status badge
     const badgeBg=inTrade?(direction==='LONG'?'var(--green-bg)':'var(--red-bg)'):'rgba(255,255,255,0.04)';
     const badgeColor=inTrade?(direction==='LONG'?'var(--green)':'var(--red)'):'var(--text2)';
     const arrow=direction==='LONG'?'\u2197':direction==='SHORT'?'\u2198':'\u23F1';
-    const statusText=inTrade?`${direction} \u00b7 ${esc(strategy)}`:(ps.last_signals&&ps.last_signals.some(sig=>sig.direction!=='none')?'Signal detected':'Watching for entry');
-    html+=`<div><span class="status-badge" style="background:${badgeBg};color:${badgeColor}">${arrow} ${statusText}</span></div>`;
-
-    // P&L row
-    if(inTrade){
-      html+=`<div class="pnl-row">
-        <div><div class="pnl-label">Unrealized P&L</div>
-          <div class="pnl-value mono" style="color:${pnl>=0?'var(--green)':'var(--red)'}">${fmt$(pnl)}<span class="pnl-pct">(${fmtPct(pnlPct)})</span></div>
-        </div>
-        <div style="text-align:right"><div class="risk-label">Risking</div><div class="risk-value mono">${fmtPrice(slPx?Math.abs(markPx-(slPx||0))*leverage:0)}</div></div>
-      </div>`;
-    }else{
-      // Show last trade or waiting message
-      html+=`<div class="last-trade">\u23F1 Scanning ${coin} across all timeframes...</div>`;
-    }
+    const statusText=inTrade?direction:(hasSignal?'Setup forming':'Watching');
+    const summaryValue=inTrade
+      ?`${fmt$(pnl)}<span class="pnl-pct">(${fmtPct(pnlPct)})</span>`
+      :(hasSignal?`${Math.round((((ps.last_signals||[]).find(sig=>sig.direction!=='none')?.confidence)||0)*100)}%`:'Idle');
+    const summarySubvalue=inTrade
+      ?esc(strategy)
+      :(hasSignal?esc(strategy):`Last scan ${esc(scanAgoCompact)}`);
+    html+=`<div class="summary-row">
+      <div class="summary-main">
+        <span class="status-badge" style="background:${badgeBg};color:${badgeColor}">${arrow} ${statusText}</span>
+      </div>
+      <div class="summary-side">
+        <div class="summary-value mono" style="color:${inTrade?(pnl>=0?'var(--green)':'var(--red)'):'var(--text1)'}">${summaryValue}</div>
+        <div class="summary-subvalue">${summarySubvalue}</div>
+      </div>
+    </div>`;
 
     // Expanded controls — Watching cards (educational + settings)
     if(isExp&&!inTrade){
@@ -2172,87 +2241,76 @@ function renderCards(s){
 
       // Build dynamic cues from real reasons
       const liveCues=hasScan?sigReasons:fallbackHints[curPack]||fallbackHints['trend_pullback'];
+      const topCues=liveCues.slice(0,3);
 
       // Confidence bar color
       const confColor=sigConf>=70?'var(--green)':sigConf>=40?'var(--yellow)':sigConf>0?'var(--text3)':'var(--text3)';
       const confLabel=sigConf>=70?'Setup forming \u2014 entry imminent':sigConf>=50?'Most conditions met':sigConf>=25?'Some conditions met':sigConf>0?'Few conditions met':'Scanning\u2026';
+      const explainSummary=hasCustomBotContext?botNote:(ps.auto_strategy?`${strategy} is the current best candidate, but the setup still needs confirmation.`:`${strategy} is pinned, but the entry checklist is not complete yet.`);
 
       html+=`<div class="controls watch-edu">
         <div class="edu-section">
-          <div class="bot-view">
-            <div class="bot-view-title">Bot View</div>
-            <div class="bot-view-note">${esc(botNote)}</div>
-            ${botDetails.length?`<ul class="bot-view-list">${botDetails.map(r=>`<li>${esc(r)}</li>`).join('')}</ul>`:''}
+          <div class="explain-block">
+            <div class="explain-head">
+              <div class="explain-title">Why No Trade Yet</div>
+              <span class="scan-ago">${esc(scanAgo)}</span>
+            </div>
+            <div class="explain-summary">${esc(explainSummary)}</div>
+            <div class="conf-bar-wrap">
+              <div class="conf-bar"><div class="conf-fill" style="width:${sigConf}%;background:${confColor}"></div></div>
+              <div class="conf-meta">
+                <span class="conf-label" style="color:${confColor}">${confLabel}</span>
+                <span class="conf-pct mono" style="color:${confColor}">${sigConf}%</span>
+              </div>
+            </div>
+            ${sigDir!=='none'?`<div class="sig-direction sig-dir-${sigDir}">
+              ${sigDir==='buy'?'\u2197 Leaning long':'\u2198 Leaning short'} \u2014 waiting for confirmation
+            </div>`:''}
+            <ul class="explain-list">
+              ${topCues.map(r=>{
+                const neg=r.includes('\u2264')||r.includes('\u2265')||r.includes('< ')||r.includes('> max')||r.includes('not ')||r.includes('Outside')||r.includes('wrong')||r.includes('diverging')||r.includes('ranging')||r.includes('chop')||r.includes('below')||r.includes('insufficient')||r.includes('No ');
+                const pos=r.includes('above')||r.includes('bullish')||r.includes('confirms')||r.includes('aligned')||r.includes('Net R')||r.includes('Confidence');
+                const dotColor=pos?'var(--green)':neg?'var(--red)':'var(--text3)';
+                const kicker=pos?'Ready':'Blocked';
+                return `<li class="explain-item"><span class="cue-dot" style="position:static;color:${dotColor}">\u25CF</span><div class="explain-body"><div class="explain-kicker">${kicker}</div>${esc(r)}</div></li>`;
+              }).join('')}
+              ${botDetails.map(r=>`<li class="explain-item"><span class="cue-dot" style="position:static;color:var(--text3)">\u25CF</span><div class="explain-body"><div class="explain-kicker">Context</div>${esc(r)}</div></li>`).join('')}
+            </ul>
           </div>
         </div>
         <div class="edu-section">
-          <div class="edu-label">Strategy</div>
+          <div class="edu-label">Strategy & Mode</div>
           <div class="mode-pills" style="margin-bottom:10px">
             <button class="mode-pill ${ps.auto_strategy?'active':''}" onclick="event.stopPropagation();setCardAutoStrategy('${coin}',true)">Auto-pick best setup</button>
             <button class="mode-pill ${!ps.auto_strategy?'active':''}" onclick="event.stopPropagation();setCardAutoStrategy('${coin}',false)">Manual override</button>
           </div>
-          <div class="strat-pills">
-            ${STRATEGIES.map(s=>`<button class="strat-pill ${s.id===curPack?'active':''}" onclick="event.stopPropagation();setCardStrategy('${coin}','${s.id}')">${esc(s.name)}<span class="pill-risk pill-risk-${s.risk.toLowerCase()}">${s.risk}</span></button>`).join('')}
-          </div>
-          <div class="edu-strat-desc">${esc(ps.auto_strategy?`The bot is currently favoring ${strat.name}. You can pin a manual strategy if you want to override routing.`:strat.desc)}</div>
+          ${ps.auto_strategy
+            ?`<div class="edu-strat-desc">${esc(`Auto mode is currently favoring ${strat.name}. Switch to manual only if you want to pin a specific strategy.`)}</div>`
+            :`<div class="strat-pills">
+                ${STRATEGIES.map(s=>`<button class="strat-pill ${s.id===curPack?'active':''}" onclick="event.stopPropagation();setCardStrategy('${coin}','${s.id}')">${esc(s.name)}<span class="pill-risk pill-risk-${s.risk.toLowerCase()}">${s.risk}</span></button>`).join('')}
+              </div>
+              <div class="edu-strat-desc">${esc(strat.desc)}</div>`}
         </div>
-        <div class="edu-section">
-          <div class="edu-label">Signal Strength</div>
-          <div class="conf-bar-wrap">
-            <div class="conf-bar"><div class="conf-fill" style="width:${sigConf}%;background:${confColor}"></div></div>
-            <div class="conf-meta">
-              <span class="conf-label" style="color:${confColor}">${confLabel}</span>
-              <span class="conf-pct mono" style="color:${confColor}">${sigConf}%</span>
-            </div>
-          </div>
-          ${sigDir!=='none'?`<div class="sig-direction sig-dir-${sigDir}">
-            ${sigDir==='buy'?'\u2197 Leaning long':'\u2198 Leaning short'} \u2014 waiting for confirmation
-          </div>`:''}
+        <div class="card-action-row">
+          <button class="${cardLive?'btn-stop-trading':'btn-start-trading'}" style="flex:1" onclick="event.stopPropagation();toggleCardTrading('${coin}')">
+            ${cardLive?'<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg> Stop Trading':'<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg> Start Trading'}
+          </button>
+          <button class="btn-secondary" onclick="event.stopPropagation();toggleSettings('${coin}')">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            Risk
+          </button>
         </div>
-        <div class="edu-section">
-          <div class="edu-label">Live Analysis <span class="scan-ago">${esc(scanAgo)}</span></div>
-          <ul class="edu-hints">
-            ${liveCues.map(r=>{
-              const neg=r.includes('\u2264')||r.includes('\u2265')||r.includes('< ')||r.includes('> max')||r.includes('not ')||r.includes('Outside')||r.includes('wrong')||r.includes('diverging')||r.includes('ranging')||r.includes('chop')||r.includes('below')||r.includes('insufficient')||r.includes('No ');
-              const pos=r.includes('above')||r.includes('bullish')||r.includes('confirms')||r.includes('aligned')||r.includes('Net R')||r.includes('Confidence');
-              const dotColor=pos?'var(--green)':neg?'var(--red)':'var(--text3)';
-              return `<li><span class="cue-dot" style="color:${dotColor}">\u25CF</span> ${esc(r)}</li>`;
-            }).join('')}
-          </ul>
-        </div>
-        <div class="edu-section">
-          <div class="edu-label">Risk Settings</div>
-          <div class="card-slider-row">
-            <div class="card-slider-group">
-              <div class="card-slider-head"><span>Max Leverage</span><span class="mono card-slider-val" id="cv-lev-${coin}">${pairLev}x</span></div>
-              <input type="range" class="card-slider" min="1" max="2" step="0.5" value="${pairLev}"
-                onclick="event.stopPropagation()"
-                oninput="document.getElementById('cv-lev-${coin}').textContent=this.value+'x'"
-                onchange="event.stopPropagation();setCardRisk('${coin}',parseFloat(this.value),null)">
-            </div>
-            <div class="card-slider-group">
-              <div class="card-slider-head"><span>Risk per Trade</span><span class="mono card-slider-val" id="cv-risk-${coin}">${pairRisk}%</span></div>
-              <input type="range" class="card-slider" min="0.5" max="5" step="0.5" value="${pairRisk}"
-                onclick="event.stopPropagation()"
-                oninput="document.getElementById('cv-risk-${coin}').textContent=this.value+'%'"
-                onchange="event.stopPropagation();setCardRisk('${coin}',null,parseFloat(this.value))">
-            </div>
-          </div>
-        </div>
-        <button class="${cardLive?'btn-stop-trading':'btn-start-trading'}" onclick="event.stopPropagation();toggleCardTrading('${coin}')">
-          ${cardLive?'<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg> Stop Trading':'<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg> Start Trading'}
-        </button>
       </div>`;
     }
 
     // Expanded controls — Position cards
     if(isExp&&inTrade){
       html+=`<div class="controls">
-        <div class="bot-view" style="margin-bottom:12px">
-          <div class="bot-view-title">Bot View</div>
+        ${hasCustomBotContext?`<div class="bot-view" style="margin-bottom:12px">
+          <div class="bot-view-title">Position Note</div>
           <div class="bot-view-note">${esc(botNote)}</div>
           ${botDetails.length?`<ul class="bot-view-list">${botDetails.map(r=>`<li>${esc(r)}</li>`).join('')}</ul>`:''}
-        </div>
+        </div>`:''}
         <div class="info-grid">
           <div class="info-cell"><div class="info-cell-label">Entry</div><div class="info-cell-value mono">${fmtPrice(entryPx)}</div></div>
           <div class="info-cell"><div class="info-cell-label">Mark</div><div class="info-cell-value mono">${fmtPrice(markPx)}</div></div>
@@ -2276,7 +2334,13 @@ function renderCards(s){
             </div>
           </div>
         </div>
-        <button class="btn-close-position" onclick="event.stopPropagation();closePosition('${coin}')">Close Position</button>
+        <div class="card-action-row">
+          <button class="btn-secondary" onclick="event.stopPropagation();toggleSettings('${coin}')">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            Risk
+          </button>
+          <button class="btn-close-position" style="flex:1" onclick="event.stopPropagation();closePosition('${coin}')">Close Position</button>
+        </div>
       </div>`;
     }
 
