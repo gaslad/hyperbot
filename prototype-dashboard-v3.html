@@ -1,0 +1,828 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Hyperbot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   HYPERBOT v3 — "Soft Luxury" + "Moss Dark" dual-theme dashboard
+   Light: warm cream palette, editorial typography
+   Dark: deep forest/moss greens inspired by evergreen architecture
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+
+*{margin:0;padding:0;box-sizing:border-box}
+
+/* ── LIGHT THEME (default) ───────────────────────────────────── */
+:root, [data-theme="light"]{
+  --bg:#faf8f4;
+  --bg-alt:#f0ede6;
+  --bg-deep:#e8e3d9;
+  --surface:#fff;
+  --surface-hover:#f7f5f0;
+  --ink:#1a1917;
+  --charcoal:#2c2a26;
+  --text-primary:#1a1917;
+  --text-secondary:#6b6760;
+  --text-tertiary:#9e978d;
+  --text-faint:#c4bfb4;
+  --border:rgba(0,0,0,0.06);
+  --border-strong:rgba(0,0,0,0.1);
+  --shadow-sm:0 1px 3px rgba(0,0,0,0.04);
+  --shadow-md:0 4px 16px rgba(0,0,0,0.06);
+  --shadow-lg:0 12px 40px rgba(0,0,0,0.08);
+
+  --profit:#2d8a56;
+  --profit-bg:#e8f5ee;
+  --profit-subtle:rgba(45,138,86,0.08);
+  --loss:#c4453a;
+  --loss-bg:#fbeae8;
+  --loss-subtle:rgba(196,69,58,0.06);
+  --accent:#7c6a4f;
+  --accent-light:#a89477;
+  --accent-bg:rgba(124,106,79,0.06);
+  --blue:#4a7bbd;
+  --blue-bg:#e9f0f8;
+  --yellow:#b8942d;
+  --yellow-bg:#f8f3e4;
+
+  --toggle-bg:#e8e3d9;
+  --toggle-knob:#fff;
+  --toggle-icon-sun:var(--yellow);
+  --toggle-icon-moon:var(--text-faint);
+
+  --card-glow:transparent;
+  --noise-opacity:0.015;
+  --panel-blur:4px;
+  --nav-bg:var(--surface);
+}
+
+/* ── DARK THEME (Moss / Evergreen) ───────────────────────────── */
+[data-theme="dark"]{
+  --bg:#0f1a12;
+  --bg-alt:#152019;
+  --bg-deep:#1a2b1e;
+  --surface:#1a2b1e;
+  --surface-hover:#213626;
+  --ink:#e8e4d9;
+  --charcoal:#d4cfbf;
+  --text-primary:#e8e4d9;
+  --text-secondary:#a3a08e;
+  --text-tertiary:#6d7a66;
+  --text-faint:#3d4f3a;
+  --border:rgba(255,255,255,0.06);
+  --border-strong:rgba(255,255,255,0.10);
+  --shadow-sm:0 1px 3px rgba(0,0,0,0.2);
+  --shadow-md:0 4px 16px rgba(0,0,0,0.25);
+  --shadow-lg:0 12px 40px rgba(0,0,0,0.35);
+
+  --profit:#5cb97a;
+  --profit-bg:rgba(92,185,122,0.12);
+  --profit-subtle:rgba(92,185,122,0.08);
+  --loss:#e07065;
+  --loss-bg:rgba(224,112,101,0.12);
+  --loss-subtle:rgba(224,112,101,0.06);
+  --accent:#8fa87a;
+  --accent-light:#a8bf93;
+  --accent-bg:rgba(143,168,122,0.1);
+  --blue:#7ba4d4;
+  --blue-bg:rgba(123,164,212,0.1);
+  --yellow:#d4b85c;
+  --yellow-bg:rgba(212,184,92,0.1);
+
+  --toggle-bg:#2a3f2e;
+  --toggle-knob:#8fa87a;
+  --toggle-icon-sun:var(--text-faint);
+  --toggle-icon-moon:#d4b85c;
+
+  --card-glow:rgba(92,185,122,0.03);
+  --noise-opacity:0.03;
+  --panel-blur:8px;
+  --nav-bg:#152019;
+}
+
+/* ── Transition for theme switch ─────────────────────────────── */
+html{height:100%}
+html.transitioning,
+html.transitioning *,
+html.transitioning *::before,
+html.transitioning *::after{
+  transition:background 0.5s ease, color 0.5s ease, border-color 0.5s ease, box-shadow 0.5s ease, fill 0.3s ease !important;
+}
+
+body{
+  background:var(--bg);
+  color:var(--text-primary);
+  font-family:'Outfit', -apple-system, sans-serif;
+  height:100%;
+  display:flex;
+  flex-direction:column;
+  overflow:hidden;
+  -webkit-font-smoothing:antialiased;
+  -moz-osx-font-smoothing:grayscale;
+}
+
+/* Noise texture for depth */
+body::before{
+  content:'';
+  position:fixed;
+  inset:0;
+  background:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+  opacity:var(--noise-opacity);
+  pointer-events:none;
+  z-index:9999;
+}
+
+::selection{background:var(--accent-bg);color:var(--ink)}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--bg-deep);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--text-faint)}
+
+/* ━━━ DARK MODE TOGGLE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.theme-toggle{
+  width:56px;height:30px;
+  border-radius:15px;
+  background:var(--toggle-bg);
+  position:relative;
+  cursor:pointer;
+  border:1px solid var(--border-strong);
+  transition:background 0.4s ease, border-color 0.4s ease;
+  flex-shrink:0;
+}
+.theme-toggle .knob{
+  position:absolute;
+  top:3px;left:3px;
+  width:22px;height:22px;
+  border-radius:50%;
+  background:var(--toggle-knob);
+  box-shadow:0 1px 4px rgba(0,0,0,0.15);
+  transition:transform 0.4s cubic-bezier(0.68,-0.2,0.27,1.2), background 0.4s ease;
+  display:flex;align-items:center;justify-content:center;
+  overflow:hidden;
+}
+[data-theme="dark"] .theme-toggle .knob{
+  transform:translateX(26px);
+}
+.theme-toggle .icon-sun,
+.theme-toggle .icon-moon{
+  position:absolute;
+  width:14px;height:14px;
+  transition:opacity 0.3s ease, transform 0.4s ease;
+}
+.theme-toggle .icon-sun{
+  opacity:1;transform:rotate(0deg);
+  color:var(--toggle-icon-sun);
+}
+.theme-toggle .icon-moon{
+  opacity:0;transform:rotate(-90deg);
+  color:var(--toggle-icon-moon);
+}
+[data-theme="dark"] .theme-toggle .icon-sun{opacity:0;transform:rotate(90deg)}
+[data-theme="dark"] .theme-toggle .icon-moon{opacity:1;transform:rotate(0deg)}
+
+/* ━━━ NAVBAR ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.navbar{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:0 32px;height:64px;
+  background:var(--nav-bg);
+  border-bottom:1px solid var(--border);
+  flex-shrink:0;position:relative;z-index:10;
+}
+.nav-left{display:flex;align-items:center;gap:24px}
+.brand-mark{display:flex;align-items:center;gap:10px}
+.brand-icon{
+  width:34px;height:34px;border-radius:10px;
+  display:flex;align-items:center;justify-content:center;
+  font-family:'DM Serif Display',Georgia,serif;
+  font-size:18px;font-weight:400;letter-spacing:-0.5px;
+}
+[data-theme="light"] .brand-icon{
+  background:linear-gradient(135deg,#7c6a4f,#a89477);
+  color:#fff;box-shadow:0 2px 8px rgba(124,106,79,0.3);
+}
+[data-theme="dark"] .brand-icon{
+  background:linear-gradient(135deg,#3d5a3a,#5c7a55);
+  color:#d4cfbf;box-shadow:0 2px 8px rgba(61,90,58,0.4);
+}
+.brand-name{font-size:15px;font-weight:600;color:var(--charcoal);letter-spacing:0.5px}
+
+.nav-pills{display:flex;gap:2px;background:var(--bg-alt);border-radius:10px;padding:3px}
+.nav-pill{padding:6px 16px;border-radius:8px;font-size:13px;font-weight:500;color:var(--text-secondary);transition:all 0.2s}
+.nav-pill:hover{color:var(--text-primary)}
+.nav-pill.active{background:var(--surface);color:var(--text-primary);box-shadow:var(--shadow-sm)}
+
+.nav-right{display:flex;align-items:center;gap:14px}
+
+.regime-pill{
+  display:flex;align-items:center;gap:6px;
+  padding:6px 14px;border-radius:20px;
+  font-size:12px;font-weight:500;cursor:pointer;transition:all 0.2s;
+}
+.regime-pill.green{background:var(--profit-bg);color:var(--profit)}
+.regime-pill.yellow{background:var(--yellow-bg);color:var(--yellow)}
+.regime-pill.red{background:var(--loss-bg);color:var(--loss)}
+.regime-dot{width:7px;height:7px;border-radius:50%;animation:breathe 3s ease-in-out infinite}
+.regime-pill.green .regime-dot{background:var(--profit)}
+.regime-pill.yellow .regime-dot{background:var(--yellow)}
+.regime-pill.red .regime-dot{background:var(--loss)}
+@keyframes breathe{0%,100%{opacity:1}50%{opacity:0.4}}
+
+.nav-icon-btn{
+  width:38px;height:38px;border-radius:10px;
+  display:flex;align-items:center;justify-content:center;
+  transition:background 0.15s;position:relative;color:var(--text-secondary);
+}
+.nav-icon-btn:hover{background:var(--bg-alt)}
+.nav-icon-btn svg{width:18px;height:18px}
+.nav-icon-btn .badge-count{
+  position:absolute;top:4px;right:4px;
+  width:14px;height:14px;border-radius:50%;
+  background:var(--loss);color:#fff;
+  font-size:8px;font-weight:700;
+  display:flex;align-items:center;justify-content:center;
+}
+
+.avatar-btn{
+  width:34px;height:34px;border-radius:50%;
+  background:var(--bg-deep);
+  display:flex;align-items:center;justify-content:center;
+  font-size:13px;font-weight:600;color:var(--text-secondary);
+  cursor:pointer;transition:box-shadow 0.2s;border:2px solid var(--bg);
+}
+.avatar-btn:hover{box-shadow:0 0 0 3px var(--bg-deep)}
+
+/* ━━━ HERO ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.hero{
+  padding:32px 32px 24px;
+  display:flex;align-items:flex-end;justify-content:space-between;flex-shrink:0;
+}
+.hero-greeting{font-size:13px;font-weight:400;color:var(--text-tertiary);margin-bottom:4px;letter-spacing:0.3px}
+.hero-equity{
+  font-family:'DM Serif Display',Georgia,serif;
+  font-size:48px;font-weight:400;color:var(--ink);letter-spacing:-1px;line-height:1.1;
+}
+.hero-equity .cents{font-size:28px;color:var(--text-tertiary)}
+.hero-change{
+  display:inline-flex;align-items:center;gap:5px;
+  margin-top:8px;padding:4px 10px;border-radius:6px;
+  font-size:13px;font-weight:500;font-family:'JetBrains Mono',monospace;
+}
+.hero-change.positive{background:var(--profit-subtle);color:var(--profit)}
+.hero-change.negative{background:var(--loss-subtle);color:var(--loss)}
+.hero-change svg{width:12px;height:12px}
+
+.hero-right{display:flex;gap:12px;align-items:center}
+.hero-action{
+  padding:10px 24px;border-radius:12px;font-size:14px;font-weight:600;
+  transition:all 0.2s;display:flex;align-items:center;gap:8px;
+}
+.hero-action.primary{
+  color:#fff;box-shadow:0 4px 16px rgba(45,138,86,0.25);
+}
+[data-theme="light"] .hero-action.primary{background:linear-gradient(135deg,#2d8a56,#3aaa6a)}
+[data-theme="dark"] .hero-action.primary{background:linear-gradient(135deg,#3d6a45,#5c8a65);box-shadow:0 4px 16px rgba(61,106,69,0.3)}
+.hero-action.primary:hover{transform:translateY(-1px);box-shadow:0 6px 24px rgba(45,138,86,0.35)}
+.hero-action.secondary{
+  background:var(--surface);color:var(--text-primary);border:1px solid var(--border-strong);
+}
+.hero-action.secondary:hover{border-color:var(--text-faint)}
+
+/* ━━━ MAIN ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.main{flex:1;overflow-y:auto;padding:0 32px 32px}
+
+.status-strip{
+  display:flex;align-items:center;gap:20px;
+  padding:12px 0;margin-bottom:20px;
+  border-bottom:1px solid var(--border);font-size:12px;color:var(--text-tertiary);
+}
+.status-chip{
+  display:flex;align-items:center;gap:6px;
+  padding:4px 10px;border-radius:6px;
+  background:var(--bg-alt);font-weight:500;color:var(--text-secondary);
+}
+.status-chip .dot{width:6px;height:6px;border-radius:50%}
+.status-chip .dot.green{background:var(--profit)}
+.status-chip .dot.amber{background:var(--yellow)}
+.thinking-text{font-style:italic;color:var(--text-tertiary)}
+
+.section-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+.section-title{font-family:'DM Serif Display',Georgia,serif;font-size:22px;color:var(--charcoal)}
+.section-count{font-size:12px;color:var(--text-tertiary);background:var(--bg-alt);padding:3px 10px;border-radius:20px;font-weight:500}
+
+/* ━━━ CARDS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px;margin-bottom:32px}
+
+.token-card{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:16px;padding:24px;
+  transition:all 0.25s ease;cursor:pointer;position:relative;overflow:hidden;
+}
+.token-card:hover{border-color:var(--border-strong);box-shadow:var(--shadow-md);transform:translateY(-2px)}
+.token-card.active-trade{border-color:var(--profit)}
+.token-card.active-trade::before{
+  content:'';position:absolute;top:0;left:0;right:0;height:3px;
+  background:linear-gradient(90deg,var(--profit),var(--accent-light));
+}
+/* Dark mode glow on active cards */
+[data-theme="dark"] .token-card.active-trade{
+  box-shadow:0 0 30px var(--card-glow), var(--shadow-sm);
+}
+
+.card-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}
+.token-info{display:flex;align-items:center;gap:12px}
+.token-avatar{
+  width:44px;height:44px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600;
+  border:1px solid var(--border);
+}
+.token-avatar.btc{background:rgba(247,147,26,0.08);color:#f7931a;border-color:rgba(247,147,26,0.15)}
+.token-avatar.eth{background:rgba(98,126,234,0.08);color:#627eea;border-color:rgba(98,126,234,0.15)}
+.token-avatar.sol{background:rgba(153,69,255,0.08);color:#9945ff;border-color:rgba(153,69,255,0.15)}
+[data-theme="dark"] .token-avatar.btc{background:rgba(247,147,26,0.12);border-color:rgba(247,147,26,0.2)}
+[data-theme="dark"] .token-avatar.eth{background:rgba(98,126,234,0.12);border-color:rgba(98,126,234,0.2)}
+[data-theme="dark"] .token-avatar.sol{background:rgba(153,69,255,0.12);border-color:rgba(153,69,255,0.2)}
+.token-meta{display:flex;flex-direction:column;gap:2px}
+.token-symbol{font-size:16px;font-weight:600;color:var(--ink)}
+.token-strategy{font-size:12px;color:var(--text-tertiary)}
+
+.card-status{padding:5px 12px;border-radius:20px;font-size:11px;font-weight:600;letter-spacing:0.3px}
+.card-status.watching{background:var(--bg-alt);color:var(--text-secondary)}
+.card-status.trading{background:var(--profit-bg);color:var(--profit)}
+.card-status.halted{background:var(--loss-bg);color:var(--loss)}
+
+.card-metrics{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:16px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
+.metric{display:flex;flex-direction:column;gap:3px}
+.metric-label{font-size:11px;color:var(--text-tertiary);font-weight:500;text-transform:uppercase;letter-spacing:0.5px}
+.metric-value{font-family:'JetBrains Mono',monospace;font-size:18px;font-weight:500;color:var(--ink)}
+.metric-value.positive{color:var(--profit)}
+.metric-value.negative{color:var(--loss)}
+.metric-value.small{font-size:14px}
+
+.card-insight{margin-top:16px;padding:14px 16px;border-radius:10px;background:var(--bg);border:1px solid var(--border)}
+.insight-label{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.8px;color:var(--accent);margin-bottom:6px}
+.insight-text{font-size:13px;color:var(--text-secondary);line-height:1.55}
+.insight-details{margin-top:8px;padding-top:8px;border-top:1px dashed var(--border)}
+.insight-detail{font-size:12px;color:var(--text-tertiary);line-height:1.5;padding-left:12px;position:relative}
+.insight-detail::before{content:'';position:absolute;left:0;top:8px;width:4px;height:4px;border-radius:50%;background:var(--text-faint)}
+
+.card-add{
+  background:var(--bg);border:2px dashed var(--bg-deep);border-radius:16px;
+  min-height:200px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;
+  cursor:pointer;transition:all 0.25s;
+}
+.card-add:hover{border-color:var(--text-faint);background:var(--bg-alt);transform:translateY(-2px)}
+.add-circle{
+  width:48px;height:48px;border-radius:50%;
+  background:var(--surface);border:1px solid var(--border-strong);
+  display:flex;align-items:center;justify-content:center;transition:all 0.2s;
+}
+.card-add:hover .add-circle{background:var(--accent);border-color:var(--accent);box-shadow:0 4px 12px rgba(124,106,79,0.2)}
+[data-theme="dark"] .card-add:hover .add-circle{background:var(--accent);box-shadow:0 4px 12px rgba(143,168,122,0.2)}
+.add-circle svg{width:20px;height:20px;color:var(--text-tertiary)}
+.card-add:hover .add-circle svg{color:#fff}
+.add-label{font-size:13px;font-weight:500;color:var(--text-tertiary)}
+.card-add:hover .add-label{color:var(--text-secondary)}
+
+/* ━━━ DEBRIEF BANNER ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.debrief-banner{
+  background:var(--surface);border:1px solid var(--border);border-radius:16px;
+  padding:24px 28px;display:flex;align-items:center;justify-content:space-between;
+  margin-bottom:32px;position:relative;overflow:hidden;
+}
+.debrief-banner::before{
+  content:'';position:absolute;left:0;top:0;bottom:0;width:4px;
+  border-radius:4px 0 0 4px;
+}
+[data-theme="light"] .debrief-banner::before{background:linear-gradient(to bottom,#7c6a4f,#a89477)}
+[data-theme="dark"] .debrief-banner::before{background:linear-gradient(to bottom,#5c8a65,#8fa87a)}
+.debrief-left{display:flex;align-items:center;gap:16px}
+.debrief-icon{
+  width:44px;height:44px;border-radius:12px;background:var(--accent-bg);
+  display:flex;align-items:center;justify-content:center;color:var(--accent);
+}
+.debrief-icon svg{width:20px;height:20px}
+.debrief-title{font-size:15px;font-weight:600;color:var(--charcoal)}
+.debrief-subtitle{font-size:12px;color:var(--text-tertiary);margin-top:2px}
+.debrief-btn{
+  padding:8px 20px;border-radius:10px;background:var(--accent-bg);
+  color:var(--accent);font-size:13px;font-weight:600;
+  transition:all 0.2s;border:1px solid rgba(124,106,79,0.15);
+}
+[data-theme="dark"] .debrief-btn{border-color:rgba(143,168,122,0.2)}
+.debrief-btn:hover{background:var(--accent);color:#fff;box-shadow:0 4px 12px rgba(124,106,79,0.2)}
+[data-theme="dark"] .debrief-btn:hover{box-shadow:0 4px 12px rgba(143,168,122,0.25)}
+
+/* ━━━ SLIDE-OUT PANELS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.panel-overlay{
+  position:fixed;inset:0;background:rgba(26,25,23,0.2);
+  backdrop-filter:blur(var(--panel-blur));z-index:99;
+  opacity:0;pointer-events:none;transition:opacity 0.3s;
+}
+[data-theme="dark"] .panel-overlay{background:rgba(10,15,11,0.5)}
+.panel-overlay.open{opacity:1;pointer-events:auto}
+.slide-panel{
+  position:fixed;top:0;right:0;height:100%;width:460px;
+  background:var(--bg);border-left:1px solid var(--border);z-index:100;
+  transform:translateX(100%);transition:transform 0.35s cubic-bezier(0.4,0,0.2,1);
+  display:flex;flex-direction:column;box-shadow:var(--shadow-lg);
+}
+.slide-panel.open{transform:translateX(0)}
+.panel-header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:20px 24px;border-bottom:1px solid var(--border);background:var(--surface);
+}
+.panel-title{font-size:16px;font-weight:600;color:var(--charcoal)}
+.panel-close{
+  width:32px;height:32px;border-radius:8px;
+  display:flex;align-items:center;justify-content:center;
+  color:var(--text-tertiary);transition:all 0.15s;
+}
+.panel-close:hover{background:var(--bg-alt);color:var(--text-primary)}
+.panel-close svg{width:16px;height:16px}
+.panel-body{flex:1;overflow-y:auto;padding:24px}
+
+.debrief-stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:24px}
+.debrief-stat-card{padding:16px;border-radius:10px;background:var(--surface);border:1px solid var(--border)}
+.debrief-stat-label{font-size:11px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.5px;font-weight:500}
+.debrief-stat-value{font-family:'JetBrains Mono',monospace;font-size:22px;font-weight:600;margin-top:4px}
+
+.section-divider{font-size:12px;font-weight:600;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.8px;margin:20px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+
+.trade-entry{padding:14px 16px;border-radius:10px;margin-bottom:8px;border:1px solid var(--border);background:var(--surface)}
+.trade-entry.win{border-left:3px solid var(--profit)}
+.trade-entry.loss{border-left:3px solid var(--loss)}
+.trade-entry-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+.trade-entry-pair{font-weight:600;font-size:13px}
+.trade-entry-pnl{font-family:'JetBrains Mono',monospace;font-weight:600;font-size:13px}
+.trade-entry-meta{font-size:11px;color:var(--text-tertiary)}
+.trade-what-if{margin-top:8px;padding:8px 12px;border-radius:6px;background:var(--bg);font-size:12px;color:var(--text-secondary);font-style:italic;border:1px dashed var(--border)}
+
+.pattern-card{padding:14px 16px;border-radius:10px;margin-bottom:8px;border:1px solid var(--border);background:var(--surface)}
+.pattern-card.high{border-left:3px solid var(--loss)}
+.pattern-card.medium{border-left:3px solid var(--yellow)}
+.pattern-label{font-weight:600;font-size:12px;margin-bottom:4px;text-transform:capitalize}
+.pattern-desc{font-size:12px;color:var(--text-secondary);line-height:1.5}
+.pattern-suggestion{font-size:11px;color:var(--blue);margin-top:6px;font-weight:500}
+
+/* ━━━ REGIME POPOVER ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.regime-popover{
+  position:fixed;top:56px;width:340px;
+  background:var(--surface);border:1px solid var(--border-strong);border-radius:16px;
+  padding:20px;z-index:50;box-shadow:var(--shadow-lg);display:none;
+}
+.regime-popover.open{display:block}
+.regime-popover-head{display:flex;align-items:center;gap:8px;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--border)}
+.regime-level-text{font-weight:700;font-size:14px}
+.regime-mult{font-size:12px;color:var(--text-tertiary);margin-left:auto}
+.regime-reason{font-size:12px;color:var(--text-secondary);padding:6px 0;border-bottom:1px solid var(--border);line-height:1.4}
+.regime-reason:last-child{border-bottom:none}
+
+/* ━━━ ANIMATIONS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+@keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+.fade-up{animation:fadeUp 0.5s ease forwards}
+.delay-1{animation-delay:0.05s;opacity:0}
+.delay-2{animation-delay:0.1s;opacity:0}
+.delay-3{animation-delay:0.15s;opacity:0}
+.delay-4{animation-delay:0.2s;opacity:0}
+.delay-5{animation-delay:0.25s;opacity:0}
+
+/* ━━━ DARK MODE FOLIAGE AMBIENT (subtle) ━━━━━━━━━━━━━━━━━━━━ */
+[data-theme="dark"] .main::before{
+  content:'';
+  position:fixed;
+  bottom:-50%;right:-20%;
+  width:600px;height:600px;
+  border-radius:50%;
+  background:radial-gradient(circle, rgba(92,138,101,0.06) 0%, transparent 70%);
+  pointer-events:none;
+  z-index:0;
+}
+[data-theme="dark"] .main::after{
+  content:'';
+  position:fixed;
+  top:-30%;left:-10%;
+  width:500px;height:500px;
+  border-radius:50%;
+  background:radial-gradient(circle, rgba(61,90,58,0.05) 0%, transparent 70%);
+  pointer-events:none;
+  z-index:0;
+}
+</style>
+</head>
+<body>
+
+<!-- ━━━ NAVBAR ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+<nav class="navbar">
+  <div class="nav-left">
+    <div class="brand-mark">
+      <div class="brand-icon">H</div>
+      <span class="brand-name">HYPERBOT</span>
+    </div>
+    <div class="nav-pills">
+      <button class="nav-pill active">Portfolio</button>
+      <button class="nav-pill" onclick="toggleDebrief()">Debrief</button>
+    </div>
+  </div>
+  <div class="nav-right">
+    <div class="regime-pill green" id="regime-pill" onclick="toggleRegime(event)">
+      <span class="regime-dot"></span>
+      <span id="regime-label">Market: Clear</span>
+    </div>
+
+    <!-- ── Theme Toggle ──────────────────────────────────────── -->
+    <div class="theme-toggle" onclick="toggleTheme()" title="Toggle dark mode">
+      <div class="knob">
+        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </div>
+    </div>
+
+    <button class="nav-icon-btn" onclick="toggleNotifPanel()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+    </button>
+    <button class="nav-icon-btn" id="settings-btn">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    </button>
+    <div class="avatar-btn" title="Connect Wallet">?</div>
+  </div>
+</nav>
+
+<!-- ━━━ REGIME POPOVER ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+<div class="regime-popover" id="regime-popover">
+  <div class="regime-popover-head">
+    <span class="regime-dot" style="width:10px;height:10px;background:var(--profit)"></span>
+    <span class="regime-level-text" style="color:var(--profit)">GREEN</span>
+    <span class="regime-mult">Position size: 100%</span>
+  </div>
+  <div>
+    <div class="regime-reason">BTC above SMA20 &mdash; trend intact</div>
+    <div class="regime-reason">BTC 3-day momentum rising</div>
+    <div class="regime-reason">Funding neutral (0.0001)</div>
+  </div>
+</div>
+
+<!-- ━━━ HERO ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+<section class="hero fade-up">
+  <div class="hero-left">
+    <div class="hero-greeting" id="hero-greeting">Good afternoon. Your portfolio is up today.</div>
+    <div class="hero-equity">$12,847<span class="cents">.32</span></div>
+    <div class="hero-change positive">
+      <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 8 6 3 11 8"/></svg>
+      +$127.50 (+1.0%)
+    </div>
+  </div>
+  <div class="hero-right">
+    <button class="hero-action secondary" onclick="toggleDebrief()">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+      Review Yesterday
+    </button>
+    <button class="hero-action primary">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+      Go Live
+    </button>
+  </div>
+</section>
+
+<!-- ━━━ MAIN ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+<div class="main">
+  <div class="status-strip fade-up delay-1">
+    <div class="status-chip"><span class="dot green"></span> 2 active</div>
+    <div class="status-chip"><span class="dot amber"></span> 1 watching</div>
+    <span class="thinking-text">Scanning BTC across all strategy timeframes...</span>
+  </div>
+
+  <div class="debrief-banner fade-up delay-2">
+    <div class="debrief-left">
+      <div class="debrief-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+      </div>
+      <div>
+        <div class="debrief-title">Yesterday's Debrief Ready</div>
+        <div class="debrief-subtitle">3 trades &middot; 67% win rate &middot; +$85.20 net</div>
+      </div>
+    </div>
+    <button class="debrief-btn" onclick="toggleDebrief()">View Debrief</button>
+  </div>
+
+  <div class="section-head fade-up delay-3">
+    <h2 class="section-title">Your Tokens</h2>
+    <span class="section-count">3 tokens</span>
+  </div>
+
+  <div class="card-grid">
+    <div class="token-card active-trade fade-up delay-3">
+      <div class="card-top">
+        <div class="token-info">
+          <div class="token-avatar btc">BTC</div>
+          <div class="token-meta">
+            <div class="token-symbol">Bitcoin</div>
+            <div class="token-strategy">5m Scalper &middot; Auto</div>
+          </div>
+        </div>
+        <span class="card-status trading">Trading</span>
+      </div>
+      <div class="card-metrics">
+        <div class="metric"><span class="metric-label">Price</span><span class="metric-value" style="font-size:20px">$104,250</span></div>
+        <div class="metric" style="text-align:right"><span class="metric-label">Open P&L</span><span class="metric-value positive">+$82.40</span></div>
+      </div>
+      <div class="card-insight">
+        <div class="insight-label">What Hyperbot is doing</div>
+        <div class="insight-text">Managing a long position. TP1 was reached and the stop has been moved to breakeven plus fees.</div>
+        <div class="insight-details">
+          <div class="insight-detail">Protective stop staged around $103,800</div>
+          <div class="insight-detail">Profit target staged around $105,200</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="token-card fade-up delay-4">
+      <div class="card-top">
+        <div class="token-info">
+          <div class="token-avatar eth">ETH</div>
+          <div class="token-meta">
+            <div class="token-symbol">Ethereum</div>
+            <div class="token-strategy">Trend Follower &middot; Auto</div>
+          </div>
+        </div>
+        <span class="card-status watching">Watching</span>
+      </div>
+      <div class="card-metrics">
+        <div class="metric"><span class="metric-label">Price</span><span class="metric-value" style="font-size:20px">$2,540</span></div>
+        <div class="metric" style="text-align:right"><span class="metric-label">No position</span><span class="metric-value small" style="color:var(--text-tertiary)">&mdash;</span></div>
+      </div>
+      <div class="card-insight">
+        <div class="insight-label">What Hyperbot is doing</div>
+        <div class="insight-text">Scanning all strategies. Market conditions are choppy &mdash; waiting for a clean setup before entering.</div>
+      </div>
+    </div>
+
+    <div class="token-card fade-up delay-5">
+      <div class="card-top">
+        <div class="token-info">
+          <div class="token-avatar sol">SOL</div>
+          <div class="token-meta">
+            <div class="token-symbol">Solana</div>
+            <div class="token-strategy">Breakout Hunter &middot; Auto</div>
+          </div>
+        </div>
+        <span class="card-status watching">Cooling down</span>
+      </div>
+      <div class="card-metrics">
+        <div class="metric"><span class="metric-label">Price</span><span class="metric-value" style="font-size:20px">$172.30</span></div>
+        <div class="metric" style="text-align:right"><span class="metric-label">Today</span><span class="metric-value negative small">-$18.50</span></div>
+      </div>
+      <div class="card-insight">
+        <div class="insight-label">What Hyperbot is doing</div>
+        <div class="insight-text">Cooling down after a losing trade. Waiting 30 minutes before allowing another entry to avoid revenge trading.</div>
+      </div>
+    </div>
+
+    <div class="card-add fade-up delay-5">
+      <div class="add-circle">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </div>
+      <span class="add-label">Add a token</span>
+    </div>
+  </div>
+</div>
+
+<!-- ━━━ DEBRIEF PANEL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+<div class="panel-overlay" id="debrief-overlay" onclick="toggleDebrief()"></div>
+<div class="slide-panel" id="debrief-panel">
+  <div class="panel-header">
+    <span class="panel-title">Morning Debrief</span>
+    <button class="panel-close" onclick="toggleDebrief()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+  </div>
+  <div class="panel-body">
+    <div class="debrief-stats-grid">
+      <div class="debrief-stat-card"><div class="debrief-stat-label">Trades</div><div class="debrief-stat-value">3</div></div>
+      <div class="debrief-stat-card"><div class="debrief-stat-label">Win Rate</div><div class="debrief-stat-value" style="color:var(--profit)">67%</div></div>
+      <div class="debrief-stat-card"><div class="debrief-stat-label">Total P&L</div><div class="debrief-stat-value" style="color:var(--profit)">+$85.20</div></div>
+      <div class="debrief-stat-card"><div class="debrief-stat-label">Worst Trade</div><div class="debrief-stat-value" style="color:var(--loss)">-$42.10</div></div>
+    </div>
+    <div class="section-divider">Trade Timeline</div>
+    <div class="trade-entry win">
+      <div class="trade-entry-head"><span class="trade-entry-pair">BTC Long (5m Scalper)</span><span class="trade-entry-pnl" style="color:var(--profit)">+$67.30</span></div>
+      <div class="trade-entry-meta">Entry $103,420 &rarr; Exit $103,850 &middot; 12m</div>
+    </div>
+    <div class="trade-entry win">
+      <div class="trade-entry-head"><span class="trade-entry-pair">ETH Long (Trend Follower)</span><span class="trade-entry-pnl" style="color:var(--profit)">+$60.00</span></div>
+      <div class="trade-entry-meta">Entry $2,510 &rarr; Exit $2,542 &middot; 45m</div>
+    </div>
+    <div class="trade-entry loss">
+      <div class="trade-entry-head"><span class="trade-entry-pair">SOL Short (Breakout Hunter)</span><span class="trade-entry-pnl" style="color:var(--loss)">-$42.10</span></div>
+      <div class="trade-entry-meta">Entry $175.20 &rarr; Exit $176.90 &middot; 8m</div>
+      <div class="trade-what-if">What if SL was 25% tighter ($176.35 vs $176.90) &rarr; would have saved $11.20</div>
+    </div>
+    <div class="section-divider">Patterns Detected</div>
+    <div class="pattern-card medium">
+      <div class="pattern-label">Slow Losers</div>
+      <div class="pattern-desc">Average losing trade held 22m vs 12m for winners.</div>
+      <div class="pattern-suggestion">Consider reducing stale timeout to cut losers faster</div>
+    </div>
+  </div>
+</div>
+
+<!-- ━━━ NOTIFICATION PANEL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+<div class="panel-overlay" id="notif-overlay" onclick="toggleNotifPanel()"></div>
+<div class="slide-panel" id="notif-panel">
+  <div class="panel-header">
+    <span class="panel-title">Activity</span>
+    <button class="panel-close" onclick="toggleNotifPanel()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+  </div>
+  <div class="panel-body">
+    <div style="color:var(--text-tertiary);text-align:center;padding:40px;font-size:13px">Activity feed will appear here as Hyperbot takes actions.</div>
+  </div>
+</div>
+
+<script>
+/* ── Theme toggle ──────────────────────────────────────────── */
+function toggleTheme() {
+  const html = document.documentElement;
+  html.classList.add('transitioning');
+  const current = html.getAttribute('data-theme');
+  const next = current === 'dark' ? 'light' : 'dark';
+  html.setAttribute('data-theme', next);
+  localStorage.setItem('hyperbot-theme', next);
+
+  // Update greeting tone
+  updateGreeting();
+
+  // Remove transition class after animation completes
+  setTimeout(() => html.classList.remove('transitioning'), 600);
+}
+
+// Restore saved theme
+(function() {
+  const saved = localStorage.getItem('hyperbot-theme');
+  if (saved) document.documentElement.setAttribute('data-theme', saved);
+})();
+
+/* ── Panels ────────────────────────────────────────────────── */
+let debriefOpen = false, notifOpen = false, regimeOpen = false;
+
+function toggleDebrief() {
+  debriefOpen = !debriefOpen;
+  document.getElementById('debrief-panel').classList.toggle('open', debriefOpen);
+  document.getElementById('debrief-overlay').classList.toggle('open', debriefOpen);
+  if (debriefOpen) { notifOpen = false; closePanel('notif'); }
+}
+function toggleNotifPanel() {
+  notifOpen = !notifOpen;
+  document.getElementById('notif-panel').classList.toggle('open', notifOpen);
+  document.getElementById('notif-overlay').classList.toggle('open', notifOpen);
+  if (notifOpen) { debriefOpen = false; closePanel('debrief'); }
+}
+function closePanel(name) {
+  document.getElementById(name + '-panel').classList.remove('open');
+  document.getElementById(name + '-overlay').classList.remove('open');
+}
+function toggleRegime(e) {
+  regimeOpen = !regimeOpen;
+  const pop = document.getElementById('regime-popover');
+  pop.classList.toggle('open', regimeOpen);
+  if (regimeOpen) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    pop.style.left = Math.max(10, rect.left - 100) + 'px';
+    setTimeout(() => document.addEventListener('click', closeRegimeOutside, { once: true }), 0);
+  }
+}
+function closeRegimeOutside(e) {
+  if (!document.getElementById('regime-popover').contains(e.target) &&
+      !document.getElementById('regime-pill').contains(e.target)) {
+    regimeOpen = false;
+    document.getElementById('regime-popover').classList.remove('open');
+  }
+}
+
+/* ── Greeting ──────────────────────────────────────────────── */
+function updateGreeting() {
+  const h = new Date().getHours();
+  let g = 'Good evening';
+  if (h < 12) g = 'Good morning';
+  else if (h < 17) g = 'Good afternoon';
+  const el = document.getElementById('hero-greeting');
+  if (el) el.textContent = g + '. Your portfolio is up today.';
+}
+updateGreeting();
+
+/* ── Card tilt ─────────────────────────────────────────────── */
+document.querySelectorAll('.token-card').forEach(card => {
+  card.addEventListener('mousemove', e => {
+    const r = card.getBoundingClientRect();
+    const x = (e.clientX - r.left) / r.width - 0.5;
+    const y = (e.clientY - r.top) / r.height - 0.5;
+    card.style.transform = `translateY(-2px) perspective(600px) rotateX(${-y*2}deg) rotateY(${x*2}deg)`;
+  });
+  card.addEventListener('mouseleave', () => { card.style.transform = ''; });
+});
+</script>
+</body>
+</html>

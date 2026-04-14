@@ -65,6 +65,10 @@ def build_parser() -> argparse.ArgumentParser:
     dash_cmd.add_argument("--confirm-risk", action="store_true", help="Confirm you understand live trading risks")
     dash_cmd.add_argument("--port", type=int, default=0, help="Port to run on (0 = auto)")
 
+    debrief_cmd = subparsers.add_parser("debrief", help="Show morning debrief — trade review with what-if analysis")
+    debrief_cmd.add_argument("workspace_path", nargs="?", default=None, help="Path to workspace directory")
+    debrief_cmd.add_argument("--days", type=int, default=1, help="How many days back to review (default: 1)")
+
     return parser
 
 
@@ -81,8 +85,14 @@ def ensure_sdk() -> bool:
     except ImportError:
         pass
     log("[dashboard] Installing hyperliquid-python-sdk...")
+    pip_cmd = [sys.executable, "-m", "pip", "install", "--quiet"]
+    if sys.prefix == getattr(sys, "base_prefix", sys.prefix):
+        # System Python on macOS is often PEP 668 managed; user installs avoid the blocked
+        # global site-packages path without relying on deprecated pip flags.
+        pip_cmd.append("--user")
+    pip_cmd.append("hyperliquid-python-sdk")
     rc = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "--quiet", "--break-system-packages", "hyperliquid-python-sdk"],
+        pip_cmd,
     ).returncode
     if rc != 0:
         log("[dashboard] WARNING: Could not install hyperliquid-python-sdk.")
@@ -168,7 +178,11 @@ def launch_dashboard(args: argparse.Namespace) -> int:
     if args.port:
         dash_cmd.extend(["--port", str(args.port)])
 
-    log(f"[hyperbot] Launching {'LIVE' if args.live else 'view-only'} dashboard...")
+    if args.live:
+        log("[hyperbot] Launching LIVE dashboard — real orders can be sent.")
+    else:
+        log("[hyperbot] Launching VIEW-ONLY dashboard — no orders will be sent.")
+        log("[hyperbot]   To enable live trading, relaunch with: hyperbot dashboard --live --confirm-risk")
     return subprocess.run(dash_cmd, cwd=workspace).returncode
 
 
@@ -232,8 +246,60 @@ def main() -> int:
     if args.command == "dashboard":
         return launch_dashboard(args)
 
+    if args.command == "debrief":
+        return run_debrief(args)
+
     parser.error(f"unknown command: {args.command}")
     return 2
+
+
+def run_debrief(args: argparse.Namespace) -> int:
+    """Show morning debrief — trade review with what-if analysis."""
+    workspace = _resolve_workspace(args)
+    if not workspace:
+        log("[hyperbot] No workspace found. Run: hyperbot dashboard")
+        return 1
+
+    # Add workspace scripts to path for debrief module
+    scripts_dir = workspace / "scripts"
+    if scripts_dir.is_dir():
+        sys.path.insert(0, str(scripts_dir))
+
+    try:
+        import debrief
+        report = debrief.generate_debrief(workspace, lookback_days=args.days)
+        md = debrief.format_markdown(report)
+        print(md)
+        return 0
+    except Exception as e:
+        log(f"[hyperbot] Debrief error: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
+def _resolve_workspace(args: argparse.Namespace) -> Path | None:
+    """Find the workspace directory from args or common locations."""
+    if getattr(args, "workspace_path", None):
+        p = Path(args.workspace_path).expanduser().resolve()
+        if p.exists():
+            return p
+
+    # Try common workspace locations
+    candidates = [
+        Path.cwd(),
+        Path.home() / "Desktop" / "Hyperbot",
+    ]
+    # Also try hyperbot-* dirs in cwd parent
+    for child in Path.cwd().parent.iterdir():
+        if child.is_dir() and child.name.startswith("hyperbot-"):
+            candidates.append(child)
+
+    for candidate in candidates:
+        if (candidate / "hyperbot.workspace.json").exists():
+            return candidate
+
+    return None
 
 
 def run_pipeline(args: argparse.Namespace, local_only: bool) -> int:

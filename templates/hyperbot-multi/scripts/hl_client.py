@@ -12,15 +12,19 @@ for EIP-712 phantom agent signing.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import math
 import platform
+import shutil
 import subprocess
 import time
 import urllib.request
+from http.client import IncompleteRead, RemoteDisconnected
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
 
 HL_MAINNET = "https://api.hyperliquid.xyz"
 HL_TESTNET = "https://api.hyperliquid-testnet.xyz"
@@ -28,6 +32,9 @@ SERVICE_NAME = "hyperbot"
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_MANIFEST = ROOT / "hyperbot.workspace.json"
+DEFAULT_STALE_IF_ERROR_SECONDS = 300.0
+_INFO_CACHE: dict[tuple[str, str], tuple[float, float, Any]] = {}
+_INFO_BACKOFF: dict[tuple[str, str], tuple[float, float]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +84,17 @@ def infer_coin(symbol: str) -> str:
 # Info API (no signing required)
 # ---------------------------------------------------------------------------
 
-def _info_post(payload: dict, base_url: str = HL_MAINNET) -> Any:
+def _cache_key(base_url: str, payload: dict) -> tuple[str, str]:
+    return base_url, json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def _is_retryable_info_error(exc: Exception) -> bool:
+    if isinstance(exc, HTTPError):
+        return exc.code == 429 or exc.code >= 500
+    return isinstance(exc, (URLError, RemoteDisconnected, IncompleteRead, TimeoutError, ConnectionError, OSError))
+
+
+def _info_post_urllib(payload: dict, base_url: str = HL_MAINNET) -> Any:
     req = urllib.request.Request(
         f"{base_url}/info",
         data=json.dumps(payload).encode(),
@@ -88,29 +105,108 @@ def _info_post(payload: dict, base_url: str = HL_MAINNET) -> Any:
         return json.loads(resp.read())
 
 
+def _info_post_curl(payload: dict, base_url: str = HL_MAINNET) -> Any:
+    curl = shutil.which("curl")
+    if not curl:
+        raise RuntimeError("curl is not available for fallback transport")
+    proc = subprocess.run(
+        [
+            curl,
+            "-fsS",
+            "--max-time",
+            "10",
+            "-X",
+            "POST",
+            f"{base_url}/info",
+            "-H",
+            "Content-Type: application/json",
+            "--data-binary",
+            json.dumps(payload),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or proc.stdout or "curl request failed").strip())
+    return json.loads(proc.stdout)
+
+
+def _info_post(
+    payload: dict,
+    base_url: str = HL_MAINNET,
+    *,
+    cache_ttl: float = 0.0,
+    stale_if_error_ttl: float = DEFAULT_STALE_IF_ERROR_SECONDS,
+) -> Any:
+    cache_key = _cache_key(base_url, payload)
+    now = time.monotonic()
+    cached = _INFO_CACHE.get(cache_key)
+    if cached and cached[0] > now:
+        return deepcopy(cached[2])
+
+    backoff_until, backoff_delay = _INFO_BACKOFF.get(cache_key, (0.0, 0.0))
+    if cached and now < backoff_until and now - cached[1] <= stale_if_error_ttl:
+        return deepcopy(cached[2])
+
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            result = _info_post_urllib(payload, base_url)
+            stamp = time.monotonic()
+            _INFO_CACHE[cache_key] = (stamp + cache_ttl, stamp, result)
+            _INFO_BACKOFF.pop(cache_key, None)
+            return deepcopy(result)
+        except Exception as exc:
+            last_exc = exc
+            if not _is_retryable_info_error(exc) or attempt == 2:
+                break
+            time.sleep(0.35 * (2 ** attempt))
+
+    try:
+        result = _info_post_curl(payload, base_url)
+        stamp = time.monotonic()
+        _INFO_CACHE[cache_key] = (stamp + cache_ttl, stamp, result)
+        _INFO_BACKOFF.pop(cache_key, None)
+        return deepcopy(result)
+    except Exception as exc:
+        failure = last_exc or exc
+        if _is_retryable_info_error(failure):
+            prev_delay = backoff_delay or 2.0
+            if isinstance(failure, HTTPError) and failure.code == 429:
+                next_delay = min(max(prev_delay * 2.0, 5.0), 60.0)
+            else:
+                next_delay = min(max(prev_delay * 1.5, 2.0), 30.0)
+            _INFO_BACKOFF[cache_key] = (time.monotonic() + next_delay, next_delay)
+        if cached and now - cached[1] <= stale_if_error_ttl:
+            return deepcopy(cached[2])
+        if last_exc is not None:
+            raise last_exc
+        raise exc
+
+
 def get_all_mids(base_url: str = HL_MAINNET) -> dict[str, str]:
     """Get mid prices for all coins. Returns {coin: price_str}."""
-    return _info_post({"type": "allMids"}, base_url)
+    return _info_post({"type": "allMids"}, base_url, cache_ttl=2.0, stale_if_error_ttl=120.0)
 
 
 def get_meta(base_url: str = HL_MAINNET) -> dict:
     """Get perps metadata: universe of assets with szDecimals, maxLeverage, etc."""
-    return _info_post({"type": "meta"}, base_url)
+    return _info_post({"type": "meta"}, base_url, cache_ttl=3600.0, stale_if_error_ttl=3600.0)
 
 
 def get_spot_meta(base_url: str = HL_MAINNET) -> dict:
     """Get spot metadata: universe of spot tokens."""
-    return _info_post({"type": "spotMeta"}, base_url)
+    return _info_post({"type": "spotMeta"}, base_url, cache_ttl=3600.0, stale_if_error_ttl=3600.0)
 
 
 def get_meta_and_asset_ctxs(base_url: str = HL_MAINNET) -> list:
     """Get perps metadata + asset contexts (prices, funding, OI) in one call."""
-    return _info_post({"type": "metaAndAssetCtxs"}, base_url)
+    return _info_post({"type": "metaAndAssetCtxs"}, base_url, cache_ttl=15.0, stale_if_error_ttl=300.0)
 
 
 def get_spot_meta_and_asset_ctxs(base_url: str = HL_MAINNET) -> list:
     """Get spot metadata + asset contexts in one call."""
-    return _info_post({"type": "spotMetaAndAssetCtxs"}, base_url)
+    return _info_post({"type": "spotMetaAndAssetCtxs"}, base_url, cache_ttl=15.0, stale_if_error_ttl=300.0)
 
 
 def get_all_markets(base_url: str = HL_MAINNET) -> dict:
@@ -204,33 +300,51 @@ def get_all_markets(base_url: str = HL_MAINNET) -> dict:
     return result
 
 
-def get_mid_price(coin: str, base_url: str = HL_MAINNET) -> float | None:
-    mids = get_all_mids(base_url)
+def get_mid_price(coin: str, base_url: str = HL_MAINNET, mids: dict[str, str] | None = None) -> float | None:
+    if mids is None:
+        mids = get_all_mids(base_url)
     price_str = mids.get(coin)
     return float(price_str) if price_str else None
 
 
 def get_l2_book(coin: str, base_url: str = HL_MAINNET) -> dict:
-    return _info_post({"type": "l2Book", "coin": coin}, base_url)
+    return _info_post({"type": "l2Book", "coin": coin}, base_url, cache_ttl=1.0, stale_if_error_ttl=30.0)
 
 
 def get_candles(coin: str, interval: str, lookback_days: int, base_url: str = HL_MAINNET) -> list[dict]:
     now_ms = int(time.time() * 1000)
     start_ms = now_ms - (lookback_days * 86400 * 1000)
+    interval_key = str(interval).lower()
+    ttl_map = {
+        "1m": 15.0,
+        "5m": 30.0,
+        "15m": 60.0,
+        "1h": 120.0,
+        "4h": 300.0,
+        "1d": 900.0,
+    }
+    stale_map = {
+        "1m": 120.0,
+        "5m": 180.0,
+        "15m": 300.0,
+        "1h": 600.0,
+        "4h": 1800.0,
+        "1d": 7200.0,
+    }
     return _info_post({
         "type": "candleSnapshot",
         "req": {"coin": coin, "interval": interval, "startTime": start_ms, "endTime": now_ms},
-    }, base_url)
+    }, base_url, cache_ttl=ttl_map.get(interval_key, 60.0), stale_if_error_ttl=stale_map.get(interval_key, 600.0))
 
 
 def get_clearinghouse_state(address: str, base_url: str = HL_MAINNET) -> dict:
     """Get perps positions and margin summary for an address."""
-    return _info_post({"type": "clearinghouseState", "user": address}, base_url)
+    return _info_post({"type": "clearinghouseState", "user": address}, base_url, cache_ttl=10.0, stale_if_error_ttl=120.0)
 
 
 def get_spot_clearinghouse_state(address: str, base_url: str = HL_MAINNET) -> dict:
     """Get spot balances for an address."""
-    return _info_post({"type": "spotClearinghouseState", "user": address}, base_url)
+    return _info_post({"type": "spotClearinghouseState", "user": address}, base_url, cache_ttl=10.0, stale_if_error_ttl=120.0)
 
 
 def get_portfolio_value(address: str, base_url: str = HL_MAINNET) -> dict:
@@ -292,6 +406,11 @@ def get_portfolio_value(address: str, base_url: str = HL_MAINNET) -> dict:
     # Spot clearinghouse
     try:
         spot = get_spot_clearinghouse_state(address, base_url)
+        mids = {}
+        try:
+            mids = get_all_mids(base_url)
+        except Exception as e:
+            print(f"  [portfolio] Mid price snapshot failed: {e}", flush=True)
         for bal in (spot.get("balances") or []):
             token = bal.get("coin", "")
             amount = _sfloat(bal.get("total"))
@@ -299,12 +418,9 @@ def get_portfolio_value(address: str, base_url: str = HL_MAINNET) -> dict:
                 result["spot_usdc"] = amount
                 result["spot_total_usd"] += amount
             elif amount > 0:
-                try:
-                    mid = get_mid_price(token, base_url)
-                    if mid:
-                        result["spot_total_usd"] += amount * mid
-                except Exception as e:
-                    print(f"  [portfolio] Spot price lookup failed for {token}: {e}", flush=True)
+                mid = get_mid_price(token, base_url, mids=mids)
+                if mid:
+                    result["spot_total_usd"] += amount * mid
     except (ConnectionError, TimeoutError, OSError):
         raise
     except Exception as e:
@@ -316,16 +432,34 @@ def get_portfolio_value(address: str, base_url: str = HL_MAINNET) -> dict:
 
 
 def get_open_orders(address: str, base_url: str = HL_MAINNET) -> list[dict]:
-    return _info_post({"type": "openOrders", "user": address}, base_url)
+    return _info_post({"type": "openOrders", "user": address}, base_url, cache_ttl=5.0, stale_if_error_ttl=60.0)
 
 
 def get_user_fills(address: str, base_url: str = HL_MAINNET) -> list[dict]:
-    return _info_post({"type": "userFills", "user": address}, base_url)
+    return _info_post({"type": "userFills", "user": address}, base_url, cache_ttl=5.0, stale_if_error_ttl=60.0)
+
+
+def get_user_fills_by_time(
+    address: str,
+    start_ms: int,
+    end_ms: int | None = None,
+    base_url: str = HL_MAINNET,
+    aggregate_by_time: bool = True,
+) -> list[dict]:
+    payload: dict[str, Any] = {
+        "type": "userFillsByTime",
+        "user": address,
+        "startTime": start_ms,
+        "aggregateByTime": aggregate_by_time,
+    }
+    if end_ms is not None:
+        payload["endTime"] = end_ms
+    return _info_post(payload, base_url, cache_ttl=30.0, stale_if_error_ttl=180.0)
 
 
 def get_meta(base_url: str = HL_MAINNET) -> dict:
     """Get universe metadata (asset IDs, tick sizes, etc.)."""
-    return _info_post({"type": "meta"}, base_url)
+    return _info_post({"type": "meta"}, base_url, cache_ttl=3600.0, stale_if_error_ttl=3600.0)
 
 
 def get_asset_id(coin: str, base_url: str = HL_MAINNET) -> int | None:
@@ -558,6 +692,87 @@ def get_best_bid_ask(coin: str, base_url: str = HL_MAINNET) -> dict:
     except Exception as e:
         print(f"  [hl_client] get_best_bid_ask({coin}) error: {e}", flush=True)
         return {"best_bid": None, "best_ask": None, "spread_pct": None}
+
+
+def check_depth(
+    coin: str,
+    order_size_usd: float,
+    depth_pct: float = 0.001,
+    min_depth_multiple: float = 2.0,
+    base_url: str = HL_MAINNET,
+) -> dict:
+    """Check if the order book has enough depth to absorb an order.
+
+    Sums cumulative USD depth within `depth_pct` (default 0.1%) of the
+    mid price on both bid and ask sides.
+
+    Args:
+        coin: Asset symbol (e.g. "BTC")
+        order_size_usd: Notional value of the intended order
+        depth_pct: How far from mid to measure depth (0.001 = 0.1%)
+        min_depth_multiple: Required depth as a multiple of order size
+        base_url: API endpoint
+
+    Returns: {
+        "sufficient": bool,
+        "bid_depth_usd": float,
+        "ask_depth_usd": float,
+        "order_size_usd": float,
+        "required_usd": float,    # order_size * min_depth_multiple
+        "depth_ratio": float,     # min(bid,ask) / order_size
+    }
+    """
+    result = {
+        "sufficient": False,
+        "bid_depth_usd": 0.0,
+        "ask_depth_usd": 0.0,
+        "order_size_usd": order_size_usd,
+        "required_usd": order_size_usd * min_depth_multiple,
+        "depth_ratio": 0.0,
+    }
+
+    try:
+        book = get_l2_book(coin, base_url)
+        levels = book.get("levels", [[], []])
+        bids = levels[0] if len(levels) > 0 else []
+        asks = levels[1] if len(levels) > 1 else []
+
+        if not bids or not asks:
+            return result
+
+        mid = (float(bids[0]["px"]) + float(asks[0]["px"])) / 2
+        threshold = mid * depth_pct
+
+        # Sum bid depth within threshold
+        bid_depth = 0.0
+        for level in bids:
+            px = float(level["px"])
+            sz = float(level["sz"])
+            if mid - px <= threshold:
+                bid_depth += px * sz
+            else:
+                break
+
+        # Sum ask depth within threshold
+        ask_depth = 0.0
+        for level in asks:
+            px = float(level["px"])
+            sz = float(level["sz"])
+            if px - mid <= threshold:
+                ask_depth += px * sz
+            else:
+                break
+
+        result["bid_depth_usd"] = bid_depth
+        result["ask_depth_usd"] = ask_depth
+        min_depth = min(bid_depth, ask_depth)
+        result["depth_ratio"] = min_depth / order_size_usd if order_size_usd > 0 else 0.0
+        result["sufficient"] = min_depth >= order_size_usd * min_depth_multiple
+
+    except Exception as e:
+        print(f"  [hl_client] check_depth({coin}) error: {e}", flush=True)
+
+    return result
 
 
 # ---------------------------------------------------------------------------
