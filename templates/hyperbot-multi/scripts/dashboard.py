@@ -3153,13 +3153,22 @@ function renderDebrief(d){
 
 // ── Add Token Modal ──────────────────────────────────────────
 let activeTab='all';
-let marketData={all:[],perps:[],tradfi:[],spot:[],hip3:[]};
+let activeSubTab='';
+let marketData={all:[],perps:[],tradfi:[],stocks:[],indices:[],commodities:[],fx:[],prelaunch:[],spot:[],hip3:[]};
 const MARKET_TABS=[
   {id:'all',label:'All'},
   {id:'perps',label:'Perps'},
   {id:'tradfi',label:'TradFi'},
   {id:'spot',label:'Spot'},
   {id:'hip3',label:'HIP-3'},
+  {id:'prelaunch',label:'Pre-launch'},
+];
+const TRADFI_SUBTABS=[
+  {id:'tradfi',label:'All TradFi'},
+  {id:'stocks',label:'Stocks'},
+  {id:'indices',label:'Indices'},
+  {id:'commodities',label:'Commodities'},
+  {id:'fx',label:'FX'},
 ];
 
 async function openAddModal(){
@@ -3177,15 +3186,22 @@ async function openAddModal(){
       .sort((a,b)=>b.vol-a.vol);
     const allSpot=(data.spot||[])
       .filter(m=>m.coin&&!existing.includes(m.coin.toUpperCase()))
-      .map(m=>({coin:m.coin,price:parseFloat(m.price||0),vol:parseFloat(m.dayNtlVlm||0),maxLev:0,cat:m.category||'spot',funding:''}))
+      .map(m=>({coin:m.coin,price:parseFloat(m.price||0),vol:parseFloat(m.dayNtlVlm||0),maxLev:0,cat:m.category||'spot',subcat:m.subcategory||'',fullName:m.fullName||'',funding:''}))
       .sort((a,b)=>b.vol-a.vol);
     const tradfiTokens=allSpot.filter(m=>m.cat==='tradfi');
     const canonicalSpot=allSpot.filter(m=>m.cat==='spot');
     const hip3Tokens=allSpot.filter(m=>m.cat==='hip3');
-    const combined=[...allPerps,...tradfiTokens,...canonicalSpot,...hip3Tokens];
+    const prelaunchPerps=allPerps.filter(m=>m.cat==='prelaunch');
+    const cryptoPerps=allPerps.filter(m=>m.cat==='crypto');
+    const combined=[...cryptoPerps,...tradfiTokens,...canonicalSpot,...hip3Tokens,...prelaunchPerps];
     marketData.all=combined;
-    marketData.perps=allPerps;
+    marketData.perps=cryptoPerps;
     marketData.tradfi=tradfiTokens;
+    marketData.stocks=tradfiTokens.filter(m=>m.subcat==='stocks');
+    marketData.indices=tradfiTokens.filter(m=>m.subcat==='indices');
+    marketData.commodities=tradfiTokens.filter(m=>m.subcat==='commodities');
+    marketData.fx=tradfiTokens.filter(m=>m.subcat==='fx');
+    marketData.prelaunch=prelaunchPerps;
     marketData.spot=canonicalSpot;
     marketData.hip3=hip3Tokens;
     renderTokenTabs();
@@ -3195,20 +3211,33 @@ async function openAddModal(){
   }
 }
 
-function switchTab(tab){activeTab=tab;renderTokenTabs()}
+function switchTab(tab){activeTab=tab;activeSubTab='';renderTokenTabs()}
+function switchSubTab(sub){activeSubTab=sub;renderTokenTabs()}
 
 function renderTokenTabs(){
   const grid=document.getElementById('d-token-list');
   const tabsHtml=MARKET_TABS.map(t=>{
     const count=marketData[t.id]?marketData[t.id].length:0;
+    if(count===0)return '';
     const isActive=activeTab===t.id;
     return `<button onclick="switchTab('${t.id}')" style="padding:6px 14px;border-radius:8px;font-size:12px;font-weight:${isActive?'600':'500'};background:${isActive?'var(--accent-bg)':'none'};color:${isActive?'var(--accent)':'var(--text3)'};border:${isActive?'1px solid var(--accent)':'1px solid transparent'};cursor:pointer;transition:all 0.15s">${t.label} <span style="font-size:10px;opacity:0.7">${count}</span></button>`;
   }).join('');
-  const placeholders={all:'Search all markets...',perps:'Search perpetuals...',tradfi:'Search stocks, ETFs, commodities, forex...',spot:'Search spot tokens...',hip3:'Search HIP-3 tokens...'};
+  // TradFi sub-tabs
+  let subTabsHtml='';
+  if(activeTab==='tradfi'){
+    subTabsHtml='<div style="display:flex;gap:4px;margin-bottom:8px;flex-wrap:wrap">'+TRADFI_SUBTABS.map(t=>{
+      const count=marketData[t.id]?marketData[t.id].length:0;
+      if(count===0 && t.id!=='tradfi')return '';
+      const isActive=(!activeSubTab&&t.id==='tradfi')||(activeSubTab===t.id);
+      return `<button onclick="switchSubTab('${t.id==='tradfi'?'':t.id}')" style="padding:4px 10px;border-radius:6px;font-size:11px;font-weight:${isActive?'600':'400'};background:${isActive?'var(--subtle-bg)':'none'};color:${isActive?'var(--text)':'var(--text3)'};border:none;cursor:pointer">${t.label} <span style="font-size:9px;opacity:0.6">${count}</span></button>`;
+    }).join('')+'</div>';
+  }
+  const placeholders={all:'Search all markets...',perps:'Search perpetuals...',tradfi:'Search stocks, ETFs, commodities, forex...',spot:'Search spot tokens...',hip3:'Search HIP-3 tokens...',prelaunch:'Search pre-launch perps...'};
   grid.innerHTML=`
     <div style="display:flex;gap:4px;margin-bottom:12px;flex-wrap:wrap">${tabsHtml}</div>
+    ${subTabsHtml}
     <input type="text" id="token-search" placeholder="${placeholders[activeTab]||'Search...'}" style="width:100%;padding:10px 14px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:8px;color:var(--text);font-size:14px;margin-bottom:12px;outline:none" oninput="filterTokens()">
-    <div id="token-results" style="max-height:380px;overflow-y:auto"></div>`;
+    <div id="token-results" style="max-height:360px;overflow-y:auto"></div>`;
   filterTokens();
 }
 
@@ -3221,8 +3250,9 @@ function fmtVol(v){
 
 function filterTokens(){
   const q=(document.getElementById('token-search')?.value||'').toUpperCase();
-  const list=marketData[activeTab]||[];
-  const filtered=list.filter(t=>!q||t.coin.toUpperCase().includes(q)).slice(0,100);
+  const listKey=(activeTab==='tradfi'&&activeSubTab)?activeSubTab:activeTab;
+  const list=marketData[listKey]||[];
+  const filtered=list.filter(t=>!q||t.coin.toUpperCase().includes(q)||(t.fullName||'').toUpperCase().includes(q)).slice(0,100);
   const el=document.getElementById('token-results');
   if(!el)return;
   if(filtered.length===0){
@@ -3236,7 +3266,9 @@ function filterTokens(){
     const priceStr=t.price>=1?'$'+t.price.toLocaleString(undefined,{maximumFractionDigits:2}):(t.price>0?'$'+t.price.toPrecision(4):'\u2014');
     const volStr=t.vol>0?fmtVol(t.vol):'';
     const levTag=t.maxLev&&t.maxLev>1?`<span style="font-size:10px;color:var(--text-dim);background:var(--subtle-bg);padding:1px 5px;border-radius:4px">${t.maxLev}\u00d7</span>`:'';
-    const catTag=catLabels[t.cat]?`<span style="font-size:10px;color:var(--accent);background:var(--accent-bg);padding:1px 6px;border-radius:4px;font-weight:500">${catLabels[t.cat]}</span>`:'';
+    const subcatLabels={stocks:'Stock',indices:'Index',commodities:'Commodity',fx:'FX'};
+    const catLabel=t.subcat?subcatLabels[t.subcat]||catLabels[t.cat]:catLabels[t.cat];
+    const catTag=catLabel?`<span style="font-size:10px;color:var(--accent);background:var(--accent-bg);padding:1px 6px;border-radius:4px;font-weight:500">${catLabel}</span>`:'';
     return `<button onclick="addTokenAuto('${coin}')" style="display:flex;align-items:center;justify-content:space-between;width:100%;padding:12px 0;background:none;border:none;border-bottom:1px solid var(--subtle-border);cursor:pointer;transition:border-color 0.15s" onmouseenter="this.style.borderBottomColor='var(--border-h)'" onmouseleave="this.style.borderBottomColor='var(--subtle-border)'">
       <div style="display:flex;align-items:center;gap:8px"><span style="font-size:14px;font-weight:500;color:var(--text)">${pair}</span>${levTag}${catTag}</div>
       <div style="display:flex;align-items:center;gap:16px"><span class="mono" style="font-size:13px;color:var(--text2)">${priceStr}</span>${volStr?`<span class="mono" style="font-size:12px;color:var(--text3)">${volStr}</span>`:''}</div>

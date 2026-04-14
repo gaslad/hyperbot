@@ -243,14 +243,13 @@ def get_all_markets(base_url: str = HL_MAINNET) -> dict:
                 coin = asset.get("name", "")
                 max_lev = asset.get("maxLeverage", 1)
                 vol = ctx.get("dayNtlVlm", "0")
-                # Categorize
-                if coin.upper() in TRADFI:
-                    cat = "tradfi"
-                elif asset.get("isPreLaunch"):
+                # Categorize perps
+                is_delisted = asset.get("isDelisted", False)
+                is_isolated_only = asset.get("onlyIsolated", False)
+                if is_delisted:
+                    cat = "delisted"
+                elif is_isolated_only and max_lev <= 3:
                     cat = "prelaunch"
-                elif max_lev <= 3:
-                    # Low leverage + small name often = pre-launch or HIP-3
-                    cat = "crypto"
                 else:
                     cat = "crypto"
                 result["perps"].append({
@@ -281,18 +280,15 @@ def get_all_markets(base_url: str = HL_MAINNET) -> dict:
                 token_index[ti] = tok
 
             # TradFi tokens traded as spot on Hyperliquid (stocks, ETFs, commodities, forex)
-            TRADFI_TOKENS = {
-                # Equities
+            TRADFI_STOCKS = {
                 "AAPL", "AMZN", "GOOG", "GOOGL", "META", "MSFT", "NVDA", "TSLA",
                 "AMD", "NFLX", "COIN", "MSTR", "GME", "AMC", "PLTR", "BABA",
                 "TSM", "INTC", "UBER", "ABNB", "SNAP", "SQ", "SHOP", "RBLX",
-                # ETFs / indices
-                "SPY", "QQQ", "DIA", "IWM", "TLT",
-                # Commodities
-                "GLD", "SLV", "USO", "XAU", "XAG", "WTI", "BRENT", "NG",
-                # Forex
-                "EUR", "GBP", "JPY",
             }
+            TRADFI_INDICES = {"SPY", "QQQ", "DIA", "IWM", "TLT"}
+            TRADFI_COMMODITIES = {"GLD", "SLV", "USO", "XAU", "XAG", "WTI", "BRENT", "NG"}
+            TRADFI_FOREX = {"EUR", "GBP", "JPY", "CHF", "AUD", "CAD", "NZD"}
+            ALL_TRADFI = TRADFI_STOCKS | TRADFI_INDICES | TRADFI_COMMODITIES | TRADFI_FOREX
 
             for i, market in enumerate(universe):
                 ctx = ctxs[i] if i < len(ctxs) else {}
@@ -316,19 +312,33 @@ def get_all_markets(base_url: str = HL_MAINNET) -> dict:
                 if not coin_name or coin_name.startswith("@"):
                     continue
 
-                # Categorize: TradFi > canonical spot > HIP-3
-                if coin_name.upper() in TRADFI_TOKENS:
+                # Categorize: TradFi (with sub-type) > canonical spot > HIP-3
+                upper_name = coin_name.upper()
+                if upper_name in ALL_TRADFI:
                     category = "tradfi"
+                    if upper_name in TRADFI_STOCKS:
+                        subcategory = "stocks"
+                    elif upper_name in TRADFI_INDICES:
+                        subcategory = "indices"
+                    elif upper_name in TRADFI_COMMODITIES:
+                        subcategory = "commodities"
+                    elif upper_name in TRADFI_FOREX:
+                        subcategory = "fx"
+                    else:
+                        subcategory = "stocks"
                 elif is_canonical:
                     category = "spot"
+                    subcategory = ""
                 else:
                     category = "hip3"
+                    subcategory = ""
 
                 result["spot"].append({
                     "coin": coin_name,
                     "price": ctx.get("markPx", "0"),
                     "dayNtlVlm": ctx.get("dayNtlVlm", "0"),
                     "category": category,
+                    "subcategory": subcategory,
                     "fullName": base_token.get("fullName", ""),
                 })
     except Exception as e:
