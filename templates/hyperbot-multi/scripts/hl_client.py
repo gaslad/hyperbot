@@ -279,16 +279,29 @@ def get_all_markets(base_url: str = HL_MAINNET) -> dict:
             for ti, tok in enumerate(tokens):
                 token_index[ti] = tok
 
-            # TradFi tokens traded as spot on Hyperliquid (stocks, ETFs, commodities, forex)
+            # TradFi tokens traded as spot on Hyperliquid
+            # These are HIP-3 tokenized wrappers of real-world assets
             TRADFI_STOCKS = {
                 "AAPL", "AMZN", "GOOG", "GOOGL", "META", "MSFT", "NVDA", "TSLA",
                 "AMD", "NFLX", "COIN", "MSTR", "GME", "AMC", "PLTR", "BABA",
                 "TSM", "INTC", "UBER", "ABNB", "SNAP", "SQ", "SHOP", "RBLX",
+                "HOOD", "SMCI", "DELL", "ORCL", "CRM", "ADBE", "PYPL", "AVGO",
+                "CAT", "BA", "DIS", "NKE", "KO", "PEP", "WMT", "V", "MA",
             }
-            TRADFI_INDICES = {"SPY", "QQQ", "DIA", "IWM", "TLT"}
-            TRADFI_COMMODITIES = {"GLD", "SLV", "USO", "XAU", "XAG", "WTI", "BRENT", "NG"}
-            TRADFI_FOREX = {"EUR", "GBP", "JPY", "CHF", "AUD", "CAD", "NZD"}
-            ALL_TRADFI = TRADFI_STOCKS | TRADFI_INDICES | TRADFI_COMMODITIES | TRADFI_FOREX
+            TRADFI_INDICES = {
+                "SPY", "QQQ", "DIA", "IWM", "TLT", "VTI", "VOO", "QQQM",
+                "USPYX", "NQ",
+            }
+            TRADFI_COMMODITIES = {
+                "GLD", "SLV", "USO", "XAU", "XAG", "XAUT0",
+                "WTI", "BRENT", "NG", "UNG",
+                "GOLD", "SILVER", "OIL", "COPPER", "PLATINUM", "PALLADIUM",
+                "DBA", "DBC", "PDBC", "GSG", "CPER",
+                "WHEAT", "CORN", "SUGAR", "COFFEE", "COCOA", "COTTON", "SOYB", "WEAT",
+            }
+            TRADFI_FOREX = {"EUR", "GBP", "JPY", "CHF", "AUD", "CAD", "NZD", "DXY"}
+            TRADFI_PREIPO = {"SPACEX", "OPENAI"}
+            ALL_TRADFI = TRADFI_STOCKS | TRADFI_INDICES | TRADFI_COMMODITIES | TRADFI_FOREX | TRADFI_PREIPO
 
             for i, market in enumerate(universe):
                 ctx = ctxs[i] if i < len(ctxs) else {}
@@ -314,13 +327,18 @@ def get_all_markets(base_url: str = HL_MAINNET) -> dict:
 
                 # Categorize: TradFi (with sub-type) > canonical spot > HIP-3
                 upper_name = coin_name.upper()
-                if upper_name in ALL_TRADFI:
+                full_lower = (base_token.get("fullName", "") or "").lower()
+                # Auto-detect Wagyu.xyz stock wrappers (exclude crypto wraps like TAO1, XMR1)
+                is_wagyu = "wagyu" in full_lower and upper_name not in {"TAO1", "XMR1", "BTC1", "ETH1", "SOL1"}
+                if upper_name in ALL_TRADFI or is_wagyu:
                     category = "tradfi"
-                    if upper_name in TRADFI_STOCKS:
+                    if upper_name in TRADFI_PREIPO:
+                        subcategory = "pre-ipo"
+                    elif upper_name in TRADFI_STOCKS or is_wagyu:
                         subcategory = "stocks"
-                    elif upper_name in TRADFI_INDICES:
+                    elif upper_name in TRADFI_INDICES or "sp500" in full_lower or "index" in full_lower:
                         subcategory = "indices"
-                    elif upper_name in TRADFI_COMMODITIES:
+                    elif upper_name in TRADFI_COMMODITIES or any(x in full_lower for x in ["gold", "silver", "oil", "gas", "copper", "metal", "commodity"]):
                         subcategory = "commodities"
                     elif upper_name in TRADFI_FOREX:
                         subcategory = "fx"
@@ -341,6 +359,22 @@ def get_all_markets(base_url: str = HL_MAINNET) -> dict:
                     "subcategory": subcategory,
                     "fullName": base_token.get("fullName", ""),
                 })
+            # Deduplicate spot entries by coin name (keep highest volume)
+            seen: dict[str, int] = {}
+            deduped: list[dict] = []
+            for idx, entry in enumerate(result["spot"]):
+                coin = entry["coin"]
+                vol = float(entry.get("dayNtlVlm", "0") or 0)
+                if coin in seen:
+                    prev_idx = seen[coin]
+                    prev_vol = float(deduped[prev_idx].get("dayNtlVlm", "0") or 0)
+                    if vol > prev_vol:
+                        deduped[prev_idx] = entry
+                else:
+                    seen[coin] = len(deduped)
+                    deduped.append(entry)
+            result["spot"] = deduped
+
     except Exception as e:
         print(f"  [hl_client] Spot meta error: {e}", flush=True)
 

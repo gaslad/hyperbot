@@ -3154,7 +3154,7 @@ function renderDebrief(d){
 // ── Add Token Modal ──────────────────────────────────────────
 let activeTab='all';
 let activeSubTab='';
-let marketData={all:[],perps:[],tradfi:[],stocks:[],indices:[],commodities:[],fx:[],prelaunch:[],spot:[],hip3:[]};
+let marketData={all:[],perps:[],tradfi:[],stocks:[],indices:[],commodities:[],fx:[],preipo:[],prelaunch:[],spot:[],hip3:[]};
 const MARKET_TABS=[
   {id:'all',label:'All'},
   {id:'perps',label:'Perps'},
@@ -3164,11 +3164,12 @@ const MARKET_TABS=[
   {id:'prelaunch',label:'Pre-launch'},
 ];
 const TRADFI_SUBTABS=[
-  {id:'tradfi',label:'All TradFi'},
+  {id:'tradfi',label:'All'},
   {id:'stocks',label:'Stocks'},
   {id:'indices',label:'Indices'},
   {id:'commodities',label:'Commodities'},
   {id:'fx',label:'FX'},
+  {id:'preipo',label:'Pre-IPO'},
 ];
 
 async function openAddModal(){
@@ -3201,6 +3202,7 @@ async function openAddModal(){
     marketData.indices=tradfiTokens.filter(m=>m.subcat==='indices');
     marketData.commodities=tradfiTokens.filter(m=>m.subcat==='commodities');
     marketData.fx=tradfiTokens.filter(m=>m.subcat==='fx');
+    marketData.preipo=tradfiTokens.filter(m=>m.subcat==='pre-ipo');
     marketData.prelaunch=prelaunchPerps;
     marketData.spot=canonicalSpot;
     marketData.hip3=hip3Tokens;
@@ -3266,7 +3268,7 @@ function filterTokens(){
     const priceStr=t.price>=1?'$'+t.price.toLocaleString(undefined,{maximumFractionDigits:2}):(t.price>0?'$'+t.price.toPrecision(4):'\u2014');
     const volStr=t.vol>0?fmtVol(t.vol):'';
     const levTag=t.maxLev&&t.maxLev>1?`<span style="font-size:10px;color:var(--text-dim);background:var(--subtle-bg);padding:1px 5px;border-radius:4px">${t.maxLev}\u00d7</span>`:'';
-    const subcatLabels={stocks:'Stock',indices:'Index',commodities:'Commodity',fx:'FX'};
+    const subcatLabels={stocks:'Stock',indices:'Index',commodities:'Commodity',fx:'FX','pre-ipo':'Pre-IPO'};
     const catLabel=t.subcat?subcatLabels[t.subcat]||catLabels[t.cat]:catLabels[t.cat];
     const catTag=catLabel?`<span style="font-size:10px;color:var(--accent);background:var(--accent-bg);padding:1px 6px;border-radius:4px;font-weight:500">${catLabel}</span>`:'';
     return `<button onclick="addTokenAuto('${coin}')" style="display:flex;align-items:center;justify-content:space-between;width:100%;padding:12px 0;background:none;border:none;border-bottom:1px solid var(--subtle-border);cursor:pointer;transition:border-color 0.15s" onmouseenter="this.style.borderBottomColor='var(--border-h)'" onmouseleave="this.style.borderBottomColor='var(--subtle-border)'">
