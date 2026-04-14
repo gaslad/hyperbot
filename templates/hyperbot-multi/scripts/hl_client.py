@@ -280,20 +280,31 @@ def get_all_markets(base_url: str = HL_MAINNET) -> dict:
             for ti, tok in enumerate(tokens):
                 token_index[ti] = tok
 
+            # TradFi tokens traded as spot on Hyperliquid (stocks, ETFs, commodities, forex)
+            TRADFI_TOKENS = {
+                # Equities
+                "AAPL", "AMZN", "GOOG", "GOOGL", "META", "MSFT", "NVDA", "TSLA",
+                "AMD", "NFLX", "COIN", "MSTR", "GME", "AMC", "PLTR", "BABA",
+                "TSM", "INTC", "UBER", "ABNB", "SNAP", "SQ", "SHOP", "RBLX",
+                # ETFs / indices
+                "SPY", "QQQ", "DIA", "IWM", "TLT",
+                # Commodities
+                "GLD", "SLV", "USO", "XAU", "XAG", "WTI", "BRENT", "NG",
+                # Forex
+                "EUR", "GBP", "JPY",
+            }
+
             for i, market in enumerate(universe):
                 ctx = ctxs[i] if i < len(ctxs) else {}
                 raw_name = market.get("name", "")
                 is_canonical = market.get("isCanonical", False)
 
                 # Resolve human-readable name from token index
-                # Canonical markets have names like "PURR/USDC"
-                # Non-canonical (HIP-3) markets have names like "@1", "@2"
                 base_idx = market.get("tokens", [None, None])[0]
                 base_token = token_index.get(base_idx, {}) if base_idx is not None else {}
                 token_name = base_token.get("name", "")
 
                 if is_canonical and "/" in raw_name:
-                    # Use the base part of "PURR/USDC"
                     coin_name = raw_name.split("/")[0]
                 elif token_name and not raw_name.startswith("@"):
                     coin_name = raw_name
@@ -302,16 +313,23 @@ def get_all_markets(base_url: str = HL_MAINNET) -> dict:
                 else:
                     coin_name = raw_name
 
-                # Skip tokens with no usable name
                 if not coin_name or coin_name.startswith("@"):
                     continue
 
-                is_hip3 = not is_canonical
+                # Categorize: TradFi > canonical spot > HIP-3
+                if coin_name.upper() in TRADFI_TOKENS:
+                    category = "tradfi"
+                elif is_canonical:
+                    category = "spot"
+                else:
+                    category = "hip3"
+
                 result["spot"].append({
                     "coin": coin_name,
                     "price": ctx.get("markPx", "0"),
                     "dayNtlVlm": ctx.get("dayNtlVlm", "0"),
-                    "category": "hip3" if is_hip3 else "spot",
+                    "category": category,
+                    "fullName": base_token.get("fullName", ""),
                 })
     except Exception as e:
         print(f"  [hl_client] Spot meta error: {e}", flush=True)

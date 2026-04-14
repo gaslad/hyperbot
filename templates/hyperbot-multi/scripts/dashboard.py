@@ -3153,10 +3153,11 @@ function renderDebrief(d){
 
 // ── Add Token Modal ──────────────────────────────────────────
 let activeTab='all';
-let marketData={all:[],perps:[],spot:[],hip3:[]};
+let marketData={all:[],perps:[],tradfi:[],spot:[],hip3:[]};
 const MARKET_TABS=[
   {id:'all',label:'All'},
   {id:'perps',label:'Perps'},
+  {id:'tradfi',label:'TradFi'},
   {id:'spot',label:'Spot'},
   {id:'hip3',label:'HIP-3'},
 ];
@@ -3178,11 +3179,13 @@ async function openAddModal(){
       .filter(m=>m.coin&&!existing.includes(m.coin.toUpperCase()))
       .map(m=>({coin:m.coin,price:parseFloat(m.price||0),vol:parseFloat(m.dayNtlVlm||0),maxLev:0,cat:m.category||'spot',funding:''}))
       .sort((a,b)=>b.vol-a.vol);
+    const tradfiTokens=allSpot.filter(m=>m.cat==='tradfi');
     const canonicalSpot=allSpot.filter(m=>m.cat==='spot');
     const hip3Tokens=allSpot.filter(m=>m.cat==='hip3');
-    const combined=[...allPerps,...canonicalSpot,...hip3Tokens];
+    const combined=[...allPerps,...tradfiTokens,...canonicalSpot,...hip3Tokens];
     marketData.all=combined;
     marketData.perps=allPerps;
+    marketData.tradfi=tradfiTokens;
     marketData.spot=canonicalSpot;
     marketData.hip3=hip3Tokens;
     renderTokenTabs();
@@ -3201,7 +3204,7 @@ function renderTokenTabs(){
     const isActive=activeTab===t.id;
     return `<button onclick="switchTab('${t.id}')" style="padding:6px 14px;border-radius:8px;font-size:12px;font-weight:${isActive?'600':'500'};background:${isActive?'var(--accent-bg)':'none'};color:${isActive?'var(--accent)':'var(--text3)'};border:${isActive?'1px solid var(--accent)':'1px solid transparent'};cursor:pointer;transition:all 0.15s">${t.label} <span style="font-size:10px;opacity:0.7">${count}</span></button>`;
   }).join('');
-  const placeholders={all:'Search all markets...',perps:'Search perpetuals...',spot:'Search spot tokens...',hip3:'Search HIP-3 tokens...'};
+  const placeholders={all:'Search all markets...',perps:'Search perpetuals...',tradfi:'Search stocks, ETFs, commodities, forex...',spot:'Search spot tokens...',hip3:'Search HIP-3 tokens...'};
   grid.innerHTML=`
     <div style="display:flex;gap:4px;margin-bottom:12px;flex-wrap:wrap">${tabsHtml}</div>
     <input type="text" id="token-search" placeholder="${placeholders[activeTab]||'Search...'}" style="width:100%;padding:10px 14px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:8px;color:var(--text);font-size:14px;margin-bottom:12px;outline:none" oninput="filterTokens()">
@@ -3226,7 +3229,7 @@ function filterTokens(){
     el.innerHTML='<div style="color:var(--text3);padding:20px;text-align:center">No tokens found</div>';
     return;
   }
-  const catLabels={crypto:'',tradfi:'',prelaunch:'',hip3:'HIP-3',spot:'Spot'};
+  const catLabels={crypto:'',tradfi:'TradFi',prelaunch:'',hip3:'HIP-3',spot:'Spot'};
   el.innerHTML=filtered.map(t=>{
     const coin=t.coin;
     const pair=t.cat==='spot'?coin:coin+'/USDC';
