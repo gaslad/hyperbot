@@ -69,6 +69,10 @@ def build_parser() -> argparse.ArgumentParser:
     debrief_cmd.add_argument("workspace_path", nargs="?", default=None, help="Path to workspace directory")
     debrief_cmd.add_argument("--days", type=int, default=1, help="How many days back to review (default: 1)")
 
+    report_cmd = subparsers.add_parser("report", help="Generate and email the daily trading report")
+    report_cmd.add_argument("workspace_path", nargs="?", default=None, help="Path to workspace directory")
+    report_cmd.add_argument("--dry-run", action="store_true", help="Print report without sending email")
+
     return parser
 
 
@@ -249,8 +253,36 @@ def main() -> int:
     if args.command == "debrief":
         return run_debrief(args)
 
+    if args.command == "report":
+        return run_report(args)
+
     parser.error(f"unknown command: {args.command}")
     return 2
+
+
+def run_report(args: argparse.Namespace) -> int:
+    """Generate and send daily email report."""
+    workspace = _resolve_workspace(args)
+    if not workspace:
+        log("[hyperbot] No workspace found. Run: hyperbot dashboard")
+        return 1
+
+    scripts_dir = workspace / "scripts"
+    if scripts_dir.is_dir():
+        sys.path.insert(0, str(scripts_dir))
+
+    # Also add repo scripts for daily_email_report
+    sys.path.insert(0, str(ROOT / "scripts"))
+
+    try:
+        import daily_email_report
+        success = daily_email_report.run(workspace, dry_run=getattr(args, "dry_run", False))
+        return 0 if success else 1
+    except Exception as e:
+        log(f"[hyperbot] Report error: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
 
 
 def run_debrief(args: argparse.Namespace) -> int:

@@ -2098,6 +2098,26 @@ def trading_loop() -> None:
                     with STATE.lock:
                         STATE.last_tuner_date = today_utc  # don't retry every cycle
 
+            # Daily email report — once per UTC day, after tuner
+            with STATE.lock:
+                email_ran_today = getattr(STATE, '_last_email_date', '') == today_utc
+            if not email_ran_today and master_address:
+                try:
+                    report = TRADE_JOURNAL.build_daily_report()
+                    if report:
+                        import daily_email_report
+                        config = daily_email_report.load_email_config()
+                        if config.get("from") and config.get("app_password") and config.get("to"):
+                            current = report["current"]
+                            pnl = current["closed_pnl"]
+                            subject = f"Hyperbot Daily: {'+' if pnl >= 0 else ''}{pnl:.2f} USDC | {current['wins']}W/{current['losses']}L | {today_utc}"
+                            daily_email_report.send_report(report["markdown"], subject, config)
+                            log_trade("EMAIL", "system", 0, 0, f"Daily report sent for {today_utc}")
+                except Exception as email_err:
+                    _log_throttled_error("daily-email", f"[dashboard] Daily email error: {email_err}", throttle_seconds=3600.0)
+                with STATE.lock:
+                    STATE._last_email_date = today_utc
+
             with STATE.lock:
                 STATE.last_update = time.strftime("%H:%M:%S")
                 # Sync legacy fields from active pair
@@ -2357,6 +2377,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   --radius:16px;--radius-sm:10px;
   --shadow-md:0 4px 16px rgba(0,0,0,0.06);
   --accent:#7c6a4f;--accent-bg:rgba(124,106,79,0.06);
+  /* Theme-adaptive inline helpers */
+  --subtle-bg:rgba(0,0,0,0.03);--subtle-bg2:rgba(0,0,0,0.05);
+  --subtle-border:rgba(0,0,0,0.06);--subtle-hover:rgba(0,0,0,0.06);
+  --text-bright:#1a1917;--text-muted:#9e978d;--text-dim:#c4bfb4;
+  --overlay-bg:#f0ede6;--overlay-border:rgba(0,0,0,0.08);
+  --input-bg:rgba(0,0,0,0.03);--input-border:rgba(0,0,0,0.08);
+  --badge-inactive-bg:rgba(0,0,0,0.04);--badge-inactive-color:#9e978d;
 }
 
 /* ── DARK THEME (Moss / Evergreen) ───────────────────────────── */
@@ -2370,6 +2397,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   --radius:16px;--radius-sm:10px;
   --shadow-md:0 4px 16px rgba(0,0,0,0.25);
   --accent:#8fa87a;--accent-bg:rgba(143,168,122,0.1);
+  /* Theme-adaptive inline helpers */
+  --subtle-bg:rgba(255,255,255,0.03);--subtle-bg2:rgba(255,255,255,0.05);
+  --subtle-border:rgba(255,255,255,0.06);--subtle-hover:rgba(255,255,255,0.06);
+  --text-bright:#e8e4d9;--text-muted:#6d7a66;--text-dim:#3d4f3a;
+  --overlay-bg:#152019;--overlay-border:rgba(255,255,255,0.08);
+  --input-bg:rgba(255,255,255,0.04);--input-border:rgba(255,255,255,0.08);
+  --badge-inactive-bg:rgba(255,255,255,0.06);--badge-inactive-color:#6d7a66;
 }
 
 /* Theme transition */
@@ -2485,8 +2519,8 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .edu-explain{font-size:13px;color:var(--text2);line-height:1.6;font-style:italic;opacity:0.85}
 .edu-patience{padding-bottom:0!important;border-bottom:none!important}
 .strat-pills{display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap}
-.strat-pill{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:8px;border:1px solid var(--border);background:rgba(255,255,255,0.03);color:var(--text2);font-size:13px;cursor:pointer;transition:all 0.15s}
-.strat-pill:hover{background:rgba(255,255,255,0.06);border-color:rgba(255,255,255,0.15)}
+.strat-pill{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:8px;border:1px solid var(--border);background:var(--subtle-bg);color:var(--text2);font-size:13px;cursor:pointer;transition:all 0.15s}
+.strat-pill:hover{background:var(--subtle-hover);border-color:var(--border-h)}
 .strat-pill.active{background:rgba(99,102,241,0.12);border-color:rgba(99,102,241,0.3);color:#a5b4fc}
 .pill-risk{font-size:10px;font-weight:600;padding:1px 5px;border-radius:3px;text-transform:uppercase;letter-spacing:0.3px}
 .pill-risk-low{color:#22c55e;background:rgba(34,197,94,0.12)}
@@ -2496,19 +2530,19 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .card-slider-group{flex:1}
 .card-slider-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:12px;color:var(--text3)}
 .card-slider-val{color:var(--text1);font-size:13px}
-.card-slider{width:100%;height:4px;-webkit-appearance:none;appearance:none;background:rgba(255,255,255,0.08);border-radius:2px;outline:none;cursor:pointer}
-.card-slider::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:#6366f1;border:2px solid #1a1b2e;cursor:pointer}
-.card-slider::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:#6366f1;border:2px solid #1a1b2e;cursor:pointer}
+.card-slider{width:100%;height:4px;-webkit-appearance:none;appearance:none;background:var(--subtle-hover);border-radius:2px;outline:none;cursor:pointer}
+.card-slider::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:#6366f1;border:2px solid var(--bg);cursor:pointer}
+.card-slider::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:#6366f1;border:2px solid var(--bg);cursor:pointer}
 .conf-bar-wrap{margin-bottom:4px}
-.conf-bar{width:100%;height:6px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden;margin-bottom:6px}
+.conf-bar{width:100%;height:6px;background:var(--subtle-hover);border-radius:3px;overflow:hidden;margin-bottom:6px}
 .conf-fill{height:100%;border-radius:3px;transition:width 0.6s ease,background 0.3s ease}
 .conf-meta{display:flex;justify-content:space-between;align-items:center}
 .conf-label{font-size:12px}
 .conf-pct{font-size:13px;font-weight:600}
-.explain-block{padding:12px;border-radius:12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.05)}
+.explain-block{padding:12px;border-radius:12px;background:var(--subtle-bg);border:1px solid var(--subtle-border)}
 .explain-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}
 .explain-title{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px}
-.explain-summary{font-size:12px;color:rgba(255,255,255,0.8);line-height:1.55;margin-bottom:10px}
+.explain-summary{font-size:12px;color:var(--text);line-height:1.55;margin-bottom:10px}
 .explain-list{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:8px}
 .explain-item{display:flex;align-items:flex-start;gap:8px;font-size:13px;color:var(--text2);line-height:1.5}
 .explain-kicker{font-size:10px;font-weight:600;letter-spacing:0.4px;text-transform:uppercase;color:var(--text4);margin-bottom:2px}
@@ -2525,13 +2559,13 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .btn-stop-trading{width:100%;padding:10px;border-radius:8px;border:1px solid rgba(239,68,68,0.2);background:rgba(239,68,68,0.08);color:var(--red);font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;transition:all 0.15s}
 .btn-stop-trading:hover{background:rgba(239,68,68,0.15);border-color:rgba(239,68,68,0.3)}
 .card-action-row{display:flex;gap:8px}
-.btn-secondary{flex:1;padding:10px;border-radius:8px;border:1px solid var(--border);background:rgba(255,255,255,0.03);color:var(--text2);font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;transition:all 0.15s}
-.btn-secondary:hover{background:rgba(255,255,255,0.06);border-color:rgba(255,255,255,0.15)}
+.btn-secondary{flex:1;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--subtle-bg);color:var(--text2);font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;transition:all 0.15s}
+.btn-secondary:hover{background:var(--subtle-hover);border-color:var(--border-h)}
 .card-live{border-color:var(--green)!important}
 [data-theme="dark"] .card-live{box-shadow:0 0 24px rgba(92,185,122,0.04)}
 .live-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--green);margin-left:6px;vertical-align:middle;animation:pulse 1.5s infinite}
 .info-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
-.info-cell{padding:8px;border-radius:8px;background:rgba(255,255,255,0.03)}
+.info-cell{padding:8px;border-radius:8px;background:var(--subtle-bg)}
 .info-cell-label{font-size:11px;color:var(--text3);margin-bottom:2px}
 .info-cell-value{font-size:12px;color:var(--text2)}
 .sl-tp-row{display:flex;gap:8px}
@@ -2550,7 +2584,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .card.unmanaged.poor{border-left-color:var(--red)}
 .card.unmanaged.good{border-left-color:var(--green)}
 .rating-badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;font-size:10px}
-.issues-box{padding:12px;border-radius:8px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.05)}
+.issues-box{padding:12px;border-radius:8px;background:var(--subtle-bg);border:1px solid var(--subtle-border)}
 .issues-title{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:500;color:var(--text2);margin-bottom:8px}
 .issues-title svg{width:11px;height:11px;opacity:0.4}
 .issue-item{font-size:12px;color:var(--text3);line-height:1.5;padding-left:12px;position:relative;margin-bottom:4px}
@@ -2571,7 +2605,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 
 /* ── Empty State ────────────────────────────────────────────── */
 .empty-state{text-align:center;padding:64px 20px}
-.empty-icon{width:56px;height:56px;border-radius:16px;background:rgba(255,255,255,0.04);display:flex;align-items:center;justify-content:center;margin:0 auto 12px}
+.empty-icon{width:56px;height:56px;border-radius:16px;background:var(--subtle-bg2);display:flex;align-items:center;justify-content:center;margin:0 auto 12px}
 .empty-icon svg{width:24px;height:24px;color:var(--text4)}
 .empty-title{font-size:14px;color:var(--text2);margin-bottom:4px}
 .empty-desc{font-size:12px;color:var(--text4);max-width:300px;margin:0 auto}
@@ -2589,13 +2623,13 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .debrief-body .trade-row{padding:8px 12px;border-radius:var(--radius-sm);margin-bottom:6px;font-family:'SF Mono',Menlo,monospace;font-size:12px}
 .debrief-body .trade-win{background:var(--green-bg);border:1px solid rgba(34,197,94,0.15)}
 .debrief-body .trade-loss{background:var(--red-bg);border:1px solid rgba(239,68,68,0.15)}
-.debrief-body .trade-flat{background:rgba(255,255,255,0.04);border:1px solid var(--border)}
+.debrief-body .trade-flat{background:var(--subtle-bg2);border:1px solid var(--border)}
 .debrief-body .what-if{color:var(--text2);font-style:italic;padding-left:16px;margin:2px 0 6px}
 .debrief-body .pattern{padding:8px 12px;border-radius:var(--radius-sm);margin-bottom:6px;border:1px solid var(--border)}
 .debrief-body .pattern-high{border-color:rgba(239,68,68,0.3);background:var(--red-bg)}
 .debrief-body .pattern-medium{border-color:rgba(234,179,8,0.3);background:var(--yellow-bg)}
 .debrief-summary{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px}
-.debrief-stat{padding:10px 12px;border-radius:var(--radius-sm);background:rgba(255,255,255,0.03);border:1px solid var(--border)}
+.debrief-stat{padding:10px 12px;border-radius:var(--radius-sm);background:var(--subtle-bg);border:1px solid var(--border)}
 .debrief-stat .label{font-size:11px;color:var(--text3)}
 .debrief-stat .value{font-size:16px;font-weight:600;margin-top:2px}
 .regime-tooltip{position:fixed;top:56px;left:50%;transform:translateX(-50%);width:360px;background:var(--surface);border:1px solid var(--border-h);border-radius:var(--radius);padding:20px;z-index:50;display:none;font-size:13px;box-shadow:var(--shadow-md)}
@@ -2606,7 +2640,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .notif-header-title svg{width:16px;height:16px;color:var(--text2)}
 .notif-list{flex:1;overflow-y:auto;padding:12px}
 .notif-item{width:100%;text-align:left;padding:12px;border-radius:var(--radius);transition:background 0.15s;display:flex;align-items:flex-start;gap:10px;margin-bottom:4px}
-.notif-item:hover{background:rgba(255,255,255,0.02)}
+.notif-item:hover{background:var(--subtle-bg)}
 .notif-item.expanded{background:var(--green-bg)}
 .notif-item.expanded.type-info{background:var(--blue-bg)}
 .notif-item.expanded.type-system{background:var(--yellow-bg)}
@@ -2614,11 +2648,11 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .notif-icon{width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:2px}
 .notif-icon svg{width:14px;height:14px}
 .notif-body{flex:1;min-width:0}
-.notif-title{font-size:12px;font-weight:500;color:rgba(255,255,255,0.8);line-height:1.4}
+.notif-title{font-size:12px;font-weight:500;color:var(--text);line-height:1.4}
 .notif-meta{font-size:11px;color:var(--text4);margin-top:2px}
 .notif-chevron{width:14px;height:14px;color:var(--text4);flex-shrink:0;margin-top:2px;transition:transform 0.2s}
 .notif-item.expanded .notif-chevron{transform:rotate(90deg)}
-.why-card{margin-top:10px;padding:10px;border-radius:8px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.05)}
+.why-card{margin-top:10px;padding:10px;border-radius:8px;background:var(--subtle-bg);border:1px solid var(--subtle-border)}
 .why-label{display:flex;align-items:center;gap:4px;font-size:11px;font-weight:500;margin-bottom:6px}
 .why-label svg{width:10px;height:10px}
 .why-text{font-size:12px;color:var(--text2);line-height:1.6}
@@ -2637,17 +2671,17 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .token-full{font-size:11px;color:var(--text3)}
 .strategy-list{display:flex;flex-direction:column;gap:8px}
 .strategy-option{padding:12px;border-radius:var(--radius);border:1px solid var(--border);text-align:left;transition:background 0.15s}
-.strategy-option:hover{background:rgba(255,255,255,0.03)}
+.strategy-option:hover{background:var(--subtle-bg)}
 .strategy-header{display:flex;align-items:center;justify-content:space-between}
 .strategy-name{font-size:13px;font-weight:500}
 .risk-tag{font-size:11px;padding:2px 6px;border-radius:4px}
 .strategy-desc{font-size:12px;color:var(--text3);margin-top:4px;line-height:1.5}
 .mode-pills{display:flex;gap:8px;flex-wrap:wrap}
-.mode-pill{padding:8px 10px;border-radius:999px;border:1px solid var(--border);background:rgba(255,255,255,0.02);color:var(--text3);font-size:11px}
+.mode-pill{padding:8px 10px;border-radius:999px;border:1px solid var(--border);background:var(--subtle-bg);color:var(--text3);font-size:11px}
 .mode-pill.active{border-color:rgba(34,197,94,0.25);background:rgba(34,197,94,0.08);color:var(--green)}
-.bot-view{padding:12px;border-radius:12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.05)}
+.bot-view{padding:12px;border-radius:12px;background:var(--subtle-bg);border:1px solid var(--subtle-border)}
 .bot-view-title{font-size:11px;color:var(--text3);margin-bottom:6px}
-.bot-view-note{font-size:12px;color:rgba(255,255,255,0.8);line-height:1.55}
+.bot-view-note{font-size:12px;color:var(--text);line-height:1.55}
 .bot-view-list{margin-top:8px;padding-left:16px;color:var(--text2);font-size:11px;line-height:1.5}
 
 /* ── Settings Modal ─────────────────────────────────────────── */
@@ -2681,16 +2715,16 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 
 <!-- ── Wallet Connect Overlay ────────────────────────────── -->
 <div id="wallet-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:10000;display:flex;align-items:center;justify-content:center">
-  <div style="max-width:420px;width:100%;padding:2rem;background:#14141f;border:1px solid #2a2a3a;border-radius:16px">
+  <div style="max-width:420px;width:100%;padding:2rem;background:var(--overlay-bg);border:1px solid var(--overlay-border);border-radius:16px">
     <div style="text-align:center;margin-bottom:1.5rem">
       <div style="font-size:2rem;font-weight:700;color:#4ade80;margin-bottom:0.25rem">H</div>
-      <div style="font-size:1.2rem;font-weight:600;color:#fff;margin-bottom:0.5rem">Connect your wallet</div>
-      <div style="color:#888;font-size:0.85rem">Hyperbot needs your wallet address to show positions and trade on your behalf.</div>
+      <div style="font-size:1.2rem;font-weight:600;color:var(--text);margin-bottom:0.5rem">Connect your wallet</div>
+      <div style="color:var(--text3);font-size:0.85rem">Hyperbot needs your wallet address to show positions and trade on your behalf.</div>
     </div>
     <div id="wallet-list" style="margin-bottom:1rem"></div>
     <div id="wallet-status" style="display:none;padding:0.75rem;border-radius:8px;font-size:0.85rem;margin-bottom:1rem"></div>
     <div style="text-align:center">
-      <button onclick="skipWalletConnect()" style="background:none;border:none;color:#666;font-size:0.8rem;cursor:pointer;text-decoration:underline">Skip — browse without wallet</button>
+      <button onclick="skipWalletConnect()" style="background:none;border:none;color:var(--text3);font-size:0.8rem;cursor:pointer;text-decoration:underline">Skip — browse without wallet</button>
     </div>
   </div>
 </div>
@@ -2700,7 +2734,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
   <div class="header-left">
     <div class="logo">H</div>
     <span class="brand">HYPERBOT</span>
-    <div class="badge" id="d-status-badge" style="background:rgba(255,255,255,0.06);color:#888">
+    <div class="badge" id="d-status-badge" style="background:var(--badge-inactive-bg);color:var(--badge-inactive-color)">
       <span class="badge-dot" style="background:#555"></span>
       <span id="d-status-text">Stopped</span>
     </div>
@@ -2709,7 +2743,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
       <span class="badge-dot" id="d-regime-dot" style="background:var(--green)"></span>
       <span id="d-regime-text">Market: Green</span>
     </div>
-    <button onclick="document.getElementById('wallet-overlay').style.display='flex';window.dispatchEvent(new Event('eip6963:requestProvider'));setTimeout(renderWalletList,300)" class="badge" id="d-wallet-badge" style="background:rgba(255,255,255,0.04);color:#888;cursor:pointer;border:none;font-family:inherit;font-size:inherit">
+    <button onclick="document.getElementById('wallet-overlay').style.display='flex';window.dispatchEvent(new Event('eip6963:requestProvider'));setTimeout(renderWalletList,300)" class="badge" id="d-wallet-badge" style="background:var(--badge-inactive-bg);color:var(--badge-inactive-color);cursor:pointer;border:none;font-family:inherit;font-size:inherit">
       <span id="d-wallet-addr">Connect Wallet</span>
     </button>
   </div>
@@ -3125,7 +3159,7 @@ async function openAddModal(){
   addModalCoin=null;
   document.getElementById('add-step-1').style.display='block';
   const grid=document.getElementById('d-token-list');
-  grid.innerHTML=`<div style="text-align:center;padding:2rem;color:#888"><span style="display:inline-block;width:16px;height:16px;border:2px solid #4ade80;border-top-color:transparent;border-radius:50%;animation:spin 0.6s linear infinite;vertical-align:middle;margin-right:8px"></span>Loading markets...</div>`;
+  grid.innerHTML=`<div style="text-align:center;padding:2rem;color:var(--text3)"><span style="display:inline-block;width:16px;height:16px;border:2px solid #4ade80;border-top-color:transparent;border-radius:50%;animation:spin 0.6s linear infinite;vertical-align:middle;margin-right:8px"></span>Loading markets...</div>`;
   document.getElementById('add-modal').classList.add('open');
   try{
     const data=await api('/api/pairs');
@@ -3137,14 +3171,14 @@ async function openAddModal(){
     renderTokenTabs();
   }catch(e){
     console.error('Failed to load tokens:',e);
-    grid.innerHTML=`<div style="color:var(--red);padding:1rem;text-align:center;font-size:0.85rem">Failed to load markets: ${e.message}<br><br><button onclick="openAddModal()" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.12);border-radius:6px;color:var(--text);padding:8px 16px;cursor:pointer">Retry</button></div>`;
+    grid.innerHTML=`<div style="color:var(--red);padding:1rem;text-align:center;font-size:0.85rem">Failed to load markets: ${e.message}<br><br><button onclick="openAddModal()" style="background:var(--subtle-hover);border:1px solid var(--border-h);border-radius:6px;color:var(--text);padding:8px 16px;cursor:pointer">Retry</button></div>`;
   }
 }
 
 function renderTokenTabs(){
   const grid=document.getElementById('d-token-list');
   grid.innerHTML=`
-    <input type="text" id="token-search" placeholder="Search perps..." style="width:100%;padding:10px 14px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:var(--text);font-size:14px;margin-bottom:12px;outline:none" oninput="filterTokens()">
+    <input type="text" id="token-search" placeholder="Search perps..." style="width:100%;padding:10px 14px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:8px;color:var(--text);font-size:14px;margin-bottom:12px;outline:none" oninput="filterTokens()">
     <div id="token-results" style="max-height:420px;overflow-y:auto"></div>`;
   filterTokens();
 }
@@ -3162,7 +3196,7 @@ function filterTokens(){
   const el=document.getElementById('token-results');
   if(!el)return;
   if(filtered.length===0){
-    el.innerHTML='<div style="color:rgba(255,255,255,0.35);padding:20px;text-align:center">No tokens found</div>';
+    el.innerHTML='<div style="color:var(--text3);padding:20px;text-align:center">No tokens found</div>';
     return;
   }
   el.innerHTML=filtered.map(t=>{
@@ -3170,10 +3204,10 @@ function filterTokens(){
     const pair=coin+'/USDC';
     const priceStr=t.price>=1?'$'+t.price.toLocaleString(undefined,{maximumFractionDigits:2}):(t.price>0?'$'+t.price.toPrecision(4):'—');
     const volStr=t.vol>0?fmtVol(t.vol):'';
-    const tag=t.maxLev&&t.maxLev>1?`<span style="font-size:11px;color:rgba(255,255,255,0.35)">${t.maxLev}\u00d7</span>`:'';
-    return `<button onclick="addTokenAuto('${coin}')" style="display:flex;align-items:center;justify-content:space-between;width:100%;padding:12px 0;background:none;border:none;border-bottom:1px solid rgba(255,255,255,0.06);cursor:pointer;transition:border-color 0.15s" onmouseenter="this.style.borderBottomColor='rgba(255,255,255,0.12)'" onmouseleave="this.style.borderBottomColor='rgba(255,255,255,0.06)'">
-      <div style="display:flex;align-items:center;gap:8px"><span style="font-size:14px;font-weight:500;color:#fff">${pair}</span>${tag}</div>
-      <div style="display:flex;align-items:center;gap:16px"><span class="mono" style="font-size:13px;color:rgba(255,255,255,0.6)">${priceStr}</span>${volStr?`<span class="mono" style="font-size:12px;color:rgba(255,255,255,0.35)">${volStr}</span>`:''}</div>
+    const tag=t.maxLev&&t.maxLev>1?`<span style="font-size:11px;color:var(--text-dim)">${t.maxLev}\u00d7</span>`:'';
+    return `<button onclick="addTokenAuto('${coin}')" style="display:flex;align-items:center;justify-content:space-between;width:100%;padding:12px 0;background:none;border:none;border-bottom:1px solid var(--subtle-border);cursor:pointer;transition:border-color 0.15s" onmouseenter="this.style.borderBottomColor='var(--border-h)'" onmouseleave="this.style.borderBottomColor='var(--subtle-border)'">
+      <div style="display:flex;align-items:center;gap:8px"><span style="font-size:14px;font-weight:500;color:var(--text)">${pair}</span>${tag}</div>
+      <div style="display:flex;align-items:center;gap:16px"><span class="mono" style="font-size:13px;color:var(--text2)">${priceStr}</span>${volStr?`<span class="mono" style="font-size:12px;color:var(--text3)">${volStr}</span>`:''}</div>
     </button>`}).join('');
 }
 async function addTokenAuto(coin){
@@ -3350,7 +3384,7 @@ function renderCards(s){
     </div>`;
 
     // Status badge
-    const badgeBg=inTrade?(direction==='LONG'?'var(--green-bg)':'var(--red-bg)'):'rgba(255,255,255,0.04)';
+    const badgeBg=inTrade?(direction==='LONG'?'var(--green-bg)':'var(--red-bg)'):'var(--badge-inactive-bg)';
     const badgeColor=inTrade?(direction==='LONG'?'var(--green)':'var(--red)'):'var(--text2)';
     const arrow=direction==='LONG'?'\u2197':direction==='SHORT'?'\u2198':'\u23F1';
     const statusText=inTrade?direction:(hasSignal?'Setup forming':'Watching');
@@ -3591,9 +3625,9 @@ async function dashPoll(){
     // Status badge
     const running=s.trading_active;
     const statusBadge=document.getElementById('d-status-badge');
-    statusBadge.style.background=running?'rgba(34,197,94,0.12)':'rgba(255,255,255,0.06)';
-    statusBadge.style.color=running?'var(--green)':'#888';
-    statusBadge.querySelector('.badge-dot').style.background=running?'var(--green)':'#555';
+    statusBadge.style.background=running?'rgba(34,197,94,0.12)':'var(--badge-inactive-bg)';
+    statusBadge.style.color=running?'var(--green)':'var(--badge-inactive-color)';
+    statusBadge.querySelector('.badge-dot').style.background=running?'var(--green)':'var(--badge-inactive-color)';
     document.getElementById('d-status-text').textContent=running?'Live':'Stopped';
 
     // Mode badge
@@ -3694,9 +3728,9 @@ function renderWalletList(){
   if(!el)return;
   let html='';
   if(discoveredWallets.size===0){
-    html=`<div style="color:#666;text-align:center;padding:1rem;font-size:0.85rem">No browser wallets detected.<br>Install MetaMask, Rabby, or another EVM wallet extension.</div>`;
+    html=`<div style="color:var(--text3);text-align:center;padding:1rem;font-size:0.85rem">No browser wallets detected.<br>Install MetaMask, Rabby, or another EVM wallet extension.</div>`;
   }else{
-    html+=`<div style="font-size:0.75rem;color:#666;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem">Browser wallets detected</div>`;
+    html+=`<div style="font-size:0.75rem;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem">Browser wallets detected</div>`;
     for(const [rdns,{info}] of discoveredWallets){
       html+=`<button onclick="connectWallet('${rdns}')" style="display:flex;align-items:center;gap:0.75rem;width:100%;padding:0.85rem 1.25rem;background:#1a1a2e;border:1px solid #3a3a4a;border-radius:8px;color:#e0e0e0;font-size:0.95rem;cursor:pointer;margin-bottom:0.5rem;transition:all 0.2s">
         <img src="${info.icon}" width="28" height="28" style="border-radius:6px">
@@ -3705,7 +3739,7 @@ function renderWalletList(){
     }
   }
   // Manual address entry
-  html+=`<div style="text-align:center;color:#555;font-size:0.8rem;margin:1rem 0;position:relative"><span style="background:#14141f;padding:0 0.5rem;position:relative;z-index:1">OR</span><div style="position:absolute;top:50%;left:0;right:0;height:1px;background:#2a2a3a"></div></div>`;
+  html+=`<div style="text-align:center;color:var(--text3);font-size:0.8rem;margin:1rem 0;position:relative"><span style="background:var(--overlay-bg);padding:0 0.5rem;position:relative;z-index:1">OR</span><div style="position:absolute;top:50%;left:0;right:0;height:1px;background:var(--overlay-border)"></div></div>`;
   html+=`<div style="display:flex;gap:0.5rem"><input type="text" id="manual-address" placeholder="Paste wallet address (0x...)" style="flex:1;padding:0.65rem 0.75rem;background:#1a1a2a;border:1px solid #3a3a4a;border-radius:8px;color:#e0e0e0;font-family:monospace;font-size:0.8rem;outline:none"><button onclick="connectManualAddress()" style="padding:0.65rem 1rem;background:#4ade80;color:#0a0a0f;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:0.85rem">Go</button></div>`;
   el.innerHTML=html;
 }
