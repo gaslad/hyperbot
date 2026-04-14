@@ -308,7 +308,7 @@ class PairState:
         self.bot_note: str = ""
         self.bot_details: list[str] = []
         self.last_scan_ts: str = ""
-        self.trading_live: bool = False  # Per-card trading toggle
+        self.trading_live: bool = True  # Per-card trading toggle (on by default)
 
     def to_dict(self) -> dict:
         return {
@@ -3152,22 +3152,39 @@ function renderDebrief(d){
 }
 
 // ── Add Token Modal ──────────────────────────────────────────
-let activeTab='perps';
-let marketData={perps:[]};
+let activeTab='all';
+let marketData={all:[],crypto:[],tradfi:[],spot:[],prelaunch:[]};
+const MARKET_TABS=[
+  {id:'all',label:'All'},
+  {id:'crypto',label:'Crypto'},
+  {id:'tradfi',label:'TradFi'},
+  {id:'spot',label:'Spot'},
+  {id:'prelaunch',label:'Pre-launch'},
+];
 
 async function openAddModal(){
   addModalCoin=null;
   document.getElementById('add-step-1').style.display='block';
   const grid=document.getElementById('d-token-list');
-  grid.innerHTML=`<div style="text-align:center;padding:2rem;color:var(--text3)"><span style="display:inline-block;width:16px;height:16px;border:2px solid #4ade80;border-top-color:transparent;border-radius:50%;animation:spin 0.6s linear infinite;vertical-align:middle;margin-right:8px"></span>Loading markets...</div>`;
+  grid.innerHTML=`<div style="text-align:center;padding:2rem;color:var(--text3)"><span style="display:inline-block;width:16px;height:16px;border:2px solid var(--green);border-top-color:transparent;border-radius:50%;animation:spin 0.6s linear infinite;vertical-align:middle;margin-right:8px"></span>Loading markets...</div>`;
   document.getElementById('add-modal').classList.add('open');
   try{
     const data=await api('/api/pairs');
     const existing=lastState?Object.keys(lastState.pairs||{}).map(c=>c.toUpperCase()):[];
-    marketData.perps=(data.perps||[])
+    const allPerps=(data.perps||[])
       .filter(m=>m.coin&&!existing.includes(m.coin.toUpperCase()))
-      .map(m=>({coin:m.coin,price:parseFloat(m.price||0),vol:parseFloat(m.dayNtlVlm||0),maxLev:m.maxLeverage||1,type:'perp'}))
+      .map(m=>({coin:m.coin,price:parseFloat(m.price||0),vol:parseFloat(m.dayNtlVlm||0),maxLev:m.maxLeverage||1,cat:m.category||'crypto',funding:m.funding||'0'}))
       .sort((a,b)=>b.vol-a.vol);
+    const allSpot=(data.spot||[])
+      .filter(m=>m.coin&&!existing.includes(m.coin.toUpperCase()))
+      .map(m=>({coin:m.coin,price:parseFloat(m.price||0),vol:parseFloat(m.dayNtlVlm||0),maxLev:0,cat:m.category||'spot',funding:''}))
+      .sort((a,b)=>b.vol-a.vol);
+    const combined=[...allPerps,...allSpot];
+    marketData.all=combined;
+    marketData.crypto=allPerps.filter(m=>m.cat==='crypto');
+    marketData.tradfi=allPerps.filter(m=>m.cat==='tradfi');
+    marketData.spot=allSpot;
+    marketData.prelaunch=allPerps.filter(m=>m.cat==='prelaunch'||m.cat==='hip3');
     renderTokenTabs();
   }catch(e){
     console.error('Failed to load tokens:',e);
@@ -3175,11 +3192,20 @@ async function openAddModal(){
   }
 }
 
+function switchTab(tab){activeTab=tab;renderTokenTabs()}
+
 function renderTokenTabs(){
   const grid=document.getElementById('d-token-list');
+  const tabsHtml=MARKET_TABS.map(t=>{
+    const count=marketData[t.id]?marketData[t.id].length:0;
+    const isActive=activeTab===t.id;
+    return `<button onclick="switchTab('${t.id}')" style="padding:6px 14px;border-radius:8px;font-size:12px;font-weight:${isActive?'600':'500'};background:${isActive?'var(--accent-bg)':'none'};color:${isActive?'var(--accent)':'var(--text3)'};border:${isActive?'1px solid var(--accent)':'1px solid transparent'};cursor:pointer;transition:all 0.15s">${t.label} <span style="font-size:10px;opacity:0.7">${count}</span></button>`;
+  }).join('');
+  const placeholders={all:'Search all markets...',crypto:'Search crypto perps...',tradfi:'Search stocks, indices, commodities...',spot:'Search spot tokens...',prelaunch:'Search pre-launch...'};
   grid.innerHTML=`
-    <input type="text" id="token-search" placeholder="Search perps..." style="width:100%;padding:10px 14px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:8px;color:var(--text);font-size:14px;margin-bottom:12px;outline:none" oninput="filterTokens()">
-    <div id="token-results" style="max-height:420px;overflow-y:auto"></div>`;
+    <div style="display:flex;gap:4px;margin-bottom:12px;flex-wrap:wrap">${tabsHtml}</div>
+    <input type="text" id="token-search" placeholder="${placeholders[activeTab]||'Search...'}" style="width:100%;padding:10px 14px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:8px;color:var(--text);font-size:14px;margin-bottom:12px;outline:none" oninput="filterTokens()">
+    <div id="token-results" style="max-height:380px;overflow-y:auto"></div>`;
   filterTokens();
 }
 
@@ -3192,21 +3218,24 @@ function fmtVol(v){
 
 function filterTokens(){
   const q=(document.getElementById('token-search')?.value||'').toUpperCase();
-  const filtered=(marketData.perps||[]).filter(t=>!q||t.coin.toUpperCase().includes(q)).slice(0,80);
+  const list=marketData[activeTab]||[];
+  const filtered=list.filter(t=>!q||t.coin.toUpperCase().includes(q)).slice(0,100);
   const el=document.getElementById('token-results');
   if(!el)return;
   if(filtered.length===0){
     el.innerHTML='<div style="color:var(--text3);padding:20px;text-align:center">No tokens found</div>';
     return;
   }
+  const catLabels={crypto:'',tradfi:'Stock',prelaunch:'Pre-IPO',hip3:'HIP-3',spot:'Spot'};
   el.innerHTML=filtered.map(t=>{
     const coin=t.coin;
-    const pair=coin+'/USDC';
-    const priceStr=t.price>=1?'$'+t.price.toLocaleString(undefined,{maximumFractionDigits:2}):(t.price>0?'$'+t.price.toPrecision(4):'—');
+    const pair=t.cat==='spot'?coin:coin+'/USDC';
+    const priceStr=t.price>=1?'$'+t.price.toLocaleString(undefined,{maximumFractionDigits:2}):(t.price>0?'$'+t.price.toPrecision(4):'\u2014');
     const volStr=t.vol>0?fmtVol(t.vol):'';
-    const tag=t.maxLev&&t.maxLev>1?`<span style="font-size:11px;color:var(--text-dim)">${t.maxLev}\u00d7</span>`:'';
+    const levTag=t.maxLev&&t.maxLev>1?`<span style="font-size:10px;color:var(--text-dim);background:var(--subtle-bg);padding:1px 5px;border-radius:4px">${t.maxLev}\u00d7</span>`:'';
+    const catTag=catLabels[t.cat]?`<span style="font-size:10px;color:var(--accent);background:var(--accent-bg);padding:1px 6px;border-radius:4px;font-weight:500">${catLabels[t.cat]}</span>`:'';
     return `<button onclick="addTokenAuto('${coin}')" style="display:flex;align-items:center;justify-content:space-between;width:100%;padding:12px 0;background:none;border:none;border-bottom:1px solid var(--subtle-border);cursor:pointer;transition:border-color 0.15s" onmouseenter="this.style.borderBottomColor='var(--border-h)'" onmouseleave="this.style.borderBottomColor='var(--subtle-border)'">
-      <div style="display:flex;align-items:center;gap:8px"><span style="font-size:14px;font-weight:500;color:var(--text)">${pair}</span>${tag}</div>
+      <div style="display:flex;align-items:center;gap:8px"><span style="font-size:14px;font-weight:500;color:var(--text)">${pair}</span>${levTag}${catTag}</div>
       <div style="display:flex;align-items:center;gap:16px"><span class="mono" style="font-size:13px;color:var(--text2)">${priceStr}</span>${volStr?`<span class="mono" style="font-size:12px;color:var(--text3)">${volStr}</span>`:''}</div>
     </button>`}).join('');
 }
@@ -4329,7 +4358,9 @@ def main() -> int:
         return 1
 
     STATE.live_enabled = args.live
-    if not args.live:
+    if args.live:
+        STATE.trading_active = True  # Auto-start when launched in live mode
+    else:
         print("[hyperbot] VIEW-ONLY STARTUP: no live orders will be placed.", flush=True)
         print("[hyperbot]   Relaunch with --live --confirm-risk if you want the dashboard to trade.", flush=True)
 

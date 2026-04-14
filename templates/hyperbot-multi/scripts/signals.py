@@ -105,6 +105,20 @@ def bollinger_width(values: list[float], period: int = 20) -> float | None:
     return (std * 2) / mid  # width as fraction of mid
 
 
+def _rising(values: list[float], lookback: int = 3) -> bool:
+    if len(values) < lookback + 1:
+        return False
+    subset = values[-(lookback + 1):]
+    return all(a < b for a, b in zip(subset, subset[1:]))
+
+
+def _falling(values: list[float], lookback: int = 3) -> bool:
+    if len(values) < lookback + 1:
+        return False
+    subset = values[-(lookback + 1):]
+    return all(a > b for a, b in zip(subset, subset[1:]))
+
+
 # ---------------------------------------------------------------------------
 # Strategy: Trend Pullback
 # ---------------------------------------------------------------------------
@@ -122,59 +136,100 @@ def detect_trend_pullback(config: dict, candles_1d: list[dict], candles_4h: list
 
     daily_closes = closes(candles_1d)
     sma_val = sma(daily_closes, sma_period)
+    h4_closes = closes(candles_4h)
 
-    if sma_val is None:
+    if sma_val is None or len(daily_closes) < sma_period + 2 or len(h4_closes) < 3:
         return Signal(Direction.NONE, strategy_id, "trend_pullback", 0.0, current_price, ["insufficient data"])
+
+    prior_sma = sma(daily_closes[:-1], sma_period)
+
+    # Determine trend direction: bullish (price > rising SMA) or bearish (price < falling SMA)
+    is_bullish = current_price > sma_val and prior_sma is not None and sma_val > prior_sma
+    is_bearish = current_price < sma_val and prior_sma is not None and sma_val < prior_sma
+
+    if not is_bullish and not is_bearish:
+        return Signal(Direction.NONE, strategy_id, "trend_pullback", 0.0, current_price,
+                      ["no clear trend — price near SMA or SMA flat"])
 
     reasons = []
     score = 0.0
 
-    # Check trend: price above SMA
-    if current_price > sma_val:
-        reasons.append(f"price above SMA{sma_period}")
+    if is_bullish:
+        reasons.append(f"price above rising SMA{sma_period}")
         score += 0.3
-    else:
-        return Signal(Direction.NONE, strategy_id, "trend_pullback", 0.0, current_price, ["price below SMA — no uptrend"])
 
-    # A pullback entry must actually retrace back toward the daily SMA.
-    pullback_pct = ((current_price - sma_val) / sma_val) * 100
-    in_pullback_zone = pullback_pct <= pullback_zone_pct
-    if in_pullback_zone:
-        reasons.append(f"pullback {pullback_pct:.1f}% within zone ({pullback_zone_pct}%)")
-        score += 0.3
-    else:
-        reasons.append(f"price {pullback_pct:.1f}% above SMA — not in pullback zone")
-
-    # Measure the retracement from recent swing highs, not just daily closes.
-    pulled_back_enough = False
-    if len(daily_closes) >= 5:
-        recent_high = max(highs(candles_1d[-5:]))
-        drop_from_high = ((recent_high - current_price) / recent_high) * 100
-        if drop_from_high >= min_pullback_pct:
-            reasons.append(f"pulled back {drop_from_high:.1f}% from recent high")
-            score += 0.2
-            pulled_back_enough = True
+        pullback_pct = ((current_price - sma_val) / sma_val) * 100
+        in_pullback_zone = pullback_pct <= pullback_zone_pct
+        if in_pullback_zone:
+            reasons.append(f"pullback {pullback_pct:.1f}% within zone ({pullback_zone_pct}%)")
+            score += 0.3
         else:
-            reasons.append(f"only {drop_from_high:.1f}% off recent high — needs {min_pullback_pct:.1f}%")
-    else:
-        reasons.append("insufficient daily history to confirm pullback depth")
+            reasons.append(f"price {pullback_pct:.1f}% above SMA — not in pullback zone")
 
-    # 4H trend confirmation
-    h4_closes = closes(candles_4h)
-    h4_sma = sma(h4_closes, 50)
-    h4_confirmed = bool(h4_sma and current_price > h4_sma)
-    if h4_confirmed:
-        reasons.append("4H price above SMA50")
-        score += 0.2
-    else:
-        reasons.append("4H trend not confirmed")
+        pulled_back_enough = False
+        if len(daily_closes) >= 5:
+            recent_high = max(highs(candles_1d[-5:]))
+            drop_from_high = ((recent_high - current_price) / recent_high) * 100
+            if drop_from_high >= min_pullback_pct:
+                reasons.append(f"pulled back {drop_from_high:.1f}% from recent high")
+                score += 0.2
+                pulled_back_enough = True
+            else:
+                reasons.append(f"only {drop_from_high:.1f}% off recent high — needs {min_pullback_pct:.1f}%")
 
-    direction = Direction.BUY if in_pullback_zone and pulled_back_enough and h4_confirmed else Direction.NONE
-    stop_loss = sma_val * (1 - invalidation_pct / 100) if direction == Direction.BUY else None
-    take_profit = current_price * 1.04 if direction == Direction.BUY else None  # 4% target
+        h4_sma = sma(h4_closes, 50)
+        h4_prior_sma = sma(h4_closes[:-1], 50) if len(h4_closes) > 50 else None
+        h4_confirmed = bool(h4_sma and h4_prior_sma and current_price > h4_sma
+                           and _rising(h4_closes, 2) and h4_sma > h4_prior_sma)
+        if h4_confirmed:
+            reasons.append("4H price above SMA50 with rising closes")
+            score += 0.2
+        else:
+            reasons.append("4H trend not confirmed — need rising confirmation")
+
+        direction = Direction.BUY if in_pullback_zone and pulled_back_enough and h4_confirmed else Direction.NONE
+        stop_loss = sma_val * (1 - invalidation_pct / 100) if direction == Direction.BUY else None
+        take_profit = current_price * 1.04 if direction == Direction.BUY else None
+
+    else:  # is_bearish
+        reasons.append(f"price below falling SMA{sma_period}")
+        score += 0.3
+
+        pullback_pct = ((sma_val - current_price) / sma_val) * 100
+        in_pullback_zone = pullback_pct <= pullback_zone_pct
+        if in_pullback_zone:
+            reasons.append(f"pullback {pullback_pct:.1f}% within zone ({pullback_zone_pct}%)")
+            score += 0.3
+        else:
+            reasons.append(f"price {pullback_pct:.1f}% below SMA — not in pullback zone")
+
+        pulled_back_enough = False
+        if len(daily_closes) >= 5:
+            recent_low = min(lows(candles_1d[-5:]))
+            bounce_from_low = ((current_price - recent_low) / recent_low) * 100
+            if bounce_from_low >= min_pullback_pct:
+                reasons.append(f"bounced {bounce_from_low:.1f}% from recent low")
+                score += 0.2
+                pulled_back_enough = True
+            else:
+                reasons.append(f"only {bounce_from_low:.1f}% off recent low — needs {min_pullback_pct:.1f}%")
+
+        h4_sma = sma(h4_closes, 50)
+        h4_prior_sma = sma(h4_closes[:-1], 50) if len(h4_closes) > 50 else None
+        h4_confirmed = bool(h4_sma and h4_prior_sma and current_price < h4_sma
+                           and _falling(h4_closes, 2) and h4_sma < h4_prior_sma)
+        if h4_confirmed:
+            reasons.append("4H price below SMA50 with falling closes")
+            score += 0.2
+        else:
+            reasons.append("4H downtrend not confirmed — need falling confirmation")
+
+        direction = Direction.SELL if in_pullback_zone and pulled_back_enough and h4_confirmed else Direction.NONE
+        stop_loss = sma_val * (1 + invalidation_pct / 100) if direction == Direction.SELL else None
+        take_profit = current_price * 0.96 if direction == Direction.SELL else None
 
     return Signal(direction, strategy_id, "trend_pullback", min(score, 1.0), current_price,
-                  reasons, current_price if direction == Direction.BUY else None, stop_loss, take_profit)
+                  reasons, current_price if direction != Direction.NONE else None, stop_loss, take_profit)
 
 
 # ---------------------------------------------------------------------------
@@ -192,8 +247,9 @@ def detect_compression_breakout(config: dict, candles_1d: list[dict], candles_4h
 
     daily_closes = closes(candles_1d)
     bb_w = bollinger_width(daily_closes, bb_period)
+    h4_closes = closes(candles_4h)
 
-    if bb_w is None:
+    if bb_w is None or len(daily_closes) < bb_period + 2 or len(h4_closes) < 3:
         return Signal(Direction.NONE, strategy_id, "compression_breakout", 0.0, current_price, ["insufficient data"])
 
     reasons = []
@@ -216,12 +272,24 @@ def detect_compression_breakout(config: dict, candles_1d: list[dict], candles_4h
 
         if current_price > upper:
             reasons.append(f"breakout above upper band ({upper:.2f})")
-            score += 0.4
-            direction_hint = Direction.BUY
+            if _rising(daily_closes, 2) and _rising(h4_closes, 2):
+                reasons.append("daily and 4H momentum confirm upside breakout")
+                score += 0.2
+                score += 0.4
+                direction_hint = Direction.BUY
+            else:
+                reasons.append("breakout lacks rising confirmation")
+                direction_hint = Direction.NONE
         elif current_price < lower:
             reasons.append(f"breakout below lower band ({lower:.2f})")
-            score += 0.4
-            direction_hint = Direction.SELL
+            if _falling(daily_closes, 2) and _falling(h4_closes, 2):
+                reasons.append("daily and 4H momentum confirm downside breakout")
+                score += 0.2
+                score += 0.4
+                direction_hint = Direction.SELL
+            else:
+                reasons.append("breakout lacks falling confirmation")
+                direction_hint = Direction.NONE
         else:
             reasons.append("no breakout yet — price within bands")
             direction_hint = Direction.NONE
@@ -308,10 +376,22 @@ def detect_liquidity_sweep(config: dict, candles_1d: list[dict], candles_4h: lis
     is_bearish_sweep = last_high > recent_high and last_close < recent_high
 
     if is_bullish_sweep and score >= 0.5:
+        if last_close <= last_open:
+            reasons.append("bullish sweep needs a confirming green candle")
+            return Signal(Direction.NONE, strategy_id, "liquidity_sweep_reversal", 0.0, current_price, reasons)
+        if not _rising(daily_closes_list, 2):
+            reasons.append("bullish sweep needs improving closes")
+            return Signal(Direction.NONE, strategy_id, "liquidity_sweep_reversal", 0.0, current_price, reasons)
         direction = Direction.BUY
         stop_loss = last_low * 0.995
         take_profit = current_price * 1.05
     elif is_bearish_sweep and score >= 0.5:
+        if last_close >= last_open:
+            reasons.append("bearish sweep needs a confirming red candle")
+            return Signal(Direction.NONE, strategy_id, "liquidity_sweep_reversal", 0.0, current_price, reasons)
+        if not _falling(daily_closes_list, 2):
+            reasons.append("bearish sweep needs weakening closes")
+            return Signal(Direction.NONE, strategy_id, "liquidity_sweep_reversal", 0.0, current_price, reasons)
         direction = Direction.SELL
         stop_loss = last_high * 1.005
         take_profit = current_price * 0.95
