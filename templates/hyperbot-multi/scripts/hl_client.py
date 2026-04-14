@@ -282,14 +282,33 @@ def get_all_markets(base_url: str = HL_MAINNET) -> dict:
 
             for i, market in enumerate(universe):
                 ctx = ctxs[i] if i < len(ctxs) else {}
-                name = market.get("name", "")
-                # Detect HIP-3: spot tokens launched via HIP-3 have isCanonical=true
-                # on their base token or specific flags
+                raw_name = market.get("name", "")
+                is_canonical = market.get("isCanonical", False)
+
+                # Resolve human-readable name from token index
+                # Canonical markets have names like "PURR/USDC"
+                # Non-canonical (HIP-3) markets have names like "@1", "@2"
                 base_idx = market.get("tokens", [None, None])[0]
                 base_token = token_index.get(base_idx, {}) if base_idx is not None else {}
-                is_hip3 = base_token.get("isCanonical", False)
+                token_name = base_token.get("name", "")
+
+                if is_canonical and "/" in raw_name:
+                    # Use the base part of "PURR/USDC"
+                    coin_name = raw_name.split("/")[0]
+                elif token_name and not raw_name.startswith("@"):
+                    coin_name = raw_name
+                elif token_name:
+                    coin_name = token_name
+                else:
+                    coin_name = raw_name
+
+                # Skip tokens with no usable name
+                if not coin_name or coin_name.startswith("@"):
+                    continue
+
+                is_hip3 = not is_canonical
                 result["spot"].append({
-                    "coin": name,
+                    "coin": coin_name,
                     "price": ctx.get("markPx", "0"),
                     "dayNtlVlm": ctx.get("dayNtlVlm", "0"),
                     "category": "hip3" if is_hip3 else "spot",
