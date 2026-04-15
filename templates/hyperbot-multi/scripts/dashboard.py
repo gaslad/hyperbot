@@ -533,6 +533,7 @@ class TradingState:
             "pairs": {c: ps.to_dict() for c, ps in self.pairs.items()},
             "active_coin": self.active_coin,
             "all_coins": self.all_coins(),
+            "trading_mode": TRADING_MODE,
         }
 
     def to_dict(self) -> dict:
@@ -2888,6 +2889,10 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
       <span id="d-status-text">Stopped</span>
     </div>
     <div class="badge" id="d-mode-badge" style="background:rgba(59,130,246,0.12);color:#60a5fa">Simulation</div>
+    <button class="badge" id="d-trading-mode-badge" onclick="toggleTradingMode()" style="background:rgba(34,197,94,0.12);color:var(--green);cursor:pointer;border:none;font-family:inherit;font-size:inherit" title="Click to switch trading mode">
+      <span id="d-trading-mode-icon">&#x1f6e1;&#xfe0f;</span>
+      <span id="d-trading-mode-text">Preservation</span>
+    </button>
     <div class="badge" id="d-regime-badge" style="background:rgba(34,197,94,0.12);color:var(--green);cursor:pointer" onclick="toggleRegimePanel()" title="Portfolio market regime">
       <span class="badge-dot" id="d-regime-dot" style="background:var(--green)"></span>
       <span id="d-regime-text">Market: Green</span>
@@ -3557,6 +3562,19 @@ async function toggleTrading(){
   }
 }
 
+async function toggleTradingMode(){
+  if(!lastState)return;
+  const cur=lastState.trading_mode||'preservation';
+  const next=cur==='growth'?'preservation':'growth';
+  const label=next==='growth'?'Growth (2% risk, 4\u00d7 leverage)':'Preservation (0.5% risk, 2\u00d7 leverage)';
+  if(!confirm(`Switch to ${label}?\\n\\nThis changes risk parameters for all pairs immediately.`))return;
+  const r=await api('/api/mode','POST',{mode:next});
+  if(r&&r.ok){
+    showToast(`Switched to ${next} mode`);
+    addNotification('system','system',`Mode: ${next}`,`Trading mode switched to ${label}. Risk parameters updated for all active pairs.`,null);
+  }
+}
+
 // ── Toast ────────────────────────────────────────────────────
 function showToast(msg,type='success'){
   let c=document.getElementById('toast-container');
@@ -3984,6 +4002,24 @@ async function dashPoll(){
       if(liveDot) liveDot.style.background='var(--green)';
     }
 
+    // Trading mode badge (growth/preservation)
+    const tmBadge=document.getElementById('d-trading-mode-badge');
+    const tmIcon=document.getElementById('d-trading-mode-icon');
+    const tmText=document.getElementById('d-trading-mode-text');
+    if(s.trading_mode==='growth'){
+      tmBadge.style.background='rgba(251,146,60,0.12)';
+      tmBadge.style.color='#fb923c';
+      tmIcon.textContent='\u26a1';
+      tmText.textContent='Growth';
+      tmBadge.title='Growth mode: 2% risk, 4\u00d7 leverage \u2014 click to switch to Preservation';
+    }else{
+      tmBadge.style.background='rgba(34,197,94,0.12)';
+      tmBadge.style.color='var(--green)';
+      tmIcon.textContent='\ud83d\udee1\ufe0f';
+      tmText.textContent='Preservation';
+      tmBadge.title='Preservation mode: 0.5% risk, 2\u00d7 leverage \u2014 click to switch to Growth';
+    }
+
     // Per-card trading state is rendered inside renderCards()
 
     // Market regime indicator
@@ -4332,6 +4368,44 @@ class DashboardHandler(BaseHTTPRequestHandler):
             STATE.trading_active = False
             log_trade("STOP", "operator", 0, STATE.last_price or 0, "trading stopped by operator")
             self._json({"ok": True, "trading_active": False})
+
+        elif path == "/api/mode":
+            new_mode = str(body.get("mode", "")).strip().lower()
+            if new_mode not in ("growth", "preservation"):
+                self._json({"ok": False, "error": "mode must be 'growth' or 'preservation'"}, 400)
+                return
+            global TRADING_MODE, PAIR_COOLDOWN_SECONDS, PAIR_REENTRY_LOCKOUT_SECONDS
+            global SCAN_BATCH_SIZE, LIVE_DEFAULT_LEVERAGE, SCALP_STRATEGY
+            TRADING_MODE = new_mode
+            if new_mode == "growth":
+                PAIR_COOLDOWN_SECONDS = 15 * 60
+                PAIR_REENTRY_LOCKOUT_SECONDS = 45 * 60
+                SCAN_BATCH_SIZE = 6
+                LIVE_DEFAULT_LEVERAGE = 3.0
+                SCALP_STRATEGY = ScalpStrategy(config=growth_config())
+                with STATE.lock:
+                    STATE.max_leverage = 4.0
+                    STATE.risk_per_trade_pct = 2.0
+                    STATE.max_daily_loss_pct = 5.0
+                    for ps in STATE.pairs.values():
+                        ps.max_leverage = 4.0
+                        ps.risk_per_trade_pct = 2.0
+            else:
+                PAIR_COOLDOWN_SECONDS = 30 * 60
+                PAIR_REENTRY_LOCKOUT_SECONDS = 2 * 60 * 60
+                SCAN_BATCH_SIZE = 3
+                LIVE_DEFAULT_LEVERAGE = 1.0
+                SCALP_STRATEGY = ScalpStrategy(config=preservation_config())
+                with STATE.lock:
+                    STATE.max_leverage = 2.0
+                    STATE.risk_per_trade_pct = 0.5
+                    STATE.max_daily_loss_pct = 1.5
+                    for ps in STATE.pairs.values():
+                        ps.max_leverage = 2.0
+                        ps.risk_per_trade_pct = 0.5
+            log_trade("MODE", "operator", 0, STATE.last_price or 0,
+                      f"Switched to {new_mode} mode")
+            self._json({"ok": True, "mode": new_mode})
 
         elif path == "/api/settings":
             try:

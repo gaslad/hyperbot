@@ -21,19 +21,17 @@ Last updated: 2026-04-15
 
 ## Pending — Ready to Pick Up
 
-1. **Fix `hyperbot` CLI path** — user got `command not found: hyperbot` when trying to launch growth mode. Either `~/.local/bin` isn't on PATH or the symlink was never created by `install.sh`. Check `~/.local/bin/hyperbot` exists and `echo $PATH` includes it. May need `source ~/.zshrc` or re-run `install.sh`.
-2. **First live growth mode test** — once CLI works, launch with `hyperbot dashboard --mode growth --live --confirm-risk` and monitor the first 4-6 hours. Watch for:
+1. **First live growth mode test** — launch with `hyperbot dashboard --mode growth --live --confirm-risk` and monitor the first 4-6 hours. Watch for:
    - Correct pair auto-loading (should see 12 pairs registered on startup)
    - Strategy using 2% risk and 4× leverage cap
    - Tighter trailing stops activating at 0.4R instead of 0.5R
    - 15-minute cooldowns between trades on the same pair
-3. **Monitor SL fixes from previous session** — the SL oscillation fix is still untested in production. Growth mode's higher frequency will stress-test it faster.
-4. Verify `hyperbot.enseris.com` DNS propagation (from previous session — may be resolved by now).
-5. Consider adding a dashboard UI toggle for growth/preservation mode so it can be switched without restarting.
+   - Growth/Preservation toggle badge in header working correctly
+2. **Monitor SL fixes from previous session** — the SL oscillation fix is still untested in production. Growth mode's higher frequency will stress-test it faster.
+3. Verify `hyperbot.enseris.com` DNS propagation (from previous session — may be resolved by now).
 
 ## Blockers & Warnings
 
-- `hyperbot` CLI not on user's PATH — blocks all launch attempts until resolved
 - Growth mode is code-complete but **untested in live trading** — first session should be monitored closely
 - All growth mode changes are in templates; existing workspaces need a dashboard restart to pick up the sync
 
