@@ -55,7 +55,20 @@ def install_pack(target: Path, pack_id: str, symbol: str) -> dict:
     strategy_template_dir = pack_root / "templates" / "strategy"
 
     config_target = target / "config" / "strategies" / f"{strategy_id}.json"
-    config_target.write_text(replace_tokens(config_template.read_text(encoding="utf-8"), mapping), encoding="utf-8")
+    config_payload = json.loads(replace_tokens(config_template.read_text(encoding="utf-8"), mapping))
+    if pack_id == "scalp_v2":
+        config_payload.setdefault("market", {})
+        config_payload["market"]["symbol"] = symbol
+        config_payload["market"]["coin"] = coin
+        config_payload.setdefault("exit_management", {
+            "signal_flip_exit": True,
+            "max_hold_minutes": 90,
+            "stale_after_minutes": 30,
+            "stale_min_follow_through_r": 0.5,
+            "underwater_exit_r": -0.10,
+            "hard_fail_r": -0.20,
+        })
+    config_target.write_text(json.dumps(config_payload, indent=2), encoding="utf-8")
 
     strategy_target_dir = target / "strategies" / strategy_id
     strategy_target_dir.mkdir(parents=True, exist_ok=True)

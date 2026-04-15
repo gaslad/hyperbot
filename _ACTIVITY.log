@@ -1,5 +1,4 @@
-2026-03-30T19:49 | claude | hyperbot | Fixed empty workspace creation, wrote session handoff for v2 dashboard testing
-2026-03-31T18:30 | claude | hyperbot | Disabled RVOL filter, auto-enable live trading on card Go Live, passthrough dashboard risk% to blaze sizing
-2026-03-31T18:47 | codex | hyperbot | Verified Go Live auto-enables live trading, fixed dashboard deadlock, and fixed trigger order triggerPx typing for Hyperliquid
-2026-03-31T18:50 | codex | hyperbot | Restored blaze RVOL minimum to 0.5 and prepared the repo for push plus dashboard resync
-2026-04-02T10:41 | codex | hyperbot | Added auto strategy routing and educational card explainers, relaunched the live dashboard, and refreshed the session handoff
+Legacy history moved to `.tasks/_log.md`.
+
+Do not append new entries here.
+2026-04-15T21:30 | claude | hyperbot | Added growth mode preset: 2% risk, 4x leverage, 12 default liquid pairs, tighter trailing stops, 15m cooldowns — switchable via --mode flag

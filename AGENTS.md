@@ -3,6 +3,17 @@
 This file provides context for any AI coding assistant working on this repo.
 It is the assistant-agnostic equivalent of CLAUDE.md.
 
+## Canonical Collaboration Files
+
+Use these files as the repo collaboration contract:
+
+- `README.md` — human onboarding only
+- `AGENTS.md` — stable repo rules for any AI assistant
+- `STATUS.md` — current state only
+- `NEXT.md` — next-session startup point
+
+Tool-specific files such as `CLAUDE.md` and `GEMINI.md` should remain stubs that point back here.
+
 ## What This Repo Is
 
 Hyperbot is a local-first CLI for generating and running Hyperliquid perpetual
@@ -20,20 +31,22 @@ No LLM API tokens are required for any core functionality.
 
 ## Architecture
 
+- `skills/` — repo-local Codex skills, including reusable workflow guidance that is not Hyperbot-specific
 - `scripts/hyperbot.py` — CLI entrypoint (`dashboard`, `connect`, `run`, `validate`, `list-packs`). Auto-syncs template scripts into workspace on every launch.
 - `scripts/create_workspace.py` — workspace generator (template path: `templates/hyperbot-multi`)
 - `scripts/connect/` — wallet connect server + browser UI (see Wallet Connect Flow below)
 - `scripts/deploy.sh` — Netlify deploy script for landing page
 - `strategy-packs/` — installable strategy-pack definitions with `pack_id` in each config
   - `trend_pullback/`, `compression_breakout/`, `liquidity_sweep_reversal/` — legacy 1D/4H strategies
+  - `fib_retracement/` — Fibonacci retracement continuation strategy (auto-selects best Fib level, ATR-adaptive parameters)
   - `scalp_v2/` — 5-minute breakout scalping strategy (see Scalp Strategy v2 below)
 - `templates/hyperbot-multi/` — workspace skeleton copied into generated workspaces
   - `scripts/dashboard.py` — card-based web dashboard with inline HTML/CSS/JS + trading loop
   - `scripts/hl_client.py` — Hyperliquid API client (orders, trigger orders, portfolio, candles, L2 book)
-  - `scripts/signals.py` — legacy signal engine (SMA, Bollinger, ATR, wick analysis) for 1D/4H strategies
+  - `scripts/signals.py` — signal engine (SMA, Bollinger, ATR, Fibonacci, wick analysis) for 1D/4H strategies
+  - `scripts/position_manager.py` — post-entry position management (trailing SL, stale-trade tightening, ATR-adaptive SL widening)
   - `scripts/scalp_strategy_v2.py` — standalone scalp strategy module (5m/15m, self-contained)
   - `scripts/scalp_strategy_v2_prompt.py` — full strategy specification / rules reference
-  - `scripts/blaze_scalp.py` — ultra-fast 1m test scalper for pipeline verification
 - `config/policy/operator-policy.json` — risk policy for auto-apply decisions
 - `install.sh` — one-command installer for new users (installs to ~/Desktop/Hyperbot)
 - `docs/wallet-integration-guide.md` — full EIP-6963/WalletConnect/EIP-712 reference
@@ -110,10 +123,10 @@ curl install.sh | bash
 ## Website (Landing Page)
 
 - `website/index.html` — single-file marketing landing page ("Brutalist Signal" aesthetic)
-- `website/_redirects` — Netlify SPA routing
-- Hosted on Netlify: `hyperbot-landing` (site ID: `7a8e6d3d-4864-4c60-8928-6593a8e3429b`)
-- Live URL: `https://hyperbot-landing.netlify.app`
-- Deploy: `./scripts/deploy.sh` or drag-drop `website/` at Netlify dashboard
+- Hosted on Hostinger: subdomain `hyperbot.enseris.com`
+- Deploy: `rsync -avz --delete --exclude='.netlify' --exclude='.DS_Store' -e "ssh -p 65002" website/ u951967435@82.197.83.159:domains/hyperbot.enseris.com/public_html/`
+- Connection config: `.hostinger.json`
+- Previous host: Netlify (`hyperbot-landing.netlify.app`) — paused due to bandwidth limits
 
 ## Dashboard
 
@@ -162,18 +175,44 @@ The dashboard is being redesigned from a 3-column professional trading terminal 
 - Educational transparency — every action explains what and why in plain English
 - Progressive disclosure — simple status on cards, controls on expand, education in notifications
 
-## Blaze Scalp (1-Minute Test Strategy)
+## Trading Modes
 
-Ultra-fast test strategy for verifying the execution pipeline. NOT designed for profitability.
+Hyperbot supports two switchable trading modes: **preservation** (default) and **growth**.
 
-- `blaze_scalp.py` — standalone module, same interface as scalp_v2
-- Uses 1m candles, EMA(8)/EMA(21) crossover for direction
-- Minimal filters: RVOL ≥ 0.5x, spread < 0.1%, micro-breakout over last 5 candles
-- 1:1 R:R (1 ATR stop, 1 ATR target) — resolves in minutes
-- No time-of-day filter, no ADX/VWAP/CVD/choppiness gates
-- Single TP (no partials) — simplest possible execution flow
-- Risk: 0.2% equity per trade, max 5x leverage
-- Pack ID: `blaze_scalp`
+### Activation
+
+- CLI flag: `hyperbot dashboard --mode growth --live --confirm-risk`
+- Environment variable: `HYPERBOT_MODE=growth`
+- Strategy presets: `scalp_strategy_v2.growth_config()` / `preservation_config()`
+
+### Parameter comparison
+
+| Parameter          | Preservation | Growth   |
+|-------------------|-------------|----------|
+| Risk per trade    | 0.5%        | 2.0%     |
+| Max leverage      | 2×          | 4×       |
+| Daily loss halt   | 1.5%        | 5.0%     |
+| RVOL filter       | ≥ 1.5×      | ≥ 1.2×   |
+| Final TP target   | 1.8R        | 1.5R     |
+| Session loss halt | 5           | 7        |
+| Pair cooldown     | 30 min      | 15 min   |
+| Reentry lockout   | 2 hr        | 45 min   |
+| Scan batch size   | 3           | 6        |
+| Default leverage   | 1×          | 3×       |
+| Trail gap (post-TP1) | 0.5R     | 0.3R     |
+| Trail activation  | 0.5R        | 0.4R     |
+
+### Default liquid pairs (growth mode auto-loads)
+
+BTC, ETH, SOL, DOGE, SUI, PEPE, WIF, LINK, AVAX, ARB, HYPE, XRP
+
+### Safety rails preserved in both modes
+
+- All regime filters (ADX, choppiness, EMA alignment, CVD)
+- SL failsafe (flatten if SL placement fails)
+- Consecutive-loss size reduction (3 losses → 50% size)
+- Spread filter (0.05% max)
+- Max hold time (90 min)
 
 ## Scalp Strategy v2 (5-Minute Breakout)
 
@@ -182,16 +221,17 @@ The primary active strategy, designed for 3–5 trades/day on liquid Hyperliquid
 ### Architecture
 
 - `scalp_strategy_v2.py` is a standalone module exposing `ScalpStrategy.evaluate(symbol, market_data) -> TradeSignal`
+- `scalp_strategy_v2.growth_config()` and `preservation_config()` return pre-built StrategyConfig presets
 - The trading loop in `dashboard.py` branches on `pack_id == "scalp_v2"` — calls the scalp strategy directly instead of the legacy `signals.detect_all_signals()`
 - A shared `SCALP_STRATEGY` instance tracks consecutive losses and rolling performance across the session
 
 ### How It Works
 
-1. **Regime filter** (all 8 must pass): 15m EMA alignment, ADX > 20, Choppiness < 55, VWAP side, ATR above median, RVOL ≥ 1.5x, CVD confirming, time-of-day window
+1. **Regime filter** (all 8 must pass): 15m EMA alignment, ADX > 20, Choppiness < 55, VWAP side, ATR above median, RVOL ≥ 1.5x (1.2x in growth), CVD confirming, time-of-day window
 2. **Setup detection**: 5m breakout/breakdown beyond recent range, not overextended, minimum 1.5R to next structure
 3. **Entry**: ALO (maker) limit at retest level preferred, IOC (taker) for strong momentum
-4. **Exit**: SL with explicit limit price (wider of structural or 1.0–1.5 ATR), partial TP at 1R (30%), final TP at 1.8R (70%)
-5. **Risk**: 0.3% equity per trade, max 10x leverage (derived from stop distance), 1.5% daily loss halt, 3 consecutive loss cooldown
+4. **Exit**: SL with explicit limit price (wider of structural or 1.0–1.5 ATR), partial TP at 1R (30%), final TP at 1.8R/1.5R (70%)
+5. **Risk**: 0.5%/2% equity per trade, max 2×/4× leverage, 1.5%/5% daily loss halt, 3 consecutive loss cooldown
 
 ### Execution on Hyperliquid
 
@@ -211,6 +251,13 @@ The primary active strategy, designed for 3–5 trades/day on liquid Hyperliquid
 
 `hyperbot.py dashboard` now auto-syncs template `.py` files into the workspace on every launch, comparing file contents. This means edits to template scripts take effect on the next dashboard restart without needing to delete and recreate the workspace.
 
+## Reporting & Automation Notes
+
+- Weekly trading summaries must be sourced from real Hyperliquid fills, not the in-memory dashboard trade log — the dashboard may not have been running for the full period.
+- Strategy attribution requires FILLED log entries to carry order IDs so the journal can map them back to the originating strategy; without that link, attribution is a best-guess.
+- `simplex-chat` is available at `~/.local/bin/simplex-chat`; SimpleX delivery can be scripted from the shell using the dedicated `~/.simplex/hyperbot-reporter` profile.
+- Automations must regenerate reports from live workspace data before sending — never trust stale files on disk.
+
 ## Build & Test
 
 ```bash
@@ -224,14 +271,21 @@ python3 scripts/hyperbot.py dashboard         # launch web dashboard (view-only)
 This repo is worked on by multiple AI assistants (Claude, Codex, Gemini).
 Coordination happens through `.tasks/` — read `.tasks/PROTOCOL.md` for the full spec.
 
+If `.tasks/` is absent in a partial checkout, fall back to `STATUS.md`, `NEXT.md`,
+until the queue is restored.
+
+`_ACTIVITY.log` is legacy history. Use `.tasks/_log.md` as the active handoff log.
+
 **On every session start:**
 1. Read `.tasks/codex.md` for any pending tasks assigned to you
-2. Complete pending tasks before starting new work (unless the user overrides)
-3. When done, mark tasks `[x]`, fill in the `Result:` line, and log in `_log.md`
+2. Review `STATUS.md` and `NEXT.md` for shared context
+3. Complete pending tasks before starting new work (unless the user overrides)
 
 **After completing work:**
 If your changes need verification, testing, or follow-up by another assistant,
 append a task to their inbox (`.tasks/claude.md` or `.tasks/gemini.md`).
+When you finish a task, mark it `[x]`, fill in the `Result:` line, and append one
+line to `.tasks/_log.md`.
 
 ## Branch
 

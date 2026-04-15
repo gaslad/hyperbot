@@ -1,6 +1,6 @@
 {
   "_comment": "Operator policy for Hyperbot workspace. Controls which actions auto-apply and which require explicit approval.",
-  "version": 1,
+  "version": 2,
   "auto_apply": {
     "enabled": true,
     "safe_bands": {
@@ -11,11 +11,20 @@
       "overextension_max_pct_max": 25.0,
       "max_daily_loss_pct": 1
     },
+    "growth_bands": {
+      "_comment": "Active when HYPERBOT_MODE=growth or --mode growth",
+      "leverage_max": 4,
+      "risk_per_trade_pct_max": 2.0,
+      "stop_loss_may_widen": false,
+      "invalidation_below_sma_pct_max": 5.0,
+      "overextension_max_pct_max": 25.0,
+      "max_daily_loss_pct": 5
+    },
     "rules": [
       "leverage unchanged or lower",
       "risk_per_trade unchanged or lower",
       "stop-loss logic tightened or unchanged",
-      "filter parameters within safe_bands"
+      "filter parameters within safe_bands (or growth_bands if growth mode)"
     ]
   },
   "require_approval": [
@@ -26,6 +35,10 @@
     "enable_unattended_mode"
   ],
   "allowed_symbols": [],
+  "default_liquid_pairs": [
+    "BTC", "ETH", "SOL", "DOGE", "SUI", "PEPE",
+    "WIF", "LINK", "AVAX", "ARB", "HYPE", "XRP"
+  ],
   "market_data_cache": {
     "enabled": true,
     "max_age_hours": 24

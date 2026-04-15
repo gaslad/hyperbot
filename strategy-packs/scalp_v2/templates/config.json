@@ -10,9 +10,9 @@
     "eval_interval_seconds": 300
   },
   "strategy": {
-    "risk_per_trade_pct": 0.003,
+    "risk_per_trade_pct": 0.005,
     "max_daily_loss_pct": 0.015,
-    "max_leverage": 2.0,
+    "max_leverage": 1.0,
     "margin_mode": "isolated",
     "max_consecutive_losses": 3,
     "max_session_losses": 5,
@@ -26,5 +26,13 @@
     "max_spread_pct": 0.0005,
     "session_windows": [[8, 12], [13, 17]],
     "blocked_hours": [20, 21, 22, 23, 0, 1, 2, 3]
+  },
+  "exit_management": {
+    "signal_flip_exit": true,
+    "max_hold_minutes": 90,
+    "stale_after_minutes": 30,
+    "stale_min_follow_through_r": 0.5,
+    "underwater_exit_r": -0.10,
+    "hard_fail_r": -0.20
   }
 }

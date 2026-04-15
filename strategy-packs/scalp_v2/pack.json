@@ -11,7 +11,7 @@
   "risk_profile": "medium",
   "default_risk": {
     "margin_mode": "isolated",
-    "max_leverage": 2
+    "max_leverage": 1
   },
   "min_equity_usd": 500,
   "recommended_symbols": ["BTC", "ETH", "SOL", "HYPE", "SUI", "DOGE", "AVAX", "ARB"],

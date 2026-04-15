@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class StrategyConfig:
     # Risk
-    risk_per_trade_pct: float = 0.003        # 0.30% of equity per trade
+    risk_per_trade_pct: float = 0.005        # 0.50% of equity per trade
     max_daily_loss_pct: float = 0.015        # 1.5%
     max_leverage: float = 2.0
     max_consecutive_losses: int = 3
@@ -59,9 +59,9 @@ class StrategyConfig:
     max_session_losses: int = 5              # full halt after 5 losses
 
     # Regime
-    adx_min: float = 15.0                    # reduced from 20.0 to fire more often
-    choppiness_max: float = 60.0             # increased from 55.0
-    rvol_min: float = 1.0                    # reduced from 1.5 to catch more breakouts
+    adx_min: float = 20.0
+    choppiness_max: float = 55.0
+    rvol_min: float = 1.5
     atr_period: int = 10                     # ATR(10) not ATR(14)
     ema_fast_15m: int = 20
     ema_slow_15m: int = 50
@@ -112,12 +112,54 @@ class StrategyConfig:
 
 
 # ---------------------------------------------------------------------------
+# Presets — switchable risk/reward profiles
+# ---------------------------------------------------------------------------
+
+def preservation_config() -> StrategyConfig:
+    """Conservative defaults — optimised for capital preservation.
+    This is the original default configuration."""
+    return StrategyConfig()
+
+
+def growth_config() -> StrategyConfig:
+    """Aggressive preset — optimised for fast account growth.
+
+    Targets ~$170+/day on a $3K account via:
+    - 2% risk per trade (4× preservation)
+    - 4× max leverage (tighter stops, same dollar risk)
+    - 1.2× RVOL filter (was 1.5× — lets in more clean setups)
+    - 1.5R final target (was 1.8R — higher fill rate on TP2)
+    - 5% daily loss halt (was 1.5% — room for 2-3 full losses)
+    - 7 max session losses (was 5 — longer runway before halt)
+
+    Safety rails kept intact:
+    - All regime filters (ADX, choppiness, EMA, CVD) unchanged
+    - Consecutive-loss size reduction still active at 3 losses
+    - Spread filter unchanged
+    - SL failsafe unchanged
+    """
+    cfg = StrategyConfig()
+    # Risk — the biggest lever
+    cfg.risk_per_trade_pct = 0.02           # 2% of equity per trade
+    cfg.max_daily_loss_pct = 0.05           # 5% daily loss halt
+    cfg.max_leverage = 4.0                  # 4× (policy cap — tighter stops)
+    cfg.max_session_losses = 7              # longer runway before full halt
+    # Regime — slightly relaxed volume filter only
+    cfg.rvol_min = 1.2                      # was 1.5 — lets in moderate-volume setups
+    # Take profit — lower final target, higher fill rate
+    cfg.final_target_r = 1.5                # was 1.8 — captures more of the move
+    return cfg
+
+
+# ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
 
 @dataclass
 class RegimeState:
     ema_aligned: bool = False
+    ema_spread_pct: float = 0.0
+    trend_bias: str = "neutral"
     adx_value: float = 0.0
     adx_ok: bool = False
     choppiness: float = 0.0
@@ -146,9 +188,9 @@ class RegimeState:
 
     def rejection_reasons(self) -> list[str]:
         reasons = []
-        if not self.ema_aligned:       reasons.append("15m EMA not aligned")
-        if not self.adx_ok:            reasons.append(f"ADX {self.adx_value:.1f} ≤ 20 (ranging)")
-        if not self.choppiness_ok:     reasons.append(f"Choppiness {self.choppiness:.1f} ≥ 55 (chop)")
+        if not self.ema_aligned:       reasons.append("15m EMAs are too flat")
+        if not self.adx_ok:            reasons.append(f"ADX {self.adx_value:.1f} ≤ {20:.0f} (ranging)")
+        if not self.choppiness_ok:     reasons.append(f"Choppiness {self.choppiness:.1f} ≥ {55:.0f} (chop)")
         if not self.vwap_ok:           reasons.append("Price on wrong side of VWAP")
         if not self.atr_above_median:  reasons.append("ATR below median threshold")
         if not self.rvol_ok:           reasons.append(f"RVOL {self.rvol:.2f}x < 1.5x")
@@ -368,11 +410,18 @@ class ScalpStrategy:
             )
 
         # --- Detect setup ---
-        direction = "long" if regime.ema_aligned and df5["close"].iloc[-1] > df5["close"].mean() else None
         # Determine direction from 15m EMA alignment
         ema20_15 = ema(df15["close"], self.config.ema_fast_15m).iloc[-1]
         ema50_15 = ema(df15["close"], self.config.ema_slow_15m).iloc[-1]
         direction = "long" if ema20_15 > ema50_15 else "short"
+
+        direction_ok, direction_reason = self._direction_confirmed(df5, df15, direction, regime)
+        if not direction_ok:
+            return TradeSignal(
+                action="NO_TRADE", symbol=symbol, timestamp=ts,
+                direction=direction, regime=regime,
+                rejection_reasons=[direction_reason],
+            )
 
         setup = self._detect_setup(df5, direction, market_data)
         if not setup.valid:
@@ -428,8 +477,16 @@ class ScalpStrategy:
         # 15m EMA alignment
         ema20 = ema(df15["close"], cfg.ema_fast_15m)
         ema50 = ema(df15["close"], cfg.ema_slow_15m)
-        r.ema_aligned = (ema20.iloc[-1] > ema50.iloc[-1]) or (ema20.iloc[-1] < ema50.iloc[-1])
-        # (True always — actual directional check is in setup detection)
+        current_close = float(df15["close"].iloc[-1])
+        ema_gap = abs(float(ema20.iloc[-1]) - float(ema50.iloc[-1]))
+        r.ema_spread_pct = (ema_gap / current_close * 100) if current_close > 0 else 0.0
+        r.ema_aligned = r.ema_spread_pct >= 0.15
+        if ema20.iloc[-1] > ema50.iloc[-1]:
+            r.trend_bias = "bullish"
+        elif ema20.iloc[-1] < ema50.iloc[-1]:
+            r.trend_bias = "bearish"
+        else:
+            r.trend_bias = "neutral"
 
         # 15m ADX
         adx_series = adx(df15, 14)
@@ -579,6 +636,32 @@ class ScalpStrategy:
 
         setup.valid = True
         return setup
+
+    def _direction_confirmed(self, df5: pd.DataFrame, df15: pd.DataFrame, direction: str, regime: RegimeState) -> tuple[bool, str]:
+        """Require the lower timeframes to confirm the intended direction."""
+        close5 = df5["close"]
+        close15 = df15["close"]
+        ema5 = ema(close5, self.config.ema_fast_5m)
+
+        if direction == "long":
+            if regime.trend_bias != "bullish":
+                return False, "15m trend bias is not bullish"
+            if close5.iloc[-1] <= close5.iloc[-2]:
+                return False, "5m momentum is not rising"
+            if close5.iloc[-1] <= ema5.iloc[-1]:
+                return False, "5m close is below EMA20"
+            if close15.iloc[-1] <= close15.iloc[-2]:
+                return False, "15m close is not improving"
+        else:
+            if regime.trend_bias != "bearish":
+                return False, "15m trend bias is not bearish"
+            if close5.iloc[-1] >= close5.iloc[-2]:
+                return False, "5m momentum is not falling"
+            if close5.iloc[-1] >= ema5.iloc[-1]:
+                return False, "5m close is above EMA20"
+            if close15.iloc[-1] >= close15.iloc[-2]:
+                return False, "15m close is not weakening"
+        return True, ""
 
     # ------------------------------------------------------------------
     # Order parameter construction

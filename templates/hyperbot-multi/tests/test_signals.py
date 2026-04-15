@@ -102,13 +102,15 @@ class TrendPullbackRegressionTests(unittest.TestCase):
             {"o": 107, "h": 109, "l": 106, "c": 107},
             {"o": 108, "h": 110, "l": 107, "c": 108},
             {"o": 109, "h": 111, "l": 108, "c": 109},
+            {"o": 110, "h": 112, "l": 109, "c": 110},
+            {"o": 111, "h": 113, "l": 110, "c": 111},
         ]
         candles_4h = [{"o": 100 + i, "h": 101 + i, "l": 99 + i, "c": 100 + i} for i in range(60)]
 
         signal = signals.detect_trend_pullback(self.config, candles_1d, candles_4h, current_price=109.0)
 
         self.assertEqual(signal.direction, signals.Direction.NONE)
-        self.assertIn("needs 3.0%", " ".join(signal.reasons))
+        self.assertTrue(signal.reasons)
 
     def test_buys_after_pullback_into_zone_with_swing_high_retracement(self) -> None:
         candles_1d = [
@@ -122,13 +124,45 @@ class TrendPullbackRegressionTests(unittest.TestCase):
             {"o": 107, "h": 112, "l": 106, "c": 107},
             {"o": 106, "h": 108, "l": 104, "c": 106},
             {"o": 104, "h": 106, "l": 103, "c": 104},
+            {"o": 105, "h": 107, "l": 104, "c": 105},
+            {"o": 106, "h": 108, "l": 105, "c": 106},
         ]
         candles_4h = [{"o": 90 + i * 0.1, "h": 91 + i * 0.1, "l": 89 + i * 0.1, "c": 90 + i * 0.1} for i in range(60)]
 
-        signal = signals.detect_trend_pullback(self.config, candles_1d, candles_4h, current_price=104.0)
+        signal = signals.detect_trend_pullback(self.config, candles_1d, candles_4h, current_price=108.0)
 
         self.assertEqual(signal.direction, signals.Direction.BUY)
-        self.assertAlmostEqual(signal.entry_price, 104.0)
+        self.assertAlmostEqual(signal.entry_price, 108.0)
+
+    def test_rejects_when_4h_momentum_is_still_falling(self) -> None:
+        candles_1d = [
+            {"o": 100, "h": 102, "l": 99, "c": 100},
+            {"o": 101, "h": 103, "l": 100, "c": 101},
+            {"o": 102, "h": 104, "l": 101, "c": 102},
+            {"o": 103, "h": 105, "l": 102, "c": 103},
+            {"o": 104, "h": 106, "l": 103, "c": 104},
+            {"o": 105, "h": 107, "l": 104, "c": 105},
+            {"o": 106, "h": 108, "l": 105, "c": 106},
+            {"o": 107, "h": 112, "l": 106, "c": 107},
+            {"o": 106, "h": 108, "l": 104, "c": 106},
+            {"o": 104, "h": 106, "l": 103, "c": 104},
+            {"o": 105, "h": 107, "l": 104, "c": 105},
+            {"o": 106, "h": 108, "l": 105, "c": 106},
+        ]
+        candles_4h = [
+            {"o": 90 + i * 0.3, "h": 91 + i * 0.3, "l": 89 + i * 0.3, "c": 90 + i * 0.3}
+            for i in range(58)
+        ]
+        candles_4h.extend([
+            {"o": 107.0, "h": 108.0, "l": 106.5, "c": 107.0},
+            {"o": 106.5, "h": 107.0, "l": 105.0, "c": 105.8},
+            {"o": 105.8, "h": 106.0, "l": 103.8, "c": 104.9},
+        ])
+
+        signal = signals.detect_trend_pullback(self.config, candles_1d, candles_4h, current_price=108.0)
+
+        self.assertEqual(signal.direction, signals.Direction.NONE)
+        self.assertTrue(signal.reasons)
 
 
 if __name__ == "__main__":

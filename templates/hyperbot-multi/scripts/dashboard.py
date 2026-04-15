@@ -36,11 +36,23 @@ import hl_client
 import signals
 import regime as portfolio_regime
 import position_manager
-from scalp_strategy_v2 import ScalpStrategy, StrategyConfig as ScalpConfig
+from scalp_strategy_v2 import ScalpStrategy, StrategyConfig as ScalpConfig, growth_config, preservation_config
 from trade_journal import TradeJournal
 
+# ---------------------------------------------------------------------------
+# Trading mode: "growth" or "preservation" (env var or --mode flag)
+# Growth mode: 2% risk, 4× leverage, wider daily halt, more pairs, faster scans
+# Preservation mode: original conservative defaults
+# ---------------------------------------------------------------------------
+TRADING_MODE = os.environ.get("HYPERBOT_MODE", "preservation").strip().lower()
+
+def _active_scalp_config() -> ScalpConfig:
+    if TRADING_MODE == "growth":
+        return growth_config()
+    return preservation_config()
+
 # Shared strategy instances (stateful — track consecutive losses, performance)
-SCALP_STRATEGY = ScalpStrategy(config=ScalpConfig())
+SCALP_STRATEGY = ScalpStrategy(config=_active_scalp_config())
 
 ROOT = Path(__file__).resolve().parents[1]
 POLICY_PATH = ROOT / "config" / "policy" / "operator-policy.json"
@@ -53,28 +65,62 @@ def normalize_margin_mode(value: Any, default: str = "isolated") -> str:
     return mode if mode in {"isolated", "cross"} else default
 
 
-LIVE_MAX_LEVERAGE_CAP = 2.0
+LIVE_MAX_LEVERAGE_CAP = 20.0
+LIVE_DEFAULT_LEVERAGE = 1.0
 CONFIDENCE_LEVERAGE_MIN = 0.5       # below this → always 1x
 CONFIDENCE_LEVERAGE_FULL = 0.85     # at or above this → full max_leverage
 CONFIDENCE_LEVERAGE_THRESHOLD = CONFIDENCE_LEVERAGE_MIN  # supervision exit threshold
-PAIR_COOLDOWN_SECONDS = 30 * 60
-PAIR_REENTRY_LOCKOUT_SECONDS = 2 * 60 * 60
+
+# Mode-dependent constants
+if TRADING_MODE == "growth":
+    PAIR_COOLDOWN_SECONDS = 15 * 60           # 15 min (was 30 min)
+    PAIR_REENTRY_LOCKOUT_SECONDS = 45 * 60    # 45 min (was 2 hr)
+    SCAN_BATCH_SIZE = 6                       # 6 pairs per cycle (was 3)
+    LIVE_DEFAULT_LEVERAGE = 3.0               # 3× default (was 1×)
+else:
+    PAIR_COOLDOWN_SECONDS = 30 * 60
+    PAIR_REENTRY_LOCKOUT_SECONDS = 2 * 60 * 60
+    SCAN_BATCH_SIZE = 3
+    LIVE_DEFAULT_LEVERAGE = 1.0
+
 BREAKEVEN_BUFFER_PCT = 0.0012
-SCAN_BATCH_SIZE = 3
+SCAN_BACKOFF_BASE_SECONDS = 120.0     # 2 min initial backoff
+SCAN_BACKOFF_MAX_SECONDS = 1800.0     # 30 min max backoff
+SCAN_BACKOFF_FAILURES_THRESHOLD = 3   # consecutive failures before backoff kicks in
 PORTFOLIO_SYNC_SECONDS = 45.0
 ERROR_LOG_THROTTLE_SECONDS = 60.0
+
+# Default liquid pairs — top Hyperliquid perps by volume & tight spreads.
+# Used when no pairs are configured in the workspace manifest.
+# Curated for scalp_v2: sufficient volatility, <0.05% spread, deep L2 book.
+DEFAULT_LIQUID_PAIRS: list[dict] = [
+    {"coin": "BTC",   "symbol": "BTC"},
+    {"coin": "ETH",   "symbol": "ETH"},
+    {"coin": "SOL",   "symbol": "SOL"},
+    {"coin": "DOGE",  "symbol": "DOGE"},
+    {"coin": "SUI",   "symbol": "SUI"},
+    {"coin": "PEPE",  "symbol": "PEPE"},
+    {"coin": "WIF",   "symbol": "WIF"},
+    {"coin": "LINK",  "symbol": "LINK"},
+    {"coin": "AVAX",  "symbol": "AVAX"},
+    {"coin": "ARB",   "symbol": "ARB"},
+    {"coin": "HYPE",  "symbol": "HYPE"},
+    {"coin": "XRP",   "symbol": "XRP"},
+]
 MIN_LEGACY_SIGNAL_CONFIDENCE = 0.65
 AUTO_STRATEGY_PACK_IDS = (
     "scalp_v2",
     "trend_pullback",
     "compression_breakout",
     "liquidity_sweep_reversal",
+    "fib_retracement",
 )
 STRATEGY_LABELS = {
     "scalp_v2": "5m Scalper",
     "trend_pullback": "Trend Follower",
     "compression_breakout": "Breakout Hunter",
     "liquidity_sweep_reversal": "Mean Reversion",
+    "fib_retracement": "Fib Retracement",
 }
 
 
@@ -214,7 +260,6 @@ def _update_pair_bot_context(ps: PairState) -> None:
             note = "Cooling down after the last trade before allowing another entry."
     elif selected_signal:
         strategy_name = strategy_label(str(selected_signal.get("pack_id", selected_pack)))
-        reasons = list(selected_signal.get("reasons", []) or [])
         if ps.auto_strategy:
             if selected_signal.get("direction") not in {None, "", "none"}:
                 note = f"Auto mode prefers {strategy_name} right now because it has the strongest live setup."
@@ -222,7 +267,8 @@ def _update_pair_bot_context(ps: PairState) -> None:
                 note = f"Auto mode is waiting. {strategy_name} is the closest valid setup, but conditions are not complete yet."
         else:
             note = f"Manual mode is watching {strategy_name} and will only enter if this exact setup confirms."
-        details.extend(reasons[:3])
+        # Don't copy signal reasons into bot_details — the JS renders them
+        # directly from the signal data. bot_details is for contextual info only.
     elif ps.auto_strategy:
         note = "Auto mode is scanning all approved strategies and waiting for a clean setup."
     else:
@@ -248,7 +294,11 @@ def _is_transient_read_error(exc: Exception) -> bool:
     text = str(exc)
     return (
         "429" in text
+        or "500" in text
+        or "502" in text
+        or "503" in text
         or "Too Many Requests" in text
+        or "Internal Server Error" in text
         or "Remote end closed connection without response" in text
         or "IncompleteRead" in text
         or "timed out" in text.lower()
@@ -301,7 +351,7 @@ class PairState:
         self.pnl: float = 0.0
         self.enabled: bool = True
         # Per-pair risk settings (defaults inherited from global)
-        self.max_leverage: float = LIVE_MAX_LEVERAGE_CAP
+        self.max_leverage: float = LIVE_DEFAULT_LEVERAGE
         self.risk_per_trade_pct: float = 0.5
         self.margin_mode: str = "isolated"
         self.cooldown_until: str = ""
@@ -323,6 +373,9 @@ class PairState:
         self.bot_details: list[str] = []
         self.last_scan_ts: str = ""
         self.trading_live: bool = True  # Per-card trading toggle (on by default)
+        # Scan failure backoff
+        self.scan_consecutive_failures: int = 0
+        self.scan_backoff_until: float = 0.0  # monotonic timestamp
 
     def to_dict(self) -> dict:
         return {
@@ -374,7 +427,7 @@ class TradingState:
         self.build_status: str = ""  # for step 5 progress
         self.build_log: list[str] = []
         self.thinking: str = ""  # rotating system status message
-        self.max_leverage: float = LIVE_MAX_LEVERAGE_CAP
+        self.max_leverage: float = LIVE_DEFAULT_LEVERAGE
         self.risk_per_trade_pct: float = 0.5
         self.margin_mode: str = "isolated"
         self.start_of_day_equity: float = 0.0
@@ -583,7 +636,7 @@ def build_workspace_background(config: dict) -> None:
         if POLICY_PATH.exists():
             policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
             safe = policy.get("auto_apply", {}).get("safe_bands", {})
-            safe["leverage_max"] = clamp_live_leverage(config.get("max_leverage", LIVE_MAX_LEVERAGE_CAP))
+            safe["leverage_max"] = clamp_live_leverage(config.get("max_leverage", LIVE_DEFAULT_LEVERAGE))
             safe["risk_per_trade_pct_max"] = config.get("risk_per_trade_pct", 0.5)
             safe["max_daily_loss_pct"] = config.get("max_daily_loss_pct", 5.0)
             POLICY_PATH.write_text(json.dumps(policy, indent=2), encoding="utf-8")
@@ -621,7 +674,7 @@ def build_workspace_background(config: dict) -> None:
                         "runner": {"source": "hyperliquid_candles", "anchor_timeframe": "1D", "trigger_timeframe": "4H", "confirmation_timeframe": "1H"},
                         "entry": {"sma_period": 10, "pullback_zone_pct": 3.0, "confirmation_type": "close_above_prev_high"},
                         "filters": {"overextension_max_pct": 15.0, "min_pullback_pct": 4.0},
-                        "risk": {"invalidation_below_sma_pct": 2.0, "position_sizing": {"risk_per_trade_pct": 0.5, "max_leverage": LIVE_MAX_LEVERAGE_CAP, "margin_mode": "isolated"}},
+                        "risk": {"invalidation_below_sma_pct": 2.0, "position_sizing": {"risk_per_trade_pct": 0.5, "max_leverage": LIVE_DEFAULT_LEVERAGE, "margin_mode": "isolated"}},
                         "take_profit": {"tp1_r_multiple": 1.0, "tp2_r_multiple": 2.0},
                         "exit_management": {
                             "signal_flip_exit": True,
@@ -682,7 +735,7 @@ def build_workspace_background(config: dict) -> None:
         STATE.symbol = symbol
         STATE.setup_complete = True
         STATE.max_daily_loss_pct = config.get("max_daily_loss_pct", 5.0)
-        STATE.max_leverage = clamp_live_leverage(config.get("max_leverage", LIVE_MAX_LEVERAGE_CAP))
+        STATE.max_leverage = clamp_live_leverage(config.get("max_leverage", LIVE_DEFAULT_LEVERAGE))
         STATE.risk_per_trade_pct = config.get("risk_per_trade_pct", 0.5)
         STATE.margin_mode = normalize_margin_mode(config.get("margin_mode", "isolated"))
         for ps in STATE.pairs.values():
@@ -970,7 +1023,7 @@ def _scalp_v2_config_payload(coin: str, symbol: str) -> dict[str, Any]:
         "strategy": {
             "risk_per_trade_pct": 0.005,
             "max_daily_loss_pct": 0.015,
-            "max_leverage": 2.0,
+            "max_leverage": LIVE_DEFAULT_LEVERAGE,
             "margin_mode": "isolated",
             "max_consecutive_losses": 3,
             "max_session_losses": 5,
@@ -1713,6 +1766,12 @@ def trading_loop() -> None:
                 if ps and not pair_enabled:
                     continue
 
+                # Skip coins in scan backoff (persistent API failures)
+                if ps and ps.scan_backoff_until > 0:
+                    now_mono = time.monotonic()
+                    if now_mono < ps.scan_backoff_until:
+                        continue  # still in backoff window, skip silently
+
                 # Determine which strategy pack this pair uses
                 with STATE.lock:
                     current_pack_id = ps.pack_id if ps else "trend_pullback"
@@ -1761,11 +1820,31 @@ def trading_loop() -> None:
                                 _update_pair_plan_from_signal(ps, selected_sig or _best_signal(ps.last_signals))
                                 _update_pair_bot_context(ps)
                 except Exception as scan_err:
-                    if _is_transient_read_error(scan_err):
-                        _log_throttled_error(f"scan:{coin}", f"  [scan] {coin} throttled: {scan_err}", throttle_seconds=60.0)
+                    # Track consecutive failures and apply exponential backoff
+                    if ps:
+                        with STATE.lock:
+                            ps.scan_consecutive_failures += 1
+                            if ps.scan_consecutive_failures >= SCAN_BACKOFF_FAILURES_THRESHOLD:
+                                exponent = ps.scan_consecutive_failures - SCAN_BACKOFF_FAILURES_THRESHOLD
+                                backoff = min(SCAN_BACKOFF_BASE_SECONDS * (2 ** exponent), SCAN_BACKOFF_MAX_SECONDS)
+                                ps.scan_backoff_until = time.monotonic() + backoff
+                                _log_throttled_error(f"scan:{coin}", f"  [scan] {coin} backed off {int(backoff)}s after {ps.scan_consecutive_failures} failures: {scan_err}", throttle_seconds=backoff)
+                            elif _is_transient_read_error(scan_err):
+                                _log_throttled_error(f"scan:{coin}", f"  [scan] {coin} throttled: {scan_err}", throttle_seconds=60.0)
+                            else:
+                                print(f"  [scan] {coin} error: {scan_err}", flush=True)
                     else:
-                        print(f"  [scan] {coin} error: {scan_err}", flush=True)
+                        if _is_transient_read_error(scan_err):
+                            _log_throttled_error(f"scan:{coin}", f"  [scan] {coin} throttled: {scan_err}", throttle_seconds=60.0)
+                        else:
+                            print(f"  [scan] {coin} error: {scan_err}", flush=True)
                     continue
+
+                # Reset scan backoff on success
+                if ps and ps.scan_consecutive_failures > 0:
+                    with STATE.lock:
+                        ps.scan_consecutive_failures = 0
+                        ps.scan_backoff_until = 0.0
 
                 if not auto_strategy and current_pack_id == "scalp_v2":
                     _run_scalp_v2_cycle(coin, ps, price, master_address)
@@ -2323,6 +2402,11 @@ def _manage_pair_position(coin: str, ps: PairState) -> None:
         max_hold_minutes=float(exit_cfg.get("max_hold_minutes", 90)),
         stale_after_minutes=float(exit_cfg.get("stale_after_minutes", 30)),
         breakeven_buffer_pct=BREAKEVEN_BUFFER_PCT,
+        # Growth mode: tighter trail (0.3R gap vs 0.5R) captures more profit
+        trail_gap_r=0.3 if TRADING_MODE == "growth" else 0.5,
+        trail_min_lock_r=0.2 if TRADING_MODE == "growth" else 0.3,
+        trail_activation_r=0.4 if TRADING_MODE == "growth" else 0.5,
+        trail_ratchet_threshold_r=0.08 if TRADING_MODE == "growth" else 0.1,
         initial_stop=float(managed.get("initial_stop") or stop_trigger),
     )
 
@@ -2330,6 +2414,11 @@ def _manage_pair_position(coin: str, ps: PairState) -> None:
 
     for action in actions:
         if action.action == "move_sl" and action.new_trigger and action.new_limit:
+            # Safeguard: skip if we just failed an SL replacement in the last 10 seconds
+            last_sl_fail_ts = managed.get("_last_sl_fail_ts", 0)
+            if time.time() - last_sl_fail_ts < 10:
+                continue
+
             # Cancel existing SL first
             if action.cancel_oid:
                 cancel_result = hl_client.cancel_order(coin, int(action.cancel_oid))
@@ -2355,8 +2444,12 @@ def _manage_pair_position(coin: str, ps: PairState) -> None:
                     if tp1_filled and not managed.get("tp1_moved"):
                         managed["tp1_moved"] = True
                     ps.plan_sl = action.new_trigger
+                    managed.pop("_last_sl_fail_ts", None)  # Clear failure timestamp on success
                 log_trade("SL_MOVE", pack_id, current_size, action.new_trigger, action.reason)
             else:
+                # Record this failure to prevent cascading retries
+                with STATE.lock:
+                    managed["_last_sl_fail_ts"] = time.time()
                 log_trade("MANAGE_FAIL", pack_id, current_size, action.new_trigger,
                           f"SL replace failed: {new_sl.error}")
 
@@ -2942,8 +3035,8 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
       <button class="btn-x" onclick="toggleSettings()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
     </div>
     <div class="settings-group">
-      <div style="display:flex;justify-content:space-between"><span class="settings-label">Max Leverage</span><span class="settings-value mono" id="d-set-lev">2x</span></div>
-      <input type="range" class="settings-slider" id="set-lev" min="1" max="2" step="0.5" value="2" oninput="document.getElementById('d-set-lev').textContent=this.value+'x'">
+      <div style="display:flex;justify-content:space-between"><span class="settings-label">Max Leverage</span><span class="settings-value mono" id="d-set-lev">1x</span></div>
+      <input type="range" class="settings-slider" id="set-lev" min="1" max="20" step="1" value="1" oninput="document.getElementById('d-set-lev').textContent=this.value+'x'">
     </div>
     <div class="settings-group">
       <div style="display:flex;justify-content:space-between"><span class="settings-label">Risk per Trade</span><span class="settings-value mono" id="d-set-risk">0.5%</span></div>
@@ -3015,6 +3108,7 @@ const STRATEGIES = [
   {id:'trend_pullback',name:'Trend Follower',desc:'Rides momentum when multiple timeframes align in the same direction',risk:'Medium'},
   {id:'compression_breakout',name:'Breakout Hunter',desc:'Catches big moves when price breaks key support or resistance levels',risk:'High'},
   {id:'liquidity_sweep_reversal',name:'Mean Reversion',desc:'Buys dips and sells rips when price stretches too far from average',risk:'Low'},
+  {id:'fib_retracement',name:'Fib Retracement',desc:'Enters at key Fibonacci retracement levels (0.382, 0.5, 0.618) within trending swings',risk:'Medium'},
 ];
 
 // ── API Helpers ──────────────────────────────────────────────
@@ -3404,7 +3498,7 @@ function configureSettingsModal(mode, coin=null){
     els.saveBtn.textContent='Save Risk Settings';
     els.dailyGroup.style.display='none';
     populateSettingsInputs({
-      lev: pairState.max_leverage||lastState.max_leverage||2,
+      lev: pairState.max_leverage||lastState.max_leverage||1,
       risk: pairState.risk_per_trade_pct||lastState.risk_per_trade_pct||0.5,
       daily: null,
     });
@@ -3414,7 +3508,7 @@ function configureSettingsModal(mode, coin=null){
   els.saveBtn.textContent='Save Settings';
   els.dailyGroup.style.display='';
   populateSettingsInputs({
-    lev: lastState.max_leverage||2,
+    lev: lastState.max_leverage||1,
     risk: lastState.risk_per_trade_pct||0.5,
     daily: lastState.max_daily_loss_pct||5,
   });
@@ -3505,7 +3599,7 @@ function renderCards(s){
     const pnl=parseFloat(pos?.unrealized_pnl||ps.pnl||0);
     const entryPx=parseFloat(pos?.entry_px||ps.plan_entry||0);
     const markPx=ps.last_price||0;
-    const leverage=parseFloat(pos?.leverage?.value||ps.max_leverage||2);
+    const leverage=parseFloat(pos?.leverage?.value||ps.max_leverage||1);
     const slPx=ps.plan_sl||null;
     const tpPx=ps.plan_tp||null;
     const displayPack=ps.selected_pack_id||ps.pack_id||'trend_pullback';
@@ -3562,7 +3656,7 @@ function renderCards(s){
     if(isExp&&!inTrade){
       const curPack=displayPack;
       const strat=STRATEGIES.find(s=>s.id===curPack)||STRATEGIES[0];
-      const pairLev=ps.max_leverage||2;
+      const pairLev=ps.max_leverage||1;
       const pairRisk=ps.risk_per_trade_pct||0.5;
       // Pull live signal data for this pair's strategy
       const sigForPack=(ps.last_signals||[]).find(s=>s.pack_id===curPack);
@@ -3577,12 +3671,12 @@ function renderCards(s){
       const fallbackHints={
         'trend_pullback':['Waiting for first scan \u2014 will check trend direction across multiple timeframes'],
         'compression_breakout':['Waiting for first scan \u2014 will monitor Bollinger Band width for squeeze conditions'],
-        'liquidity_sweep_reversal':['Waiting for first scan \u2014 will look for wick rejections below recent swing lows']
+        'liquidity_sweep_reversal':['Waiting for first scan \u2014 will look for wick rejections below recent swing lows'],
+        'fib_retracement':['Waiting for first scan \u2014 will identify swing highs/lows and key Fibonacci retracement levels']
       };
 
-      // Build dynamic cues from real reasons
+      // Build dynamic cues from real reasons — show ALL checklist items, not just 3
       const liveCues=hasScan?sigReasons:fallbackHints[curPack]||fallbackHints['trend_pullback'];
-      const topCues=liveCues.slice(0,3);
 
       // Confidence bar color
       const confColor=sigConf>=70?'var(--green)':sigConf>=40?'var(--yellow)':sigConf>0?'var(--text3)':'var(--text3)';
@@ -3612,15 +3706,41 @@ function renderCards(s){
             ${sigDir!=='none'?`<div class="sig-direction sig-dir-${sigDir}">
               ${sigDir==='buy'?'\u2197 Leaning long':'\u2198 Leaning short'} \u2014 waiting for confirmation
             </div>`:''}
+            ${(()=>{
+              // Fib label: extract retracement depth and target from reasons
+              if(curPack==='fib_retracement'&&hasScan){
+                const retrace=sigReasons.find(r=>r.includes('retraced'));
+                const inZone=sigReasons.find(r=>r.includes('price in'));
+                if(retrace){
+                  const rm=retrace.match(/retraced ([\u0030-\u0039.]+)%.*targeting (.+?) Fib at \\\$([\u0030-\u0039.]+)/)||retrace.match(/retraced ([0-9.]+)%.*targeting (.+?) Fib at \$([0-9.]+)/);
+                  if(rm){
+                    const depth=rm[1],lvl=rm[2],tgt=rm[3];
+                    const zoneColor=inZone?'var(--green)':'var(--yellow)';
+                    const zoneText=inZone?'In zone':'Approaching';
+                    return '<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;margin:8px 0;border-radius:8px;background:var(--accent-bg);border:1px solid var(--border)">'
+                      +'<span style="font-size:18px">\uD83D\uDCC8</span>'
+                      +'<div style="flex:1">'
+                      +'<div style="font-size:13px;font-weight:600;color:var(--text1)">Fib '+lvl+' \u2014 $'+tgt+'</div>'
+                      +'<div style="font-size:11px;color:var(--text3)">Retraced '+depth+'% into swing</div>'
+                      +'</div>'
+                      +'<span class="mono" style="font-size:12px;padding:2px 8px;border-radius:4px;background:'+zoneColor+';color:#000;font-weight:600">'+zoneText+'</span>'
+                      +'</div>';
+                  }
+                }
+              }
+              return '';
+            })()}
             <ul class="explain-list">
-              ${topCues.map(r=>{
-                const neg=r.includes('\u2264')||r.includes('\u2265')||r.includes('< ')||r.includes('> max')||r.includes('not ')||r.includes('Outside')||r.includes('wrong')||r.includes('diverging')||r.includes('ranging')||r.includes('chop')||r.includes('below')||r.includes('insufficient')||r.includes('No ');
-                const pos=r.includes('above')||r.includes('bullish')||r.includes('confirms')||r.includes('aligned')||r.includes('Net R')||r.includes('Confidence');
+              ${liveCues.map(r=>{
+                const rl=r.toLowerCase();
+                const isFibLevels=rl.startsWith('fib levels');
+                const neg=!isFibLevels&&(rl.includes('not ')||rl.includes('only ')||rl.includes('need')||rl.includes('lacks')||rl.includes('no ')||rl.includes('outside')||rl.includes('wrong')||rl.includes('diverging')||rl.includes('ranging')||rl.includes('chop')||rl.includes('insufficient')||rl.includes('flat')||r.includes('\u2014 not')||r.includes('\u2014 need'));
+                const pos=!isFibLevels&&!neg&&(rl.includes('above')||rl.includes('below falling')||rl.includes('within zone')||rl.includes('pulled back')||rl.includes('bounced')||rl.includes('bullish')||rl.includes('bearish')||rl.includes('confirms')||rl.includes('confirmed')||rl.includes('confirm ')||rl.includes('aligned')||rl.includes('compressed')||rl.includes('breakout')||rl.includes('rising')||rl.includes('falling')||rl.includes('expansion')||rl.includes('in ')&&rl.includes('zone')||rl.includes('retraced')||rl.includes('targeting'));
                 const dotColor=pos?'var(--green)':neg?'var(--red)':'var(--text3)';
-                const kicker=pos?'Ready':'Blocked';
+                const kicker=isFibLevels?'Levels':pos?'Met':neg?'Not met':'Checking';
                 return `<li class="explain-item"><span class="cue-dot" style="position:static;color:${dotColor}">\u25CF</span><div class="explain-body"><div class="explain-kicker">${kicker}</div>${esc(r)}</div></li>`;
               }).join('')}
-              ${botDetails.map(r=>`<li class="explain-item"><span class="cue-dot" style="position:static;color:var(--text3)">\u25CF</span><div class="explain-body"><div class="explain-kicker">Context</div>${esc(r)}</div></li>`).join('')}
+              ${botDetails.map(r=>`<li class="explain-item"><span class="cue-dot" style="position:static;color:var(--text3)">\u25CF</span><div class="explain-body"><div class="explain-kicker">Info</div>${esc(r)}</div></li>`).join('')}
             </ul>
           </div>
         </div>
@@ -4569,6 +4689,9 @@ def main() -> int:
     parser.add_argument("--live", action="store_true", help="Enable live trading controls")
     parser.add_argument("--confirm-risk", action="store_true", help="Confirm you understand the risk of live trading")
     parser.add_argument("--port", type=int, default=0, help="Port to run on (0 = auto)")
+    parser.add_argument("--mode", choices=["growth", "preservation"], default=None,
+                        help="Trading mode: 'growth' (aggressive) or 'preservation' (conservative). "
+                             "Overrides HYPERBOT_MODE env var.")
     args = parser.parse_args()
 
     if args.live and not args.confirm_risk:
@@ -4576,6 +4699,21 @@ def main() -> int:
         print("  This means real orders with real money.", flush=True)
         print("  Usage: python3 scripts/dashboard.py --live --confirm-risk", flush=True)
         return 1
+
+    # Apply --mode flag (overrides HYPERBOT_MODE env var)
+    global TRADING_MODE, PAIR_COOLDOWN_SECONDS, PAIR_REENTRY_LOCKOUT_SECONDS
+    global SCAN_BATCH_SIZE, LIVE_DEFAULT_LEVERAGE, SCALP_STRATEGY
+    if args.mode:
+        TRADING_MODE = args.mode
+    if TRADING_MODE == "growth":
+        PAIR_COOLDOWN_SECONDS = 15 * 60
+        PAIR_REENTRY_LOCKOUT_SECONDS = 45 * 60
+        SCAN_BATCH_SIZE = 6
+        LIVE_DEFAULT_LEVERAGE = 3.0
+        SCALP_STRATEGY = ScalpStrategy(config=growth_config())
+        print("[hyperbot] ⚡ GROWTH MODE ACTIVE — 2% risk, 4× max leverage, 12 pairs, 15m cooldowns", flush=True)
+    else:
+        print("[hyperbot] 🛡️  PRESERVATION MODE — 0.5% risk, 2× max leverage, conservative cooldowns", flush=True)
 
     STATE.live_enabled = args.live
     if args.live:
@@ -4615,6 +4753,26 @@ def main() -> int:
             STATE.max_daily_loss_pct = safe.get("max_daily_loss_pct", STATE.max_daily_loss_pct)
         except Exception:
             pass
+
+    # Growth mode: override STATE risk parameters to match growth preset
+    if TRADING_MODE == "growth":
+        STATE.max_leverage = 4.0
+        STATE.risk_per_trade_pct = 2.0          # 2% (displayed as percentage in UI)
+        STATE.max_daily_loss_pct = 5.0          # 5% daily halt
+        for ps in STATE.pairs.values():
+            ps.max_leverage = STATE.max_leverage
+            ps.risk_per_trade_pct = STATE.risk_per_trade_pct
+
+    # In growth mode, auto-register default liquid pairs if none are loaded yet
+    if TRADING_MODE == "growth" and not STATE.pairs:
+        for lp in DEFAULT_LIQUID_PAIRS:
+            STATE.add_pair(lp["coin"], lp["symbol"])
+        if STATE.pairs:
+            first = next(iter(STATE.pairs))
+            STATE.coin = first
+            STATE.symbol = STATE.pairs[first].symbol
+            STATE.setup_complete = True
+            print(f"[hyperbot] GROWTH MODE — auto-loaded {len(STATE.pairs)} liquid pairs: {', '.join(STATE.pairs.keys())}", flush=True)
 
     # If no manifest but we have credentials, still mark setup complete
     # so the trading loop starts and pairs can be added via the UI

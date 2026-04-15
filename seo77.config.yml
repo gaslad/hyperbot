@@ -1,0 +1,19 @@
+project:
+  name: hyperbot.enseris.com
+  domain: hyperbot.enseris.com
+  type: saas
+entities: []
+governance:
+  stance: selective
+audit:
+  ignore_paths:
+  - /admin/*
+  - /api/*
+  max_pages: 10000
+measure:
+  sources: {}
+output:
+  dir: .seo77
+  format: json
+  briefs: true
+  prompts: true

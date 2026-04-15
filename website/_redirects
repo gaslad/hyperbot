@@ -1,1 +1,9 @@
-/*    /index.html   200
+/robots.txt /robots.txt 200
+/sitemap.xml /sitemap.xml 200
+/about    /about/index.html    200
+/about/   /about/index.html    200
+/privacy  /privacy/index.html  200
+/privacy/ /privacy/index.html  200
+/contact  /contact/index.html  200
+/contact/ /contact/index.html  200
+/*        /index.html          200

@@ -27,7 +27,7 @@ This launches a single-page web app with a 5-step wizard:
 4. Enter wallet credentials (stored in macOS Keychain / encrypted file)
 5. Build workspace (fetches candles, installs configs, runs initial signal scan)
 
-After setup, the dashboard shows live price, account equity (perps + spot combined), strategy signals, open positions, trade log, and a thinking ticker that explains what the bot is doing.
+After setup, the dashboard shows live price, account equity (perps + spot combined), strategy signals, open positions, a local trade journal, and a thinking ticker that explains what the bot is doing. The workspace also writes weekly Markdown reports under `docs/reports/weekly/`.
 
 ## Quick Start — CLI Only
 
@@ -84,7 +84,7 @@ Orders use the Hyperliquid Python SDK with proper asset-specific formatting:
 ## Current Layout
 
 - `strategy-packs/`: installable strategy-pack definitions and templates
-- `templates/workspace/`: starter Hyperliquid-only workspace skeleton
+- `templates/hyperbot-multi/`: generated workspace skeleton
   - `scripts/dashboard.py`: single-page web app (wizard + live dashboard)
   - `scripts/hl_client.py`: Hyperliquid API client with order execution
   - `scripts/signals.py`: deterministic signal detection engine
@@ -106,8 +106,3 @@ python3 scripts/release_readiness.py         # repo/workspace readiness
 ## Local-First Direction
 
 The core workspace generator is deterministic and local-first. No cloud model dependency is required for workspace generation, signal detection, risk management, or order execution.
-
-Planning artifacts for reducing approval friction live in:
-
-- [`CLAUDE.md`](CLAUDE.md)
-- [`docs/local-first-roadmap.md`](docs/local-first-roadmap.md)

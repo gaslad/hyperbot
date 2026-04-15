@@ -67,6 +67,11 @@ class ManagementState:
     max_hold_minutes: float = 90.0
     stale_after_minutes: float = 30.0
     breakeven_buffer_pct: float = 0.0012  # 0.12% buffer above/below entry
+    # Trailing stop config (post-TP1)
+    trail_gap_r: float = 0.5              # trail this many R behind current price
+    trail_min_lock_r: float = 0.3         # minimum R profit to lock in
+    trail_activation_r: float = 0.5       # start trailing when profit exceeds this R
+    trail_ratchet_threshold_r: float = 0.1  # min improvement to move SL
     # Original stop at entry (used for ATR expansion calc so it doesn't compound)
     initial_stop: float = 0.0
 
@@ -91,12 +96,12 @@ def _breakeven_price(ms: ManagementState) -> float:
 
 
 def _sig5(price: float) -> float:
-    """Round to 5 significant figures (Hyperliquid convention)."""
-    if price <= 0:
-        return price
-    magnitude = math.floor(math.log10(abs(price)))
-    factor = 10 ** (4 - magnitude)
-    return round(price * factor) / factor
+    """Return price as-is for rounding to be done by hl_client.round_price().
+
+    position_manager should NOT round — let the exchange client handle precision.
+    This avoids double-rounding when hl_client.round_price() is called again.
+    """
+    return price
 
 
 # ---------------------------------------------------------------------------
@@ -147,9 +152,9 @@ def manage(ms: ManagementState) -> list[PositionAction]:
     # ---------------------------------------------------------------
     # 2. Trailing stop after TP1 — ratchet SL higher on each new high
     # ---------------------------------------------------------------
-    if ms.tp1_filled and ms.tp1_moved and r > 0.5:
-        # Trail: move SL to lock in at least 0.3R profit when we're at 0.5R+
-        trail_level_r = max(0.3, r - 0.5)  # always trail 0.5R behind current
+    if ms.tp1_filled and ms.tp1_moved and r > ms.trail_activation_r:
+        # Trail: move SL to lock in at least trail_min_lock_r profit
+        trail_level_r = max(ms.trail_min_lock_r, r - ms.trail_gap_r)
         if ms.is_long:
             trail_price = ms.entry_price + trail_level_r * risk
         else:
@@ -157,8 +162,8 @@ def manage(ms: ManagementState) -> list[PositionAction]:
 
         # Only move SL if the new level is tighter (more protective)
         should_move = (
-            (ms.is_long and trail_price > ms.stop_trigger + risk * 0.1) or
-            (not ms.is_long and trail_price < ms.stop_trigger - risk * 0.1)
+            (ms.is_long and trail_price > ms.stop_trigger + risk * ms.trail_ratchet_threshold_r) or
+            (not ms.is_long and trail_price < ms.stop_trigger - risk * ms.trail_ratchet_threshold_r)
         )
         if should_move:
             if ms.is_long:

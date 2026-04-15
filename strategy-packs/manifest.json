@@ -18,7 +18,7 @@
       "default_risk": {
         "risk_per_trade_pct": 0.5,
         "capital_allocation_pct": 100,
-        "max_leverage": 2,
+        "max_leverage": 1,
         "margin_mode": "isolated"
       },
       "default_exits": {
@@ -46,7 +46,7 @@
       "default_risk": {
         "risk_per_trade_pct": 0.5,
         "capital_allocation_pct": 100,
-        "max_leverage": 2,
+        "max_leverage": 1,
         "margin_mode": "isolated"
       },
       "default_exits": {
@@ -74,7 +74,7 @@
       "default_risk": {
         "risk_per_trade_pct": 0.5,
         "capital_allocation_pct": 75,
-        "max_leverage": 3,
+        "max_leverage": 1,
         "margin_mode": "isolated"
       },
       "default_exits": {
@@ -101,7 +101,7 @@
       "default_risk": {
         "risk_per_trade_pct": 0.5,
         "capital_allocation_pct": 100,
-        "max_leverage": 2,
+        "max_leverage": 1,
         "margin_mode": "isolated"
       },
       "default_exits": {

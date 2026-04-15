@@ -26,13 +26,21 @@
   "risk": {
     "invalidation_below_sma_pct": 3.0,
     "position_sizing": {
-      "risk_per_trade_pct": 1.5,
-      "max_leverage": 2.0,
+      "risk_per_trade_pct": 0.5,
+      "max_leverage": 1.0,
       "margin_mode": "isolated"
     }
   },
   "take_profit": {
     "tp1_r_multiple": 1.0,
     "tp2_r_multiple": 2.0
+  },
+  "exit_management": {
+    "signal_flip_exit": true,
+    "max_hold_minutes": 240,
+    "stale_after_minutes": 120,
+    "stale_min_follow_through_r": 0.25,
+    "underwater_exit_r": -0.25,
+    "hard_fail_r": -0.75
   }
 }

@@ -5,10 +5,50 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Hyperbot — Own Your Trading Stack</title>
 <meta name="description" content="Local-first CLI for automated Hyperliquid perpetual futures trading. One command from zero to a live dashboard. No cloud, no black boxes.">
+<link rel="canonical" href="https://hyperbot.enseris.com/">
 <meta name="theme-color" content="#111111">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Serif+Display:ital@0;1&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "Organization",
+      "@id": "https://hyperbot.enseris.com/#organization",
+      "name": "Hyperbot",
+      "url": "https://hyperbot.enseris.com/",
+      "description": "Local-first CLI for generating and running Hyperliquid perpetual futures trading workspaces."
+    },
+    {
+      "@type": "WebSite",
+      "@id": "https://hyperbot.enseris.com/#website",
+      "url": "https://hyperbot.enseris.com/",
+      "name": "Hyperbot",
+      "description": "A local-first CLI for automated Hyperliquid perpetual futures trading.",
+      "publisher": {
+        "@id": "https://hyperbot.enseris.com/#organization"
+      }
+    },
+    {
+      "@type": "WebPage",
+      "@id": "https://hyperbot.enseris.com/#webpage",
+      "url": "https://hyperbot.enseris.com/",
+      "name": "Hyperbot — Own Your Trading Stack",
+      "description": "Local-first CLI for automated Hyperliquid perpetual futures trading.",
+      "isPartOf": {
+        "@id": "https://hyperbot.enseris.com/#website"
+      },
+      "about": {
+        "@id": "https://hyperbot.enseris.com/#organization"
+      },
+      "datePublished": "2026-04-08",
+      "dateModified": "2026-04-08"
+    }
+  ]
+}
+</script>
 <style>
 :root {
   --paper: #E8E4DD;
@@ -58,6 +98,7 @@ a:hover { text-decoration:underline; }
 .hero-line2 { font-family:var(--font-drama); font-style:italic; font-size:clamp(48px,8vw,96px); color:#fff; line-height:1.05; letter-spacing:-0.02em; margin-bottom:24px; }
 .hero-line2 em { color:var(--signal); font-style:italic; }
 .hero-sub { font-size:clamp(16px,1.8vw,20px); color:rgba(255,255,255,0.6); max-width:560px; line-height:1.5; margin-bottom:36px; }
+.answer-block { max-width:760px; margin-top:24px; padding:18px 20px; background:rgba(255,255,255,0.08); border-left:3px solid var(--signal); color:rgba(255,255,255,0.82); font-size:16px; line-height:1.7; backdrop-filter:blur(10px); }
 .hero-cta { display:inline-flex; align-items:center; gap:10px; background:var(--signal); color:#fff; padding:16px 32px; border-radius:8px; font-family:var(--font-heading); font-weight:600; font-size:16px; border:none; cursor:pointer; transition:transform 0.2s, box-shadow 0.2s; }
 .hero-cta:hover { transform:scale(1.03); box-shadow:0 8px 32px rgba(230,59,46,0.3); text-decoration:none; color:#fff; }
 .hero-install { display:block; margin-top:16px; font-family:var(--font-mono); font-size:13px; color:rgba(255,255,255,0.4); }
@@ -118,6 +159,9 @@ a:hover { text-decoration:underline; }
 .install-links { display:flex; gap:24px; justify-content:center; margin-top:32px; }
 .install-link { color:rgba(255,255,255,0.5); font-size:14px; transition:color 0.2s; }
 .install-link:hover { color:#fff; }
+.install-utility-links { display:flex; gap:20px; justify-content:center; flex-wrap:wrap; margin-top:20px; font-size:14px; }
+.install-utility-links a { color:rgba(255,255,255,0.45); }
+.install-utility-links a:hover { color:#fff; text-decoration:none; }
 
 /* ── FOOTER ── */
 .footer { background:var(--black); color:rgba(255,255,255,0.4); padding:48px clamp(24px,5vw,80px); border-top:1px solid rgba(255,255,255,0.06); }
@@ -184,6 +228,7 @@ a:hover { text-decoration:underline; }
     <div class="hero-line1 reveal">Own the</div>
     <h1 class="hero-line2 reveal reveal-delay-1">Trading<br><em>Stack.</em></h1>
     <p class="hero-sub reveal reveal-delay-2">Local-first CLI that generates self-contained trading workspaces for Hyperliquid perpetual futures. No cloud dependencies, no LLM tokens, no black boxes.</p>
+    <p class="answer-block reveal reveal-delay-2">Hyperbot is a local-first CLI for building Hyperliquid perpetual futures workspaces on your own machine. It generates a self-contained trading stack, runs deterministic signal and risk code locally, and opens a live dashboard without needing cloud models, subscriptions, or hidden automation.</p>
     <a href="#install" class="hero-cta reveal reveal-delay-3">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
       Get Started
@@ -381,6 +426,11 @@ a:hover { text-decoration:underline; }
     <a href="https://github.com/gaslad/hyperbot" class="install-link">GitHub Repository</a>
     <a href="https://github.com/gaslad/hyperbot#readme" class="install-link">Documentation</a>
   </div>
+  <div class="install-utility-links reveal reveal-delay-3">
+    <a href="/about/">About</a>
+    <a href="/privacy/">Privacy</a>
+    <a href="/contact/">Contact</a>
+  </div>
 </section>
 
 <!-- Footer -->
@@ -392,12 +442,15 @@ a:hover { text-decoration:underline; }
     </div>
     <div class="footer-status">
       <span class="footer-dot"></span>
-      Open Source &middot; MIT License
+      Open Source &middot; MIT License &middot; Updated April 8, 2026
     </div>
     <div class="footer-links">
       <a href="https://github.com/gaslad/hyperbot">GitHub</a>
       <a href="https://github.com/gaslad/hyperbot#readme">Docs</a>
       <a href="https://app.hyperliquid.xyz">Hyperliquid</a>
+      <a href="/about/">About</a>
+      <a href="/privacy/">Privacy</a>
+      <a href="/contact/">Contact</a>
     </div>
   </div>
 </footer>

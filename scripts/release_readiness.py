@@ -13,6 +13,9 @@ REQUIRED_FILES = [
     ROOT / "AGENTS.md",
     ROOT / "CLAUDE.md",
     ROOT / "GEMINI.md",
+    ROOT / "STATUS.md",
+    ROOT / "NEXT.md",
+    ROOT / "LEARNINGS.md",
     ROOT / "requirements.txt",
     ROOT / "docs" / "architecture.md",
     ROOT / "docs" / "local-first-roadmap.md",
@@ -22,7 +25,12 @@ REQUIRED_FILES = [
     ROOT / "scripts" / "create_workspace.py",
     ROOT / "scripts" / "validate_apply_revision.py",
     ROOT / "scripts" / "release_readiness.py",
-    ROOT / "templates" / "workspace" / "scripts" / "apply_revision.py",
+    ROOT / "templates" / "hyperbot-multi" / "scripts" / "apply_revision.py",
+    ROOT / ".tasks" / "PROTOCOL.md",
+    ROOT / ".tasks" / "codex.md",
+    ROOT / ".tasks" / "claude.md",
+    ROOT / ".tasks" / "gemini.md",
+    ROOT / ".tasks" / "_log.md",
 ]
 WORKSPACE_TEXT_EXTENSIONS = {".md", ".json", ".py", ".yaml", ".yml", ".example"}
 WORKSPACE_FORBIDDEN_TERMS = ("Codex", "codex", "LLM", "OpenAI")
@@ -54,7 +62,7 @@ def add_warning(warnings: list[str], message: str) -> None:
 
 
 def validate_workspace_agnostic(issues: list[str]) -> None:
-    workspace_root = ROOT / "templates" / "workspace"
+    workspace_root = ROOT / "templates" / "hyperbot-multi"
     for path in workspace_root.rglob("*"):
         if not path.is_file() or path.suffix not in WORKSPACE_TEXT_EXTENSIONS:
             continue
@@ -84,6 +92,36 @@ def validate_repo_hygiene(warnings: list[str]) -> None:
                 add_warning(warnings, f"remove committed cache directory: {path.relative_to(ROOT)}")
 
 
+def validate_collaboration_contract(issues: list[str]) -> None:
+    agents = ROOT / "AGENTS.md"
+    status = ROOT / "STATUS.md"
+    next_file = ROOT / "NEXT.md"
+    learnings = ROOT / "LEARNINGS.md"
+    claude = ROOT / "CLAUDE.md"
+    gemini = ROOT / "GEMINI.md"
+
+    required_markers = {
+        agents: ["## Canonical Collaboration Files", "## Multi-Assistant Task Queue"],
+        status: ["## Done", "## In Progress", "## Blocked", "## Recent Changes"],
+        next_file: ["## Priority", "## Assumptions", "## Warnings"],
+        learnings: ["## Collaboration", "## Reporting", "## Automation", "## Repo Hygiene"],
+    }
+    for path, markers in required_markers.items():
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8")
+        for marker in markers:
+            if marker not in text:
+                add_issue(issues, f"{path.relative_to(ROOT)} is missing expected section: {marker}")
+
+    for path in (claude, gemini):
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8").strip()
+        if "AGENTS.md" not in text:
+            add_issue(issues, f"{path.relative_to(ROOT)} should point back to AGENTS.md")
+
+
 def main() -> int:
     issues: list[str] = []
     warnings: list[str] = []
@@ -93,6 +131,7 @@ def main() -> int:
             add_issue(issues, f"missing required release file: {path.relative_to(ROOT)}")
 
     validate_workspace_agnostic(issues)
+    validate_collaboration_contract(issues)
     validate_repo_hygiene(warnings)
 
     run(
@@ -104,10 +143,11 @@ def main() -> int:
             "scripts/release_readiness.py",
             "scripts/validate_apply_revision.py",
             "scripts/create_workspace.py",
-            "templates/workspace/scripts/apply_revision.py",
-            "templates/workspace/scripts/profile_symbol_strategy.py",
-            "templates/workspace/tests/test_hl_client.py",
-            "templates/workspace/tests/test_signals.py",
+            "templates/hyperbot-multi/scripts/apply_revision.py",
+            "templates/hyperbot-multi/scripts/profile_symbol_strategy.py",
+            "templates/hyperbot-multi/tests/test_hl_client.py",
+            "templates/hyperbot-multi/tests/test_signals.py",
+            "templates/hyperbot-multi/tests/test_trade_journal.py",
         ],
         cwd=ROOT,
     )

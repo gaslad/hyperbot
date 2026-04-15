@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Privacy Policy</title>
+<meta name="description" content="Privacy policy for the Hyperbot landing site and product workflow.">
+<link rel="canonical" href="https://hyperbot.enseris.com/privacy/">
+<meta name="theme-color" content="#111111">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Serif+Display:ital@0;1&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebPage",
+  "name": "Privacy Policy",
+  "url": "https://hyperbot.enseris.com/privacy/",
+  "isPartOf": {
+    "@type": "WebSite",
+    "@id": "https://hyperbot.enseris.com/#website"
+  },
+  "about": {
+    "@type": "Organization",
+    "@id": "https://hyperbot.enseris.com/#organization"
+  },
+  "datePublished": "2026-04-08",
+  "dateModified": "2026-04-08"
+}
+</script>
+<style>
+:root { --paper:#E8E4DD; --signal:#E63B2E; --offwhite:#F5F3EE; --black:#111111; --gray:#555; --font-heading:'Space Grotesk',sans-serif; --font-drama:'DM Serif Display',serif; --font-mono:'Space Mono',monospace; --font-body:'Space Grotesk',sans-serif; }
+* { box-sizing:border-box; }
+body { margin:0; font-family:var(--font-body); background:var(--offwhite); color:var(--black); line-height:1.6; -webkit-font-smoothing:antialiased; }
+a { color:var(--signal); text-decoration:none; }
+a:hover { text-decoration:underline; }
+.wrap { min-height:100vh; }
+.hero { padding:clamp(32px,6vw,72px) clamp(24px,5vw,80px) 0; }
+.nav { display:flex; justify-content:space-between; align-items:center; gap:20px; flex-wrap:wrap; margin-bottom:72px; }
+.brand { font-family:var(--font-heading); font-size:18px; font-weight:700; color:var(--black); }
+.nav-links { display:flex; gap:18px; flex-wrap:wrap; font-size:14px; }
+.eyebrow { font-family:var(--font-mono); font-size:12px; text-transform:uppercase; letter-spacing:0.16em; color:var(--signal); margin-bottom:16px; }
+h1 { font-family:var(--font-drama); font-style:italic; font-weight:400; font-size:clamp(44px,8vw,88px); line-height:0.95; letter-spacing:-0.03em; margin:0 0 24px; }
+.answer { max-width:760px; background:rgba(17,17,17,0.05); border-left:3px solid var(--black); padding:18px 20px; font-size:17px; line-height:1.7; margin-bottom:32px; }
+.content { max-width:980px; padding:0 clamp(24px,5vw,80px) clamp(48px,8vw,80px); }
+.block { background:var(--paper); border-top:3px solid var(--black); padding:28px; margin-bottom:20px; }
+.block h2 { font-family:var(--font-heading); font-size:22px; line-height:1.2; margin:0 0 12px; }
+.block p, .block li { color:var(--gray); font-size:16px; }
+.block ul { margin:0; padding-left:18px; }
+.footer { margin-top:40px; background:var(--black); color:rgba(255,255,255,0.65); padding:28px clamp(24px,5vw,80px); }
+.footer-inner { max-width:1200px; margin:0 auto; display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap; align-items:center; }
+.footer-links { display:flex; gap:18px; flex-wrap:wrap; }
+.footer a { color:rgba(255,255,255,0.7); }
+@media (max-width: 820px) { .nav { margin-bottom:48px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="hero">
+    <div class="nav">
+      <a class="brand" href="/">Hyperbot</a>
+      <div class="nav-links">
+        <a href="/">Home</a>
+        <a href="/about/">About</a>
+        <a href="/contact/">Contact</a>
+      </div>
+    </div>
+    <div class="eyebrow">Privacy Policy</div>
+    <h1>Clear rules, local tools.</h1>
+    <p class="answer">This page explains how the Hyperbot landing site and product handle data. The product is designed to keep trading logic local on the user's machine, while the marketing site itself functions as a static page with normal hosting-level access logs.</p>
+  </header>
+
+  <main class="content">
+    <section class="block">
+      <h2>What we collect</h2>
+      <p>The landing site does not ask for an account or a payment method. If you browse the site, standard hosting infrastructure may record request metadata such as IP address, user agent, and timestamps.</p>
+    </section>
+
+    <section class="block">
+      <h2>What the product stores</h2>
+      <p>Hyperbot's wallet connection flow stores the credentials needed for local trading on the user's machine. The project instructions specify macOS Keychain as the preferred storage location, with a filesystem fallback for local development.</p>
+    </section>
+
+    <section class="block">
+      <h2>Third-party services</h2>
+      <ul>
+        <li>GitHub links on the site send you to GitHub, which has its own privacy policy.</li>
+        <li>Netlify hosts the landing page and may process basic access logs as part of normal delivery.</li>
+        <li>Hyperliquid API calls are part of the trading workflow when the product is used locally.</li>
+      </ul>
+    </section>
+
+    <section class="block">
+      <h2>Questions</h2>
+      <p>If you need to discuss privacy or data handling, use the contact page or open an issue in the repository.</p>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <div>Hyperbot · Updated April 8, 2026</div>
+      <div class="footer-links">
+        <a href="/">Home</a>
+        <a href="/about/">About</a>
+        <a href="/contact/">Contact</a>
+      </div>
+    </div>
+  </footer>
+</div>
+</body>
+</html>

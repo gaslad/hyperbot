@@ -1,0 +1,12 @@
+{
+  "host": "82.197.83.159",
+  "port": 65002,
+  "user": "u951967435",
+  "domains": {
+    "hyperbot.enseris.com": {
+      "remote_path": "domains/hyperbot.enseris.com/public_html",
+      "local_dist": "website",
+      "url": "https://hyperbot.enseris.com"
+    }
+  }
+}

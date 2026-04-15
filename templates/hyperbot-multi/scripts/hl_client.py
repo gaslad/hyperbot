@@ -569,14 +569,15 @@ def round_size(size: float, sz_decimals: int) -> float:
 
 
 def round_price(price: float, coin: str, base_url: str = HL_MAINNET) -> float:
-    """Round price to a valid tick size. HL uses 5 significant figures."""
-    # Hyperliquid uses 5 significant figures for prices
+    """Round price to 8 decimal places for Hyperliquid wire serialization.
+
+    Hyperliquid SDK uses 8 decimals for float-to-wire conversion to avoid
+    precision issues. This prevents errors like "float_to_wire causes rounding".
+    """
     if price <= 0:
         return price
-    sig_figs = 5
-    magnitude = math.floor(math.log10(abs(price)))
-    factor = 10 ** (sig_figs - 1 - magnitude)
-    return round(price * factor) / factor
+    # 8 decimal places is the safe maximum for Hyperliquid's float serialization
+    return round(price, 8)
 
 
 # ---------------------------------------------------------------------------

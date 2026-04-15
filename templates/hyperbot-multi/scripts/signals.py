@@ -528,32 +528,56 @@ def detect_fib_retracement(config: dict, candles_1d: list[dict], candles_4h: lis
     reasons = []
     score = 0.0
 
+    # Compute all Fib level prices for the signal metadata
+    fib_map: dict[float, float] = {}
+    for lvl in _FIB_LEVELS:
+        if is_upswing:
+            fib_map[lvl] = swing_high - swing_range * lvl
+        else:
+            fib_map[lvl] = swing_low + swing_range * lvl
+
+    # Retracement depth: how far price has pulled back into the swing
+    if is_upswing:
+        retrace_pct = ((swing_high - current_price) / swing_range * 100) if swing_range > 0 else 0.0
+    else:
+        retrace_pct = ((current_price - swing_low) / swing_range * 100) if swing_range > 0 else 0.0
+
+    # Distance to nearest Fib level
+    dist_to_fib_pct = abs(current_price - fib_price) / current_price * 100 if current_price > 0 else 0.0
+
     if is_upswing and (trend_bullish or not require_trend):
         swing_age = n_bars - 1 - high_idx
         if swing_age > max_swing_age:
             return Signal(Direction.NONE, strategy_id, "fib_retracement", 0.0, current_price,
                           [f"swing high is {swing_age} bars old (max {max_swing_age})"])
 
-        reasons.append(f"upswing {swing_low:.2f} -> {swing_high:.2f} ({swing_range / swing_low * 100:.1f}%)")
+        reasons.append(f"upswing ${swing_low:.2f} \u2192 ${swing_high:.2f} ({swing_range / swing_low * 100:.1f}%)")
         score += 0.2
 
-        reasons.append(f"nearest Fib: {fib_level} at ${fib_price:.2f}")
+        # Fib progress line: which level is being targeted and how far in
+        fib_pct_label = f"{fib_level:.3f}".rstrip('0').rstrip('.')
+        reasons.append(f"retraced {retrace_pct:.1f}% \u2014 targeting {fib_pct_label} Fib at ${fib_price:.2f}")
+
         if in_zone:
-            reasons.append(f"price ${current_price:.2f} in {fib_level} zone (+/- {zone_tol * 100:.1f}%)")
+            reasons.append(f"price in {fib_pct_label} zone ({dist_to_fib_pct:.1f}% away)")
             score += _FIB_CONFIDENCE.get(fib_level, 0.3)
         else:
-            reasons.append(f"price ${current_price:.2f} outside Fib zones (closest {fib_level} at ${fib_price:.2f})")
+            reasons.append(f"price {dist_to_fib_pct:.1f}% from {fib_pct_label} level \u2014 not in zone yet")
+
+        # Show all Fib levels as context
+        fib_map_str = " | ".join(f"{f:.3f}".rstrip('0').rstrip('.') + f"=${p:.2f}" for f, p in sorted(fib_map.items()))
+        reasons.append(f"Fib levels: {fib_map_str}")
 
         h4_c = closes(candles_4h)
         h4_bounce = len(h4_c) >= 3 and _rising(h4_c, 2)
         if h4_bounce:
-            reasons.append("4H closes rising — bounce confirmation")
+            reasons.append("4H closes rising \u2014 bounce confirmation")
             score += 0.2
         else:
             reasons.append("4H bounce not confirmed")
 
         if trend_bullish:
-            reasons.append(f"daily SMA{trend_sma_period} rising — trend aligned")
+            reasons.append(f"daily SMA{trend_sma_period} rising \u2014 trend aligned")
             score += 0.2
 
         if in_zone and h4_bounce:
@@ -572,26 +596,31 @@ def detect_fib_retracement(config: dict, candles_1d: list[dict], candles_4h: lis
             return Signal(Direction.NONE, strategy_id, "fib_retracement", 0.0, current_price,
                           [f"swing low is {swing_age} bars old (max {max_swing_age})"])
 
-        reasons.append(f"downswing {swing_high:.2f} -> {swing_low:.2f} ({swing_range / swing_high * 100:.1f}%)")
+        reasons.append(f"downswing ${swing_high:.2f} \u2192 ${swing_low:.2f} ({swing_range / swing_high * 100:.1f}%)")
         score += 0.2
 
-        reasons.append(f"nearest Fib: {fib_level} at ${fib_price:.2f}")
+        fib_pct_label = f"{fib_level:.3f}".rstrip('0').rstrip('.')
+        reasons.append(f"retraced {retrace_pct:.1f}% \u2014 targeting {fib_pct_label} Fib at ${fib_price:.2f}")
+
         if in_zone:
-            reasons.append(f"price ${current_price:.2f} in {fib_level} zone (+/- {zone_tol * 100:.1f}%)")
+            reasons.append(f"price in {fib_pct_label} zone ({dist_to_fib_pct:.1f}% away)")
             score += _FIB_CONFIDENCE.get(fib_level, 0.3)
         else:
-            reasons.append(f"price ${current_price:.2f} outside Fib zones (closest {fib_level} at ${fib_price:.2f})")
+            reasons.append(f"price {dist_to_fib_pct:.1f}% from {fib_pct_label} level \u2014 not in zone yet")
+
+        fib_map_str = " | ".join(f"{f:.3f}".rstrip('0').rstrip('.') + f"=${p:.2f}" for f, p in sorted(fib_map.items()))
+        reasons.append(f"Fib levels: {fib_map_str}")
 
         h4_c = closes(candles_4h)
         h4_reject = len(h4_c) >= 3 and _falling(h4_c, 2)
         if h4_reject:
-            reasons.append("4H closes falling — rejection confirmation")
+            reasons.append("4H closes falling \u2014 rejection confirmation")
             score += 0.2
         else:
             reasons.append("4H rejection not confirmed")
 
         if trend_bearish:
-            reasons.append(f"daily SMA{trend_sma_period} falling — trend aligned")
+            reasons.append(f"daily SMA{trend_sma_period} falling \u2014 trend aligned")
             score += 0.2
 
         if in_zone and h4_reject:

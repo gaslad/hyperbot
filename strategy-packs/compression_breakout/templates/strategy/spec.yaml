@@ -12,4 +12,4 @@ exit:
   tp2: 2R for 50 percent
 risk:
   max_leverage: 4
-  risk_per_trade_pct: 1.0
+  risk_per_trade_pct: 0.5

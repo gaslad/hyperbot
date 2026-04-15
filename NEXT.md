@@ -1,26 +1,51 @@
-# Next — Hyperbot Session Handoff
+# Next
 
-Last updated: 2026-04-02
+Last updated: 2026-04-15
 
 ## Just Completed
-- Added pair-level auto strategy routing in [dashboard.py](/Users/gaston/Projects/hyperbot/templates/hyperbot-multi/scripts/dashboard.py): cards can now run in `auto` mode, evaluate `scalp_v2` plus the legacy packs every cycle, and prefer the strongest live setup instead of relying on a stale manual preselection.
-- Added educational card explainers in [dashboard.py](/Users/gaston/Projects/hyperbot/templates/hyperbot-multi/scripts/dashboard.py): each card now shows a collapsed footnote plus an expanded `Bot View` with what the bot sees, why it is acting or waiting, and the active risk guardrails.
-- Updated the add-token modal to recommend `Auto-pick best setup`, while manual override still exists per card for pinning a specific strategy.
-- Relaunched the live dashboard from `/tmp/hyperbot-workspace` on `http://127.0.0.1:8765`; the current launcher session in this Codex run is `73959`.
+
+- Implemented **growth mode** — a switchable aggressive trading preset for fast account growth
+- `scalp_strategy_v2.py`: added `growth_config()` and `preservation_config()` factory functions
+  - Growth: 2% risk, 4× max leverage, 1.2× RVOL filter, 1.5R final target, 5% daily halt, 7 session losses
+  - Preservation: unchanged original defaults (0.5% risk, 2× leverage, 1.8R target)
+- `position_manager.py`: made trailing stop configurable via `ManagementState` fields
+  - New fields: `trail_gap_r`, `trail_min_lock_r`, `trail_activation_r`, `trail_ratchet_threshold_r`
+  - Defaults unchanged (backwards-compatible); growth mode passes tighter values (0.3R gap vs 0.5R)
+- `dashboard.py`: full growth mode integration
+  - `--mode growth|preservation` CLI flag + `HYPERBOT_MODE` env var
+  - Mode-dependent: 15m cooldown (was 30m), 45m reentry lockout (was 2hr), 6 scan batch (was 3), 3× default leverage
+  - `DEFAULT_LIQUID_PAIRS`: BTC, ETH, SOL, DOGE, SUI, PEPE, WIF, LINK, AVAX, ARB, HYPE, XRP — auto-registered in growth mode
+  - Growth mode overrides STATE risk params and prints mode banner on startup
+- `operator-policy.json`: added `growth_bands` alongside `safe_bands`, `default_liquid_pairs` list, bumped to version 2
+- `AGENTS.md`: documented Trading Modes section with full parameter comparison table
 
 ## Pending — Ready to Pick Up
-1. Verify the new auto router on live scans by watching `/api/state` or the dashboard UI and confirming each pair’s `selected_pack_id`, `bot_note`, and `last_signals` are coherent across BTC, ETH, SOL, HYPE, and TAO.
-2. Decide whether `compression_breakout` and `liquidity_sweep_reversal` are good enough to keep in auto mode, or whether the router should be limited to `scalp_v2` plus one legacy strategy until there is better realized-trade evidence.
-3. Commit the daily review loop into a persistent automation if the UI keeps failing to create it from the suggested directive. The intended schedule is daily at 8:00 AM Brisbane time.
-4. Consider adding an explicit net-edge ranking model for legacy strategies so auto mode does more than compare raw confidence.
 
-## Blockers
-- There is no reliable realized-trade sample yet for the new auto selector. The ranking logic is heuristic and needs live observation before treating it as trustworthy.
-- The automation UI has been flaky: the user reported the `Open` action did not create the automation even after regenerating the directive.
-- Dashboard relaunch still requires escalation because binding the local server is restricted inside the sandbox.
+1. **Fix `hyperbot` CLI path** — user got `command not found: hyperbot` when trying to launch growth mode. Either `~/.local/bin` isn't on PATH or the symlink was never created by `install.sh`. Check `~/.local/bin/hyperbot` exists and `echo $PATH` includes it. May need `source ~/.zshrc` or re-run `install.sh`.
+2. **First live growth mode test** — once CLI works, launch with `hyperbot dashboard --mode growth --live --confirm-risk` and monitor the first 4-6 hours. Watch for:
+   - Correct pair auto-loading (should see 12 pairs registered on startup)
+   - Strategy using 2% risk and 4× leverage cap
+   - Tighter trailing stops activating at 0.4R instead of 0.5R
+   - 15-minute cooldowns between trades on the same pair
+3. **Monitor SL fixes from previous session** — the SL oscillation fix is still untested in production. Growth mode's higher frequency will stress-test it faster.
+4. Verify `hyperbot.enseris.com` DNS propagation (from previous session — may be resolved by now).
+5. Consider adding a dashboard UI toggle for growth/preservation mode so it can be switched without restarting.
+
+## Blockers & Warnings
+
+- `hyperbot` CLI not on user's PATH — blocks all launch attempts until resolved
+- Growth mode is code-complete but **untested in live trading** — first session should be monitored closely
+- All growth mode changes are in templates; existing workspaces need a dashboard restart to pick up the sync
 
 ## Decisions Made
-- `Blaze Scalp` is excluded from auto selection and remains manual-only because it is still a pipeline/test strategy, not a candidate for live routing preference.
-- Auto mode currently considers `scalp_v2`, `trend_pullback`, `compression_breakout`, and `liquidity_sweep_reversal`, then selects the strongest current signal using a simple rank based on direction, confidence, and pack preference.
-- Each pair still obeys hard guardrails from the operator: max leverage stays capped at `2x`, risk stays capped per card, and margin mode remains explicit.
-- Educational transparency is now part of the card surface, not hidden only in logs or the notification center.
+
+- Growth mode is a separate preset, not a modification of defaults — `preservation_config()` returns the exact original settings, so switching back is lossless
+- RVOL was the only regime filter relaxed (1.5× → 1.2×); all other quality filters (ADX, choppiness, EMA, CVD) stay strict in both modes
+- Default liquid pairs list is curated for Hyperliquid specifically: all 12 have tight spreads and deep L2 books as of April 2026
+- Trail parameters are passed through `ManagementState` rather than module-level constants, keeping position_manager stateless and testable
+
+## Assumptions
+
+- `AGENTS.md` is the single source of truth for repo instructions
+- Workspace script sync (`hyperbot.py dashboard`) will push template changes to active workspaces on next restart
+- The 12 default pairs remain liquid on Hyperliquid — should be re-validated if market conditions change significantly

@@ -12,3 +12,7 @@ venv/
 build/
 dist/
 *.egg-info/
+.claude/
+.seo77/
+**/.netlify/
+**/node_modules/
