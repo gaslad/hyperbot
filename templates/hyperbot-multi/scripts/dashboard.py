@@ -90,23 +90,31 @@ SCAN_BACKOFF_FAILURES_THRESHOLD = 3   # consecutive failures before backoff kick
 PORTFOLIO_SYNC_SECONDS = 45.0
 ERROR_LOG_THROTTLE_SECONDS = 60.0
 
-# Default liquid pairs — top Hyperliquid perps by volume & tight spreads.
-# Used when no pairs are configured in the workspace manifest.
-# Curated for scalp_v2: sufficient volatility, <0.05% spread, deep L2 book.
-DEFAULT_LIQUID_PAIRS: list[dict] = [
-    {"coin": "BTC",   "symbol": "BTC"},
-    {"coin": "ETH",   "symbol": "ETH"},
-    {"coin": "SOL",   "symbol": "SOL"},
-    {"coin": "DOGE",  "symbol": "DOGE"},
-    {"coin": "SUI",   "symbol": "SUI"},
-    {"coin": "PEPE",  "symbol": "PEPE"},
-    {"coin": "WIF",   "symbol": "WIF"},
-    {"coin": "LINK",  "symbol": "LINK"},
-    {"coin": "AVAX",  "symbol": "AVAX"},
-    {"coin": "ARB",   "symbol": "ARB"},
-    {"coin": "HYPE",  "symbol": "HYPE"},
-    {"coin": "XRP",   "symbol": "XRP"},
-]
+# Growth mode: how many top-volume pairs to auto-add
+GROWTH_TOP_PAIRS_COUNT = 12
+# Minimum 24h notional volume (USD) to qualify as liquid enough for scalping
+GROWTH_MIN_DAILY_VOLUME = 5_000_000
+
+
+def fetch_top_liquid_pairs(count: int = GROWTH_TOP_PAIRS_COUNT) -> list[dict]:
+    """Fetch the top perps by 24h notional volume from Hyperliquid."""
+    try:
+        data = hl_client.get_meta_and_asset_ctxs()
+        meta, ctxs = data[0], data[1]
+        universe = meta.get("universe", [])
+        ranked = []
+        for i, asset in enumerate(universe):
+            if i >= len(ctxs):
+                break
+            vol = float(ctxs[i].get("dayNtlVlm", 0))
+            if vol >= GROWTH_MIN_DAILY_VOLUME:
+                ranked.append({"coin": asset["name"], "symbol": asset["name"], "volume": vol})
+        ranked.sort(key=lambda x: x["volume"], reverse=True)
+        return [{"coin": r["coin"], "symbol": r["symbol"]} for r in ranked[:count]]
+    except Exception as e:
+        print(f"[hyperbot] Warning: could not fetch liquid pairs: {e}", flush=True)
+        # Fallback to well-known liquid pairs
+        return [{"coin": c, "symbol": c} for c in ("BTC", "ETH", "SOL", "DOGE", "SUI", "PEPE")]
 MIN_LEGACY_SIGNAL_CONFIDENCE = 0.65
 AUTO_STRATEGY_PACK_IDS = (
     "scalp_v2",
@@ -4390,8 +4398,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     for ps in STATE.pairs.values():
                         ps.max_leverage = 4.0
                         ps.risk_per_trade_pct = 2.0
-                    # Add any missing default liquid pairs
-                    for lp in DEFAULT_LIQUID_PAIRS:
+                    # Add top liquid pairs not already tracked
+                    liquid = fetch_top_liquid_pairs()
+                    for lp in liquid:
                         if lp["coin"] not in STATE.pairs:
                             STATE.add_pair(lp["coin"], lp["symbol"])
                             ps = STATE.pairs[lp["coin"]]
@@ -4849,10 +4858,11 @@ def main() -> int:
             ps.max_leverage = STATE.max_leverage
             ps.risk_per_trade_pct = STATE.risk_per_trade_pct
 
-    # In growth mode, ensure all default liquid pairs are registered
+    # In growth mode, fetch top liquid pairs and add any not already loaded
     if TRADING_MODE == "growth":
+        liquid = fetch_top_liquid_pairs()
         added = []
-        for lp in DEFAULT_LIQUID_PAIRS:
+        for lp in liquid:
             if lp["coin"] not in STATE.pairs:
                 STATE.add_pair(lp["coin"], lp["symbol"])
                 ps = STATE.pairs[lp["coin"]]
@@ -4866,8 +4876,8 @@ def main() -> int:
         if STATE.pairs:
             STATE.setup_complete = True
         if added:
-            print(f"[hyperbot] GROWTH MODE — added {len(added)} liquid pairs: {', '.join(added)}", flush=True)
-        print(f"[hyperbot] GROWTH MODE — total {len(STATE.pairs)} pairs active: {', '.join(STATE.pairs.keys())}", flush=True)
+            print(f"[hyperbot] GROWTH MODE — added top liquid pairs: {', '.join(added)}", flush=True)
+        print(f"[hyperbot] GROWTH MODE — {len(STATE.pairs)} pairs active: {', '.join(STATE.pairs.keys())}", flush=True)
 
     # If no manifest but we have credentials, still mark setup complete
     # so the trading loop starts and pairs can be added via the UI
