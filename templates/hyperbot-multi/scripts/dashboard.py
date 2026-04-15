@@ -4390,6 +4390,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     for ps in STATE.pairs.values():
                         ps.max_leverage = 4.0
                         ps.risk_per_trade_pct = 2.0
+                    # Add any missing default liquid pairs
+                    for lp in DEFAULT_LIQUID_PAIRS:
+                        if lp["coin"] not in STATE.pairs:
+                            STATE.add_pair(lp["coin"], lp["symbol"])
+                            ps = STATE.pairs[lp["coin"]]
+                            ps.max_leverage = 4.0
+                            ps.risk_per_trade_pct = 2.0
+                    if not STATE.coin and STATE.pairs:
+                        first = next(iter(STATE.pairs))
+                        STATE.coin = first
+                        STATE.symbol = STATE.pairs[first].symbol
+                    STATE.setup_complete = True
             else:
                 PAIR_COOLDOWN_SECONDS = 30 * 60
                 PAIR_REENTRY_LOCKOUT_SECONDS = 2 * 60 * 60
@@ -4837,16 +4849,25 @@ def main() -> int:
             ps.max_leverage = STATE.max_leverage
             ps.risk_per_trade_pct = STATE.risk_per_trade_pct
 
-    # In growth mode, auto-register default liquid pairs if none are loaded yet
-    if TRADING_MODE == "growth" and not STATE.pairs:
+    # In growth mode, ensure all default liquid pairs are registered
+    if TRADING_MODE == "growth":
+        added = []
         for lp in DEFAULT_LIQUID_PAIRS:
-            STATE.add_pair(lp["coin"], lp["symbol"])
-        if STATE.pairs:
+            if lp["coin"] not in STATE.pairs:
+                STATE.add_pair(lp["coin"], lp["symbol"])
+                ps = STATE.pairs[lp["coin"]]
+                ps.max_leverage = STATE.max_leverage
+                ps.risk_per_trade_pct = STATE.risk_per_trade_pct
+                added.append(lp["coin"])
+        if not STATE.coin and STATE.pairs:
             first = next(iter(STATE.pairs))
             STATE.coin = first
             STATE.symbol = STATE.pairs[first].symbol
+        if STATE.pairs:
             STATE.setup_complete = True
-            print(f"[hyperbot] GROWTH MODE — auto-loaded {len(STATE.pairs)} liquid pairs: {', '.join(STATE.pairs.keys())}", flush=True)
+        if added:
+            print(f"[hyperbot] GROWTH MODE — added {len(added)} liquid pairs: {', '.join(added)}", flush=True)
+        print(f"[hyperbot] GROWTH MODE — total {len(STATE.pairs)} pairs active: {', '.join(STATE.pairs.keys())}", flush=True)
 
     # If no manifest but we have credentials, still mark setup complete
     # so the trading loop starts and pairs can be added via the UI
