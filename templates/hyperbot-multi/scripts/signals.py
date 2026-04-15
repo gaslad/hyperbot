@@ -407,6 +407,212 @@ def detect_liquidity_sweep(config: dict, candles_1d: list[dict], candles_4h: lis
 
 
 # ---------------------------------------------------------------------------
+# Strategy: Fibonacci Retracement
+# ---------------------------------------------------------------------------
+
+def _find_swing(candles: list[dict], lookback: int) -> tuple[float, float, int, int]:
+    """Find the most recent significant swing high and swing low.
+
+    Returns (swing_low, swing_high, low_idx, high_idx) where indices are
+    positions within the *candles* list.  We scan the last *lookback* bars
+    (excluding the current bar) so the swing is "confirmed".
+    """
+    h = highs(candles)
+    l = lows(candles)
+    # Exclude the last bar (still forming)
+    window_h = h[-(lookback + 1):-1]
+    window_l = l[-(lookback + 1):-1]
+    if not window_h or not window_l:
+        return 0.0, 0.0, 0, 0
+    offset = len(h) - lookback - 1
+    high_val = max(window_h)
+    low_val = min(window_l)
+    high_idx = offset + window_h.index(high_val)
+    low_idx = offset + window_l.index(low_val)
+    return low_val, high_val, low_idx, high_idx
+
+
+_FIB_LEVELS = (0.236, 0.382, 0.5, 0.618, 0.786)
+
+# Confidence bonus per level — deeper retracements in a trend are higher-conviction entries.
+_FIB_CONFIDENCE = {0.236: 0.1, 0.382: 0.2, 0.5: 0.3, 0.618: 0.4, 0.786: 0.25}
+
+
+def _best_fib_level(price: float, swing_low: float, swing_high: float,
+                    swing_range: float, is_upswing: bool,
+                    zone_tol: float) -> tuple[float, float, bool]:
+    """Pick the Fib level closest to *price* that falls within the tolerance zone.
+
+    Returns (fib_level, fib_price, in_zone).  If no level is in zone, returns
+    the nearest one with in_zone=False.
+    """
+    zone_half = swing_range * zone_tol
+    best_level = 0.0
+    best_price = 0.0
+    best_dist = float("inf")
+    best_in_zone = False
+
+    for lvl in _FIB_LEVELS:
+        if is_upswing:
+            fp = swing_high - swing_range * lvl
+        else:
+            fp = swing_low + swing_range * lvl
+        dist = abs(price - fp)
+        in_z = dist <= zone_half
+        # Prefer any in-zone hit; among in-zone hits prefer the closest
+        if (in_z and not best_in_zone) or (in_z == best_in_zone and dist < best_dist):
+            best_level, best_price, best_dist, best_in_zone = lvl, fp, dist, in_z
+
+    return best_level, best_price, best_in_zone
+
+
+def detect_fib_retracement(config: dict, candles_1d: list[dict], candles_4h: list[dict], current_price: float) -> Signal:
+    strategy_id = config.get("strategy_id", "unknown")
+    entry_cfg = config.get("entry", {})
+    filters_cfg = config.get("filters", {})
+    risk_cfg = config.get("risk", {})
+
+    lookback = entry_cfg.get("swing_lookback_bars", 30)
+    trend_sma_period = entry_cfg.get("trend_sma_period", 50)
+    require_trend = entry_cfg.get("require_trend_alignment", True)
+    max_swing_age = filters_cfg.get("max_swing_age_bars", 20)
+
+    daily_closes = closes(candles_1d)
+
+    if len(candles_1d) < lookback + 2:
+        return Signal(Direction.NONE, strategy_id, "fib_retracement", 0.0, current_price, ["insufficient data"])
+
+    # --- ATR-adaptive parameters ---
+    # Derive zone tolerance, min swing size, and stop buffer from the asset's
+    # own volatility so they scale automatically across BTC vs HYPE vs SOL.
+    daily_atr = atr(candles_1d, 14)
+    if daily_atr is None or current_price <= 0:
+        return Signal(Direction.NONE, strategy_id, "fib_retracement", 0.0, current_price, ["insufficient data for ATR"])
+    atr_pct = daily_atr / current_price  # e.g. 0.03 = 3% daily ATR
+    zone_tol = atr_pct * 0.75           # zone = 75% of daily ATR (BTC ~2.3%, HYPE ~5%)
+    min_swing_pct = atr_pct * 3.0       # swing must be >= 3x daily ATR to matter
+    stop_buffer_pct = atr_pct * 0.5     # stop buffer = half a daily ATR below swing
+
+    # --- 1. Trend filter via SMA on daily ---
+    sma_val = sma(daily_closes, trend_sma_period)
+    if sma_val is None:
+        return Signal(Direction.NONE, strategy_id, "fib_retracement", 0.0, current_price,
+                      [f"need {trend_sma_period} daily bars for SMA"])
+
+    prior_sma = sma(daily_closes[:-1], trend_sma_period)
+    trend_bullish = current_price > sma_val and prior_sma is not None and sma_val > prior_sma
+    trend_bearish = current_price < sma_val and prior_sma is not None and sma_val < prior_sma
+
+    if require_trend and not trend_bullish and not trend_bearish:
+        return Signal(Direction.NONE, strategy_id, "fib_retracement", 0.0, current_price,
+                      ["no clear daily trend — SMA flat or price crossing"])
+
+    # --- 2. Find the swing ---
+    swing_low, swing_high, low_idx, high_idx = _find_swing(candles_1d, lookback)
+    swing_range = swing_high - swing_low
+    if swing_range <= 0:
+        return Signal(Direction.NONE, strategy_id, "fib_retracement", 0.0, current_price,
+                      ["no valid swing detected"])
+
+    if swing_range / swing_low < min_swing_pct:
+        return Signal(Direction.NONE, strategy_id, "fib_retracement", 0.0, current_price,
+                      [f"swing {swing_range / swing_low * 100:.1f}% too small (need {min_swing_pct * 100:.1f}%)"])
+
+    is_upswing = high_idx > low_idx
+    n_bars = len(candles_1d)
+
+    # --- 3. Auto-select the best Fibonacci level ---
+    fib_level, fib_price, in_zone = _best_fib_level(
+        current_price, swing_low, swing_high, swing_range, is_upswing, zone_tol)
+
+    reasons = []
+    score = 0.0
+
+    if is_upswing and (trend_bullish or not require_trend):
+        swing_age = n_bars - 1 - high_idx
+        if swing_age > max_swing_age:
+            return Signal(Direction.NONE, strategy_id, "fib_retracement", 0.0, current_price,
+                          [f"swing high is {swing_age} bars old (max {max_swing_age})"])
+
+        reasons.append(f"upswing {swing_low:.2f} -> {swing_high:.2f} ({swing_range / swing_low * 100:.1f}%)")
+        score += 0.2
+
+        reasons.append(f"nearest Fib: {fib_level} at ${fib_price:.2f}")
+        if in_zone:
+            reasons.append(f"price ${current_price:.2f} in {fib_level} zone (+/- {zone_tol * 100:.1f}%)")
+            score += _FIB_CONFIDENCE.get(fib_level, 0.3)
+        else:
+            reasons.append(f"price ${current_price:.2f} outside Fib zones (closest {fib_level} at ${fib_price:.2f})")
+
+        h4_c = closes(candles_4h)
+        h4_bounce = len(h4_c) >= 3 and _rising(h4_c, 2)
+        if h4_bounce:
+            reasons.append("4H closes rising — bounce confirmation")
+            score += 0.2
+        else:
+            reasons.append("4H bounce not confirmed")
+
+        if trend_bullish:
+            reasons.append(f"daily SMA{trend_sma_period} rising — trend aligned")
+            score += 0.2
+
+        if in_zone and h4_bounce:
+            direction = Direction.BUY
+            stop_loss = swing_low * (1 - stop_buffer_pct)
+            risk = current_price - stop_loss
+            take_profit = current_price + risk
+        else:
+            direction = Direction.NONE
+            stop_loss = None
+            take_profit = None
+
+    elif not is_upswing and (trend_bearish or not require_trend):
+        swing_age = n_bars - 1 - low_idx
+        if swing_age > max_swing_age:
+            return Signal(Direction.NONE, strategy_id, "fib_retracement", 0.0, current_price,
+                          [f"swing low is {swing_age} bars old (max {max_swing_age})"])
+
+        reasons.append(f"downswing {swing_high:.2f} -> {swing_low:.2f} ({swing_range / swing_high * 100:.1f}%)")
+        score += 0.2
+
+        reasons.append(f"nearest Fib: {fib_level} at ${fib_price:.2f}")
+        if in_zone:
+            reasons.append(f"price ${current_price:.2f} in {fib_level} zone (+/- {zone_tol * 100:.1f}%)")
+            score += _FIB_CONFIDENCE.get(fib_level, 0.3)
+        else:
+            reasons.append(f"price ${current_price:.2f} outside Fib zones (closest {fib_level} at ${fib_price:.2f})")
+
+        h4_c = closes(candles_4h)
+        h4_reject = len(h4_c) >= 3 and _falling(h4_c, 2)
+        if h4_reject:
+            reasons.append("4H closes falling — rejection confirmation")
+            score += 0.2
+        else:
+            reasons.append("4H rejection not confirmed")
+
+        if trend_bearish:
+            reasons.append(f"daily SMA{trend_sma_period} falling — trend aligned")
+            score += 0.2
+
+        if in_zone and h4_reject:
+            direction = Direction.SELL
+            stop_loss = swing_high * (1 + stop_buffer_pct)
+            risk = stop_loss - current_price
+            take_profit = current_price - risk
+        else:
+            direction = Direction.NONE
+            stop_loss = None
+            take_profit = None
+
+    else:
+        return Signal(Direction.NONE, strategy_id, "fib_retracement", 0.0, current_price,
+                      ["swing direction conflicts with trend"])
+
+    return Signal(direction, strategy_id, "fib_retracement", min(score, 1.0), current_price,
+                  reasons, current_price if direction != Direction.NONE else None, stop_loss, take_profit)
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
 
@@ -414,6 +620,7 @@ DETECTORS = {
     "trend_pullback": detect_trend_pullback,
     "compression_breakout": detect_compression_breakout,
     "liquidity_sweep_reversal": detect_liquidity_sweep,
+    "fib_retracement": detect_fib_retracement,
 }
 
 

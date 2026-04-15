@@ -1,0 +1,15 @@
+strategy_id: __STRATEGY_ID__
+market: __SYMBOL__
+family: continuation
+thesis: Enter at Fibonacci retracement levels within a trending market. Price retraces to the 0.618 or 0.5 level of a recent swing, then resumes the trend.
+entry:
+  regime: daily SMA50 must confirm trend direction
+  trigger: price touches the 0.618 retracement zone of the last swing
+  confirmation: 4H candle closes back toward the trend direction
+exit:
+  stop: below swing low (longs) or above swing high (shorts) plus buffer
+  tp1: 1R for 50 percent (swing high retest)
+  tp2: 2R for 50 percent (Fibonacci extension)
+risk:
+  max_leverage: 2
+  risk_per_trade_pct: 0.5

@@ -67,6 +67,8 @@ class ManagementState:
     max_hold_minutes: float = 90.0
     stale_after_minutes: float = 30.0
     breakeven_buffer_pct: float = 0.0012  # 0.12% buffer above/below entry
+    # Original stop at entry (used for ATR expansion calc so it doesn't compound)
+    initial_stop: float = 0.0
 
 
 def _risk(entry: float, stop: float) -> float:
@@ -223,16 +225,20 @@ def manage(ms: ManagementState) -> list[PositionAction]:
 
     # ---------------------------------------------------------------
     # 5. Volatility drift — if current ATR is 30%+ different from entry
+    #    Skip if stale-trade tightening already queued (avoids oscillation).
+    #    Use initial_stop (not current stop_trigger) so risk doesn't compound.
     # ---------------------------------------------------------------
-    if ms.entry_atr > 0 and ms.current_atr > 0:
+    base_stop = ms.initial_stop if ms.initial_stop else ms.stop_trigger
+    if ms.entry_atr > 0 and ms.current_atr > 0 and not actions:
         atr_ratio = ms.current_atr / ms.entry_atr
-        if atr_ratio > 1.3 and not ms.tp1_filled:
+        original_risk = _risk(ms.entry_price, base_stop)
+        if atr_ratio > 1.3 and not ms.tp1_filled and original_risk > 0:
             # Volatility expanded: widen SL by the same ratio to avoid
             # getting stopped on normal noise
             if ms.is_long:
-                new_sl = ms.entry_price - _risk(ms.entry_price, ms.stop_trigger) * atr_ratio
+                new_sl = ms.entry_price - original_risk * atr_ratio
                 # Don't widen past 2x original risk
-                min_sl = ms.entry_price - _risk(ms.entry_price, ms.stop_trigger) * 2.0
+                min_sl = ms.entry_price - original_risk * 2.0
                 new_sl = max(new_sl, min_sl)
                 # Only act if this would actually widen the stop
                 if new_sl < ms.stop_trigger:
@@ -245,8 +251,8 @@ def manage(ms: ManagementState) -> list[PositionAction]:
                         cancel_oid=ms.sl_oid,
                     ))
             else:
-                new_sl = ms.entry_price + _risk(ms.entry_price, ms.stop_trigger) * atr_ratio
-                max_sl = ms.entry_price + _risk(ms.entry_price, ms.stop_trigger) * 2.0
+                new_sl = ms.entry_price + original_risk * atr_ratio
+                max_sl = ms.entry_price + original_risk * 2.0
                 new_sl = min(new_sl, max_sl)
                 if new_sl > ms.stop_trigger:
                     actions.append(PositionAction(

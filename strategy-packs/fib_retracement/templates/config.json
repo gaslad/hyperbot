@@ -1,0 +1,59 @@
+{
+  "strategy_id": "__STRATEGY_ID__",
+  "pack_id": "fib_retracement",
+  "display_name": "__DISPLAY_NAME__",
+  "enabled": true,
+  "market": {
+    "symbol": "__SYMBOL__",
+    "coin": "__COIN__",
+    "market_type": "perpetual"
+  },
+  "runner": {
+    "source": "hyperliquid_candles",
+    "anchor_timeframe": "1D",
+    "trigger_timeframe": "4H",
+    "confirmation_timeframe": "1H"
+  },
+  "entry": {
+    "swing_lookback_bars": 30,
+    "trend_sma_period": 50,
+    "require_trend_alignment": true
+  },
+  "filters": {
+    "max_swing_age_bars": 20,
+    "volume_confirmation_enabled": false
+  },
+  "risk": {
+    "position_sizing": {
+      "risk_per_trade_pct": 0.5,
+      "capital_allocation_pct": 100.0,
+      "max_leverage": 2.0,
+      "margin_mode": "isolated"
+    },
+    "stop_management": {
+      "after_tp1": {
+        "mode": "breakeven"
+      }
+    }
+  },
+  "take_profit": {
+    "tp1_close_pct": 50,
+    "tp1_r_multiple": 1.0,
+    "tp2_close_pct": 50,
+    "tp2_r_multiple": 2.0
+  },
+  "exit_management": {
+    "signal_flip_exit": true,
+    "max_hold_minutes": 240,
+    "stale_after_minutes": 120,
+    "stale_min_follow_through_r": 0.25,
+    "underwater_exit_r": -0.25,
+    "hard_fail_r": -0.75
+  },
+  "execution": {
+    "allow_live_submission": false,
+    "auto_trading": {
+      "enabled": false
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "id": "fib_retracement",
+  "display_name": "Fibonacci Retracement",
+  "family": "continuation",
+  "confidence_tier": "high",
+  "automation_suitability": "high",
+  "required_data": [
+    "candles"
+  ],
+  "supported_timeframes": [
+    "1D",
+    "4H",
+    "1H"
+  ],
+  "default_risk": {
+    "risk_per_trade_pct": 0.5,
+    "capital_allocation_pct": 100,
+    "max_leverage": 2,
+    "margin_mode": "isolated"
+  },
+  "default_exits": {
+    "tp1_r_multiple": 1.0,
+    "tp2_r_multiple": 2.0,
+    "after_tp1": "breakeven"
+  },
+  "notes_for_operator": "Enters at key Fibonacci retracement levels (0.5 or 0.618) during trending markets. Stop below the swing low; TP at the swing high (extension 0.0) and 1.618 extension."
+}

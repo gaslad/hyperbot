@@ -54,7 +54,9 @@ def normalize_margin_mode(value: Any, default: str = "isolated") -> str:
 
 
 LIVE_MAX_LEVERAGE_CAP = 2.0
-CONFIDENCE_LEVERAGE_THRESHOLD = 0.8
+CONFIDENCE_LEVERAGE_MIN = 0.5       # below this → always 1x
+CONFIDENCE_LEVERAGE_FULL = 0.85     # at or above this → full max_leverage
+CONFIDENCE_LEVERAGE_THRESHOLD = CONFIDENCE_LEVERAGE_MIN  # supervision exit threshold
 PAIR_COOLDOWN_SECONDS = 30 * 60
 PAIR_REENTRY_LOCKOUT_SECONDS = 2 * 60 * 60
 BREAKEVEN_BUFFER_PCT = 0.0012
@@ -94,12 +96,24 @@ def _normalized_confidence(value: Any) -> float:
     return max(0.0, min(1.0, conf))
 
 
-def _confidence_to_leverage(value: Any, max_leverage: Any = LIVE_MAX_LEVERAGE_CAP) -> int:
+def _confidence_to_leverage(value: Any, max_leverage: Any = LIVE_MAX_LEVERAGE_CAP, regime_mult: float = 1.0) -> int:
+    """Map confidence to leverage on a smooth ramp.
+
+    - Below CONFIDENCE_LEVERAGE_MIN (0.5): always 1x
+    - CONFIDENCE_LEVERAGE_MIN to CONFIDENCE_LEVERAGE_FULL: linear ramp 1x → max_leverage
+    - Above CONFIDENCE_LEVERAGE_FULL (0.85): full max_leverage
+    - regime_mult scales the effective confidence (e.g. 0.7 in YELLOW regime)
+    """
     cap = max(1, int(round(clamp_live_leverage(max_leverage))))
     if cap <= 1:
         return 1
-    confidence = _normalized_confidence(value)
-    return cap if confidence >= CONFIDENCE_LEVERAGE_THRESHOLD else 1
+    confidence = _normalized_confidence(value) * min(1.0, max(0.0, regime_mult))
+    if confidence < CONFIDENCE_LEVERAGE_MIN:
+        return 1
+    # Linear ramp from 1 to cap over the confidence range
+    t = min(1.0, (confidence - CONFIDENCE_LEVERAGE_MIN) / (CONFIDENCE_LEVERAGE_FULL - CONFIDENCE_LEVERAGE_MIN))
+    raw = 1.0 + t * (cap - 1.0)
+    return max(1, min(cap, int(round(raw))))
 
 
 def _confidence_risk_scale(value: Any) -> float:
@@ -831,6 +845,11 @@ def _load_scalp_v2_market_data(
 
 def _candles_to_df(candles: list[dict]) -> pd.DataFrame:
     df = pd.DataFrame(candles)
+    rename = {"o": "open", "h": "high", "l": "low", "c": "close", "v": "volume", "t": "timestamp"}
+    df.rename(columns={k: v for k, v in rename.items() if k in df.columns}, inplace=True)
+    for col in ["open", "high", "low", "close", "volume"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
     if "timestamp" in df.columns:
         df = df.sort_values("timestamp").reset_index(drop=True)
     return df
@@ -1001,6 +1020,7 @@ def _restore_managed_position_from_portfolio(ps: PairState) -> bool:
         "side": "buy" if is_long else "sell",
         "entry_price": entry_price,
         "stop_trigger": stop_trigger,
+        "initial_stop": stop_trigger,
         "stop_limit": stop_trigger * (0.997 if is_long else 1.003) if stop_trigger else None,
         "tp1_trigger": float(ps.plan_tp or 0) if ps.plan_tp else None,
         "tp1_limit": None,
@@ -1461,7 +1481,7 @@ def _run_scalp_v2_cycle(
                 op.tp1_size = round(op.tp1_size * regime_mult, 6)
                 op.tp_final_size = round(op.tp_final_size * regime_mult, 6)
 
-            op.leverage = float(_confidence_to_leverage(signal.confidence / 10.0, op.leverage))
+            op.leverage = float(_confidence_to_leverage(signal.confidence / 10.0, op.leverage, regime_mult))
 
             # Order book depth check
             notional = op.size * op.entry_price
@@ -1825,7 +1845,7 @@ def trading_loop() -> None:
                             continue
 
                         size = risk_amount / price_risk
-                        live_max_leverage = _confidence_to_leverage(sig_obj.confidence, max_leverage)
+                        live_max_leverage = _confidence_to_leverage(sig_obj.confidence, max_leverage, regime_mult)
                         max_notional = equity * live_max_leverage
                         max_size = max_notional / price if price else 0
                         size = min(size, max_size)
@@ -2303,6 +2323,7 @@ def _manage_pair_position(coin: str, ps: PairState) -> None:
         max_hold_minutes=float(exit_cfg.get("max_hold_minutes", 90)),
         stale_after_minutes=float(exit_cfg.get("stale_after_minutes", 30)),
         breakeven_buffer_pct=BREAKEVEN_BUFFER_PCT,
+        initial_stop=float(managed.get("initial_stop") or stop_trigger),
     )
 
     actions = position_manager.manage(ms)
@@ -2435,10 +2456,10 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 [data-theme="dark"] .theme-toggle .icon-moon{opacity:1;transform:rotate(0deg)}
 
 /* ── Hero Section (above cards) ──────────────────────────────── */
-.hero-section{padding:24px 20px 16px;flex-shrink:0;display:flex;align-items:flex-end;justify-content:space-between}
-.hero-greeting{font-size:12px;color:var(--text3);margin-bottom:2px;letter-spacing:0.3px}
-.hero-equity-display{font-family:'DM Serif Display',Georgia,serif;font-size:42px;color:var(--text);letter-spacing:-1px;line-height:1.1}
-.hero-equity-display .cents{font-size:24px;color:var(--text3)}
+.hero-section{padding:12px 20px 8px;flex-shrink:0;display:flex;align-items:flex-end;justify-content:space-between}
+.hero-greeting{display:none}
+.hero-equity-display{font-family:'DM Serif Display',Georgia,serif;font-size:32px;color:var(--text);letter-spacing:-0.5px;line-height:1.1}
+.hero-equity-display .cents{font-size:18px;color:var(--text3)}
 .hero-pnl-badge{display:inline-flex;align-items:center;gap:4px;margin-top:6px;padding:3px 8px;border-radius:6px;font-size:12px;font-weight:500;font-family:'JetBrains Mono',monospace}
 .hero-pnl-badge.up{background:var(--green-bg);color:var(--green)}
 .hero-pnl-badge.down{background:var(--red-bg);color:var(--red)}
@@ -2471,7 +2492,9 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .summary-sep{color:var(--text4)}
 
 /* ── Card Grid ──────────────────────────────────────────────── */
-.grid-wrap{flex:1;overflow-y:auto;padding:20px}
+.master-detail{flex:1;display:flex;overflow:hidden}
+.grid-wrap{flex:1;overflow-y:auto;padding:20px;min-width:0}
+.master-detail.has-detail .grid-wrap{flex:1}
 .card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px}
 .section-label{display:flex;align-items:center;gap:8px;margin:24px 0 12px;padding:0 4px;font-size:12px;font-weight:500;color:var(--text3)}
 .section-label svg{width:13px;height:13px;opacity:0.6}
@@ -2479,7 +2502,31 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 /* ── Trade Card ─────────────────────────────────────────────── */
 .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;display:flex;flex-direction:column;gap:12px;transition:all 0.25s ease}
 .card:hover{border-color:var(--border-h);box-shadow:var(--shadow-md);transform:translateY(-1px)}
-.card.expanded{border-color:var(--border-h)}
+.card.expanded{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-bg)}
+
+/* ── Detail Side Panel ─────────────────────────────────────── */
+.detail-panel{width:0;overflow:hidden;transition:width 0.25s ease;border-left:1px solid transparent}
+.master-detail.has-detail .detail-panel{width:420px;min-width:420px;border-left-color:var(--border);overflow-y:auto}
+.detail-panel-inner{padding:24px;animation:panelIn 0.25s ease}
+@keyframes panelIn{from{opacity:0;transform:translateX(16px)}to{opacity:1;transform:translateX(0)}}
+.detail-panel-head{display:flex;align-items:center;gap:10px;margin-bottom:20px;padding-bottom:14px;border-bottom:1px solid var(--border)}
+.detail-panel-head .token-icon{width:36px;height:36px;font-size:13px}
+.detail-panel-coin{font-size:20px;font-weight:700;letter-spacing:-0.3px}
+.detail-panel-sub{font-size:13px;color:var(--text3);font-weight:500}
+.detail-panel .controls{gap:16px}
+.detail-panel .info-grid{gap:10px}
+.detail-panel .info-cell{padding:12px}
+.detail-panel .info-cell-label{font-size:12px;margin-bottom:4px}
+.detail-panel .info-cell-value{font-size:14px;font-weight:600}
+.detail-panel .sl-tp-value{font-size:18px;font-weight:700}
+.detail-panel .sl-tp-box{padding:14px;border-radius:10px}
+.detail-panel .explain-block{padding:16px;border-radius:14px}
+.detail-panel .explain-summary{font-size:14px;line-height:1.6}
+.detail-panel .conf-pct{font-size:16px}
+.detail-panel .btn-close-position{padding:12px;font-size:14px;font-weight:600}
+.detail-panel .card-action-row{gap:10px}
+.detail-panel .btn-secondary,.detail-panel .btn-start-trading,.detail-panel .btn-stop-trading{padding:12px;font-size:14px}
+@media(max-width:900px){.master-detail{flex-direction:column}.master-detail.has-detail .detail-panel{width:100%;min-width:0;border-left:none;border-top:1px solid var(--border);max-height:50vh}}
 .card.clickable{cursor:pointer}
 .card-head{display:flex;align-items:center;justify-content:space-between}
 .card-token{display:flex;align-items:center;gap:10px}
@@ -2656,12 +2703,21 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .why-label{display:flex;align-items:center;gap:4px;font-size:11px;font-weight:500;margin-bottom:6px}
 .why-label svg{width:10px;height:10px}
 .why-text{font-size:12px;color:var(--text2);line-height:1.6}
+.notif-item.read{opacity:0.5}
+.notif-item.read:hover{opacity:0.75}
+.notif-unread-dot{position:absolute;left:4px;top:50%;transform:translateY(-50%);width:6px;height:6px;border-radius:50%;background:var(--blue);flex-shrink:0}
+.notif-item{position:relative;padding-left:16px}
+.mark-all-read{font-size:11px;color:var(--blue);background:none;border:none;cursor:pointer;white-space:nowrap;padding:4px 8px;border-radius:4px;transition:background 0.15s}
+.mark-all-read:hover{background:var(--blue-bg)}
+.btn-mark-read{margin-top:8px;font-size:11px;color:var(--blue);background:var(--blue-bg);border:none;padding:4px 10px;border-radius:4px;cursor:pointer;transition:opacity 0.15s}
+.btn-mark-read:hover{opacity:0.8}
 
 /* ── Modal ──────────────────────────────────────────────────── */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.3);backdrop-filter:blur(8px);z-index:50;display:none;align-items:center;justify-content:center}
 [data-theme="dark"] .modal-overlay{background:rgba(10,15,11,0.6)}
 .modal-overlay.open{display:flex}
-.modal{background:var(--surface);border:1px solid var(--border-h);border-radius:var(--radius);padding:24px;width:100%;max-width:640px;max-height:80vh;overflow-y:auto;box-shadow:var(--shadow-md)}
+.modal{background:var(--surface);border:1px solid var(--border-h);border-radius:var(--radius);padding:24px;width:100%;max-width:640px;max-height:80vh;overflow-y:auto;box-shadow:var(--shadow-md);animation:modalIn 0.2s ease}
+@keyframes modalIn{from{opacity:0;transform:scale(0.95) translateY(8px)}to{opacity:1;transform:scale(1) translateY(0)}}
 .modal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
 .modal-head h3{font-size:15px;font-weight:600}
 .modal-subtitle{font-size:12px;color:var(--text3);margin:-8px 0 16px}
@@ -2756,7 +2812,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
       <div class="stat-label">Today</div>
       <div class="stat-value mono" id="d-daily-pnl" style="color:var(--text3)">—</div>
     </div>
-    <button class="btn-power" id="d-live-btn" onclick="toggleTrading()">
+    <button class="btn-power" id="d-live-btn" onclick="toggleTrading()" title="Toggle live trading on/off">
       <span class="badge-dot" id="d-live-dot" style="background:#555"></span>
       <span id="d-live-text">Go Live</span>
     </button>
@@ -2786,7 +2842,6 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 <!-- ── Hero Section ──────────────────────────────────────── -->
 <section class="hero-section" id="hero-section">
   <div>
-    <div class="hero-greeting" id="hero-greeting">Good afternoon</div>
     <div class="hero-equity-display" id="hero-equity-display">$0<span class="cents">.00</span></div>
     <div class="hero-pnl-badge up" id="hero-pnl-badge" style="display:none">
       <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 8 6 3 11 8"/></svg>
@@ -2804,6 +2859,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 </div>
 
 <!-- ── Card Grid ──────────────────────────────────────────── -->
+<div class="master-detail" id="d-master-detail">
 <div class="grid-wrap" id="d-grid-wrap">
   <div class="card-grid" id="d-card-grid"></div>
   <div id="d-unmanaged-section" style="display:none">
@@ -2819,6 +2875,8 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
     <div class="empty-desc">Pick a token to get started. Hyperbot will add it in supervised auto mode and choose the best supported strategy automatically.</div>
   </div>
 </div>
+<div class="detail-panel" id="d-detail-panel"></div>
+</div>
 
 <!-- ── Notification Panel ─────────────────────────────────── -->
 <div class="notif-overlay" id="notif-overlay" onclick="toggleNotifs()"></div>
@@ -2828,6 +2886,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
       Activity & Insights
     </div>
+    <span id="d-notif-mark-all"></span>
     <button class="icon-btn" onclick="toggleNotifs()">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
     </button>
@@ -2912,11 +2971,6 @@ function toggleTheme(){
 
 // ── Hero Updates ────────────────────────────────────────────
 function updateHero(s){
-  const h=new Date().getHours();
-  let g=h<12?'Good morning':h<17?'Good afternoon':'Good evening';
-  const el=document.getElementById('hero-greeting');
-  if(el) el.textContent=g;
-
   const eq=s.equity||0;
   const dollars=Math.floor(eq);
   const cents=Math.round((eq-dollars)*100);
@@ -2976,7 +3030,7 @@ async function api(path,method='GET',body=null){
 // ── Notification Engine ──────────────────────────────────────
 function addNotification(type,icon,title,why,token){
   const id=Date.now()+Math.random();
-  notifications.unshift({id,time:new Date(),type,icon,title,why,token});
+  notifications.unshift({id,time:new Date(),type,icon,title,why,token,read:false});
   if(notifications.length>50)notifications.pop();
   renderNotifications();
   updateNotifCount();
@@ -2992,9 +3046,20 @@ function timeSince(d){
 
 function updateNotifCount(){
   const el=document.getElementById('d-notif-count');
-  const c=notifications.length;
+  const c=notifications.filter(n=>!n.read).length;
   if(c>0){el.style.display='flex';el.textContent=c>9?'9+':c}
   else{el.style.display='none'}
+}
+function markAllRead(){
+  notifications.forEach(n=>n.read=true);
+  renderNotifications();
+  updateNotifCount();
+}
+function markRead(id){
+  const n=notifications.find(n=>n.id===id);
+  if(n)n.read=true;
+  renderNotifications();
+  updateNotifCount();
 }
 
 function renderNotifications(){
@@ -3012,10 +3077,19 @@ function renderNotifications(){
     system:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
     sl:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
   };
+  const unread=notifications.filter(n=>!n.read).length;
+  let headerExtra='';
+  if(unread>0){
+    headerExtra=`<button class="mark-all-read" onclick="event.stopPropagation();markAllRead()">Mark all read</button>`;
+  }
+  const markAllEl=document.getElementById('d-notif-mark-all');
+  if(markAllEl)markAllEl.innerHTML=headerExtra;
+
   list.innerHTML=notifications.map(n=>{
     const c=colorMap[n.type]||colorMap.info;
     const isExp=expandedNotif===n.id;
-    return `<button class="notif-item ${isExp?'expanded':''} ${c.cls}" onclick="toggleNotifItem(${n.id})">
+    return `<button class="notif-item ${isExp?'expanded':''} ${n.read?'read':''} ${c.cls}" onclick="toggleNotifItem(${n.id})">
+      ${!n.read?'<span class="notif-unread-dot"></span>':''}
       <div class="notif-icon" style="background:${c.bg};color:${c.accent}">${iconMap[n.icon]||iconMap.system}</div>
       <div class="notif-body">
         <div class="notif-title">${esc(n.title)}</div>
@@ -3024,6 +3098,7 @@ function renderNotifications(){
           <div class="why-label" style="color:${c.accent}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg> Why this happened</div>
           <div class="why-text">${esc(n.why)}</div>
         </div>`:''}
+        ${isExp&&!n.read?`<button class="btn-mark-read" onclick="event.stopPropagation();markRead(${n.id})">Mark as read</button>`:''}
       </div>
       <svg class="notif-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
     </button>`;
@@ -3372,6 +3447,7 @@ async function saveSettings(){
     addNotification('system','system',`Settings updated: ${lev}x leverage, ${risk}% risk, ${daily}% daily limit`,
       `These settings apply to all new trades. Leverage caps how much the bot can borrow. Risk per trade limits how much equity is at stake per position. The daily loss limit pauses all trading if losses exceed this threshold.`,null);
   }
+  showToast('Settings saved');
   toggleSettings();
 }
 
@@ -3385,6 +3461,17 @@ async function toggleTrading(){
     await api('/api/start','POST');
     addNotification('action','entry','Trading started','The bot is now actively monitoring your tokens and will execute trades when conditions are met.',null);
   }
+}
+
+// ── Toast ────────────────────────────────────────────────────
+function showToast(msg,type='success'){
+  let c=document.getElementById('toast-container');
+  if(!c){c=document.createElement('div');c.id='toast-container';c.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:9999;display:flex;flex-direction:column;gap:8px;align-items:center';document.body.appendChild(c)}
+  const t=document.createElement('div');
+  t.style.cssText=`padding:10px 20px;border-radius:10px;font-size:13px;font-weight:500;color:#fff;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);opacity:0;transition:opacity 0.2s;background:${type==='error'?'rgba(239,68,68,0.85)':'rgba(34,197,94,0.85)'}`;
+  t.textContent=msg;c.appendChild(t);
+  requestAnimationFrame(()=>t.style.opacity='1');
+  setTimeout(()=>{t.style.opacity='0';setTimeout(()=>t.remove(),200)},2500);
 }
 
 // ── Card Rendering ───────────────────────────────────────────
@@ -3406,6 +3493,7 @@ function renderCards(s){
   const pairs=s.pairs||{};
   const coins=Object.keys(pairs);
   let html='';
+  let detailHtml='';
   let activeCount=0,watchingCount=0,totalPnl=0;
 
   for(const coin of coins){
@@ -3429,7 +3517,7 @@ function renderCards(s){
     const botNote=ps.bot_note||`${modeLabel} mode is scanning ${coin}.`;
     const botDetails=(ps.bot_details||[]).slice(0,3);
     const hasSignal=!!(ps.last_signals&&ps.last_signals.some(sig=>sig.direction!=='none'));
-    const scanAgoCompact=ps.last_scan_ts?timeAgo(ps.last_scan_ts):'waiting';
+    const scanAgoCompact=ps.last_scan_ts?timeAgo(ps.last_scan_ts):'—';
     const headerSubtitle=inTrade?modeLabel+' mode':strategy;
     const hasCustomBotContext=!!ps.bot_note||botDetails.length>0;
 
@@ -3459,13 +3547,13 @@ function renderCards(s){
       :(hasSignal?`${Math.round((((ps.last_signals||[]).find(sig=>sig.direction!=='none')?.confidence)||0)*100)}%`:'Idle');
     const summarySubvalue=inTrade
       ?esc(strategy)
-      :(hasSignal?esc(strategy):`Last scan ${esc(scanAgoCompact)}`);
+      :(hasSignal?esc(strategy):(scanAgoCompact==='—'?'Waiting for first scan':`Last scan ${esc(scanAgoCompact)}`));
     html+=`<div class="summary-row">
       <div class="summary-main">
         <span class="status-badge" style="background:${badgeBg};color:${badgeColor}">${arrow} ${statusText}</span>
       </div>
       <div class="summary-side">
-        <div class="summary-value mono" style="color:${inTrade?(pnl>=0?'var(--green)':'var(--red)'):'var(--text1)'}">${summaryValue}</div>
+        <div class="summary-value mono" style="color:${inTrade?(pnl>=0?'var(--green)':'var(--red)'):'var(--text3)'};${!inTrade&&!hasSignal?'font-size:14px;font-weight:400':''}">${summaryValue}</div>
         <div class="summary-subvalue">${summarySubvalue}</div>
       </div>
     </div>`;
@@ -3501,7 +3589,12 @@ function renderCards(s){
       const confLabel=sigConf>=70?'Setup forming \u2014 entry imminent':sigConf>=50?'Most conditions met':sigConf>=25?'Some conditions met':sigConf>0?'Few conditions met':'Scanning\u2026';
       const explainSummary=hasCustomBotContext?botNote:(ps.auto_strategy?`${strategy} is the current best candidate, but the setup still needs confirmation.`:`${strategy} is pinned, but the entry checklist is not complete yet.`);
 
-      html+=`<div class="controls watch-edu">
+      detailHtml+=`<div class="detail-panel-head">
+        <div class="token-icon" style="display:inline-flex;align-items:center;justify-content:center;border-radius:50%;background:var(--accent-bg);border:1px solid var(--border)">${tokenIcon(coin)}</div>
+        <div><div class="detail-panel-coin">${coin}</div><div class="detail-panel-sub">${esc(headerSubtitle)}</div></div>
+        <button class="btn-x" style="margin-left:auto" onclick="expandedCard=null;if(lastState)renderCards(lastState)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+      </div>`;
+      detailHtml+=`<div class="controls watch-edu">
         <div class="edu-section">
           <div class="explain-block">
             <div class="explain-head">
@@ -3541,7 +3634,7 @@ function renderCards(s){
           </button>
           <button class="btn-secondary" onclick="event.stopPropagation();toggleSettings('${coin}')">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-            Risk
+            Risk Settings
           </button>
         </div>
       </div>`;
@@ -3549,7 +3642,16 @@ function renderCards(s){
 
     // Expanded controls — Position cards
     if(isExp&&inTrade){
-      html+=`<div class="controls">
+      detailHtml+=`<div class="detail-panel-head">
+        <div class="token-icon" style="display:inline-flex;align-items:center;justify-content:center;border-radius:50%;background:var(--accent-bg);border:1px solid var(--border)">${tokenIcon(coin)}</div>
+        <div><div class="detail-panel-coin">${coin}</div><div class="detail-panel-sub">${direction} &middot; ${esc(strategy)}</div></div>
+        <div style="margin-left:auto;text-align:right">
+          <div class="mono" style="font-size:20px;font-weight:700;color:${pnl>=0?'var(--green)':'var(--red)'}">${fmt$(pnl)}</div>
+          <div class="mono" style="font-size:13px;color:var(--text3)">${fmtPct(pnlPct)}</div>
+        </div>
+        <button class="btn-x" onclick="expandedCard=null;if(lastState)renderCards(lastState)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+      </div>`;
+      detailHtml+=`<div class="controls">
         ${hasCustomBotContext?`<div class="bot-view" style="margin-bottom:12px">
           <div class="bot-view-title">Position Note</div>
           <div class="bot-view-note">${esc(botNote)}</div>
@@ -3581,7 +3683,7 @@ function renderCards(s){
         <div class="card-action-row">
           <button class="btn-secondary" onclick="event.stopPropagation();toggleSettings('${coin}')">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-            Risk
+            Risk Settings
           </button>
           <button class="btn-close-position" style="flex:1" onclick="event.stopPropagation();closePosition('${coin}')">Close Position</button>
         </div>
@@ -3598,6 +3700,29 @@ function renderCards(s){
   </button>`;
 
   grid.innerHTML=html;
+
+  // Detail side panel — update content but avoid animation replay on poll refresh
+  const detailEl=document.getElementById('d-detail-panel');
+  const masterEl=document.getElementById('d-master-detail');
+  const prevDetailCoin=detailEl.getAttribute('data-coin')||'';
+  const targetDetailCoin=expandedCard||'';
+  const coinChanged=prevDetailCoin!==targetDetailCoin;
+  if(detailHtml){
+    if(coinChanged){
+      detailEl.innerHTML=`<div class="detail-panel-inner">${detailHtml}</div>`;
+    }else{
+      // Same coin — update content without re-triggering animation
+      const inner=detailEl.querySelector('.detail-panel-inner');
+      if(inner){inner.innerHTML=detailHtml}
+      else{detailEl.innerHTML=`<div class="detail-panel-inner" style="animation:none">${detailHtml}</div>`}
+    }
+    detailEl.setAttribute('data-coin',targetDetailCoin);
+    masterEl.classList.add('has-detail');
+  }else{
+    detailEl.innerHTML='';
+    detailEl.setAttribute('data-coin','');
+    masterEl.classList.remove('has-detail');
+  }
 
   // Empty state
   document.getElementById('d-empty').style.display=coins.length===0?'block':'none';
@@ -3651,14 +3776,22 @@ async function setCardRisk(coin,lev,risk){
   }catch(e){console.error(e)}
 }
 
-// ── SL/TP Adjustments (placeholder — wired to notification) ──
-function adjustSl(coin,dir){
-  addNotification('info','sl',`Stop loss ${dir==='tighter'?'tightened':'widened'} for ${coin}`,
-    `${dir==='tighter'?'Tightening':'Widening'} the stop loss ${dir==='tighter'?'reduces potential loss but increases the chance of being stopped out':'gives the trade more room to breathe but increases potential loss'}. The bot will use the new level for this position.`,coin);
+// ── SL/TP Adjustments ────────────────────────────────────────
+async function adjustSl(coin,dir){
+  try{
+    await api('/api/adjust-sl','POST',{coin,direction:dir});
+    showToast(`SL ${dir==='tighter'?'tightened':'widened'} for ${coin}`);
+    addNotification('info','sl',`Stop loss ${dir==='tighter'?'tightened':'widened'} for ${coin}`,
+      `${dir==='tighter'?'Tightening':'Widening'} the stop loss ${dir==='tighter'?'reduces potential loss but increases the chance of being stopped out':'gives the trade more room to breathe but increases potential loss'}. The bot will use the new level for this position.`,coin);
+  }catch(e){showToast(`SL adjust failed: ${e.message}`,'error')}
 }
-function adjustTp(coin,dir){
-  addNotification('info','sl',`Take profit ${dir==='closer'?'moved closer':'moved further'} for ${coin}`,
-    `${dir==='closer'?'A closer take profit locks in gains sooner but limits upside':'A further take profit aims for larger gains but the trade needs to move more in your favor'}. The bot will use the new level.`,coin);
+async function adjustTp(coin,dir){
+  try{
+    await api('/api/adjust-tp','POST',{coin,direction:dir});
+    showToast(`TP ${dir==='closer'?'moved closer':'moved further'} for ${coin}`);
+    addNotification('info','sl',`Take profit ${dir==='closer'?'moved closer':'moved further'} for ${coin}`,
+      `${dir==='closer'?'A closer take profit locks in gains sooner but limits upside':'A further take profit aims for larger gains but the trade needs to move more in your favor'}. The bot will use the new level.`,coin);
+  }catch(e){showToast(`TP adjust failed: ${e.message}`,'error')}
 }
 async function closePosition(coin){
   if(!confirm('Close your '+coin+' position at market price?'))return;
@@ -3682,10 +3815,15 @@ async function dashPoll(){
 
     // Header + Hero
     document.getElementById('d-equity').textContent='$'+(s.equity||0).toLocaleString(undefined,{maximumFractionDigits:0});
-    const dayPnl=s.equity&&s.start_of_day_equity?(s.equity-s.start_of_day_equity)/s.start_of_day_equity*100:0;
     const dayPnlEl=document.getElementById('d-daily-pnl');
-    dayPnlEl.textContent=fmtPct(dayPnl);
-    dayPnlEl.style.color=dayPnl>=0?'var(--green)':'var(--red)';
+    if(s.equity&&s.start_of_day_equity&&s.start_of_day_equity>0){
+      const dayPnl=(s.equity-s.start_of_day_equity)/s.start_of_day_equity*100;
+      dayPnlEl.textContent=fmtPct(dayPnl);
+      dayPnlEl.style.color=dayPnl>=0?'var(--green)':'var(--red)';
+    }else{
+      dayPnlEl.textContent='\u2014';
+      dayPnlEl.style.color='var(--text3)';
+    }
     updateHero(s);
 
     // Status badge
@@ -4290,6 +4428,51 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 traceback.print_exc()
                 self._json({"ok": False, "error": str(e)}, 500)
+
+        elif path == "/api/adjust-sl":
+            coin = body.get("coin", "").upper().strip()
+            direction = body.get("direction", "")  # "tighter" or "wider"
+            if not coin or direction not in ("tighter", "wider"):
+                self._json({"ok": False, "error": "coin and direction (tighter/wider) required"}, 400)
+                return
+            with STATE.lock:
+                ps = STATE.pairs.get(coin)
+                if not ps or not ps.plan_sl:
+                    self._json({"ok": False, "error": f"No SL set for {coin}"}, 400)
+                    return
+                # Determine if long or short from managed position
+                mp = ps.managed_position or {}
+                is_long = mp.get("side", "LONG") == "LONG"
+                step = ps.plan_sl * 0.005  # 0.5% step
+                if direction == "tighter":
+                    ps.plan_sl = ps.plan_sl + step if is_long else ps.plan_sl - step
+                else:
+                    ps.plan_sl = ps.plan_sl - step if is_long else ps.plan_sl + step
+                new_sl = ps.plan_sl
+            log_trade("ADJUST_SL", "operator", 0, new_sl, f"{coin} SL {direction} -> {new_sl:.4f}")
+            self._json({"ok": True, "coin": coin, "new_sl": new_sl})
+
+        elif path == "/api/adjust-tp":
+            coin = body.get("coin", "").upper().strip()
+            direction = body.get("direction", "")  # "closer" or "further"
+            if not coin or direction not in ("closer", "further"):
+                self._json({"ok": False, "error": "coin and direction (closer/further) required"}, 400)
+                return
+            with STATE.lock:
+                ps = STATE.pairs.get(coin)
+                if not ps or not ps.plan_tp:
+                    self._json({"ok": False, "error": f"No TP set for {coin}"}, 400)
+                    return
+                mp = ps.managed_position or {}
+                is_long = mp.get("side", "LONG") == "LONG"
+                step = ps.plan_tp * 0.005  # 0.5% step
+                if direction == "closer":
+                    ps.plan_tp = ps.plan_tp - step if is_long else ps.plan_tp + step
+                else:
+                    ps.plan_tp = ps.plan_tp + step if is_long else ps.plan_tp - step
+                new_tp = ps.plan_tp
+            log_trade("ADJUST_TP", "operator", 0, new_tp, f"{coin} TP {direction} -> {new_tp:.4f}")
+            self._json({"ok": True, "coin": coin, "new_tp": new_tp})
 
         elif path == "/api/backtest":
             coin = body.get("coin", "").upper().strip() or STATE.coin
