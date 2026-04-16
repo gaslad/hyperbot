@@ -569,15 +569,22 @@ def round_size(size: float, sz_decimals: int) -> float:
 
 
 def round_price(price: float, coin: str, base_url: str = HL_MAINNET) -> float:
-    """Round price to 8 decimal places for Hyperliquid wire serialization.
+    """Round price to 5 significant figures for Hyperliquid.
 
-    Hyperliquid SDK uses 8 decimals for float-to-wire conversion to avoid
-    precision issues. This prevents errors like "float_to_wire causes rounding".
+    Hyperliquid rejects orders where the price has more than 5 significant
+    figures ("Order has invalid price."). This was the root cause of all
+    overnight order rejections — market order slippage produced prices like
+    84.22905 (7 sig figs) which the exchange rejected silently.
     """
     if price <= 0:
         return price
-    # 8 decimal places is the safe maximum for Hyperliquid's float serialization
-    return round(price, 8)
+    from math import log10, floor
+    # 5 significant figures is the Hyperliquid maximum for prices.
+    # Cap at 8 decimal places for SDK float_to_wire compatibility.
+    decimals = min(5 - 1 - floor(log10(abs(price))), 8)
+    if decimals < 0:
+        decimals = 0
+    return round(price, decimals)
 
 
 # ---------------------------------------------------------------------------
