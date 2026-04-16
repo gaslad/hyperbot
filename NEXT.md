@@ -1,49 +1,54 @@
 # Next
 
-Last updated: 2026-04-15
+Last updated: 2026-04-16
 
 ## Just Completed
 
-- Implemented **growth mode** — a switchable aggressive trading preset for fast account growth
-- `scalp_strategy_v2.py`: added `growth_config()` and `preservation_config()` factory functions
-  - Growth: 2% risk, 4× max leverage, 1.2× RVOL filter, 1.5R final target, 5% daily halt, 7 session losses
-  - Preservation: unchanged original defaults (0.5% risk, 2× leverage, 1.8R target)
-- `position_manager.py`: made trailing stop configurable via `ManagementState` fields
-  - New fields: `trail_gap_r`, `trail_min_lock_r`, `trail_activation_r`, `trail_ratchet_threshold_r`
-  - Defaults unchanged (backwards-compatible); growth mode passes tighter values (0.3R gap vs 0.5R)
-- `dashboard.py`: full growth mode integration
-  - `--mode growth|preservation` CLI flag + `HYPERBOT_MODE` env var
-  - Mode-dependent: 15m cooldown (was 30m), 45m reentry lockout (was 2hr), 6 scan batch (was 3), 3× default leverage
-  - `DEFAULT_LIQUID_PAIRS`: BTC, ETH, SOL, DOGE, SUI, PEPE, WIF, LINK, AVAX, ARB, HYPE, XRP — auto-registered in growth mode
-  - Growth mode overrides STATE risk params and prints mode banner on startup
-- `operator-policy.json`: added `growth_bands` alongside `safe_bands`, `default_liquid_pairs` list, bumped to version 2
-- `AGENTS.md`: documented Trading Modes section with full parameter comparison table
+- **Fixed root cause of 0 trades overnight**: `round_price()` produced >5 significant figures on slippage-adjusted prices. Hyperliquid rejected all 226 attempts with "Order has invalid price." Now enforces 5 sig figs.
+- **Growth/preservation toggle** in dashboard header — clickable badge switches mode live, reconfigures risk params, adds missing liquid pairs.
+- **Dynamic liquid pairs** — `fetch_top_liquid_pairs()` replaces hardcoded list, fetches top 12 by 24h volume from Hyperliquid API.
+- **Enhanced daily report** — Suggestions section now includes rejection diagnosis with counts, underperforming coin flags, downtime estimation, fee drag warnings.
+- **Fixed CLI** — `~/.local/bin/hyperbot` wrapper created, `hyperbot --help` works.
 
 ## Pending — Ready to Pick Up
 
-1. **First live growth mode test** — launch with `hyperbot dashboard --mode growth --live --confirm-risk` and monitor the first 4-6 hours. Watch for:
-   - Correct pair auto-loading (should see 12 pairs registered on startup)
-   - Strategy using 2% risk and 4× leverage cap
-   - Tighter trailing stops activating at 0.4R instead of 0.5R
-   - 15-minute cooldowns between trades on the same pair
-   - Growth/Preservation toggle badge in header working correctly
-2. **Monitor SL fixes from previous session** — the SL oscillation fix is still untested in production. Growth mode's higher frequency will stress-test it faster.
-3. Verify `hyperbot.enseris.com` DNS propagation (from previous session — may be resolved by now).
+1. **Restart dashboard to pick up `round_price` fix** — the running instance (PID 82779, port 53488) still has the old 8-decimal code. Kill stale instances (PIDs 11388, 13439) and restart:
+   ```
+   kill 11388 13439 82779
+   hyperbot dashboard --mode growth --live --confirm-risk
+   ```
+   Then monitor for 2-4 hours. Orders should now succeed. Watch for:
+   - First successful FILLED entry in trade log
+   - SL placement succeeding (not "invalid price")
+   - Growth mode toggle badge showing correctly in header
 
-## Blockers & Warnings
+2. **Verify DNS for `hyperbot.enseris.com`** — still not resolving. Check Hostinger hPanel: ensure subdomain exists and A record points to 82.197.83.159. If NS propagation is stuck, try adding A record manually.
 
-- Growth mode is code-complete but **untested in live trading** — first session should be monitored closely
-- All growth mode changes are in templates; existing workspaces need a dashboard restart to pick up the sync
+3. **Remove ZEC from active pairs** — daily report flagged 0W/5L, -$10.24 net. Either remove it or tighten its filters. Check if it's being auto-added by `fetch_top_liquid_pairs()` (it was #5 by volume yesterday).
+
+4. **[improvement] Add report sections proposed but not implemented**:
+   - Missed Opportunities (signals that passed filters but were exchange-rejected)
+   - System Health (API latency, error rate, uptime %)
+   - Risk Exposure (peak notional, distance to daily halt)
+   - Hourly Heatmap (which hours produce best P&L)
+   - Slippage Report (entry price vs signal price delta)
+
+5. **[improvement] Strategy attribution gap** — fills that happen while dashboard is restarting can't be attributed to a strategy. Consider persisting pending-order state to disk so attribution survives restarts.
+
+## Blockers
+
+- Dashboard must be restarted for price fix to take effect — until then, orders will continue to be rejected
+- DNS for `hyperbot.enseris.com` still not resolving
 
 ## Decisions Made
 
-- Growth mode is a separate preset, not a modification of defaults — `preservation_config()` returns the exact original settings, so switching back is lossless
-- RVOL was the only regime filter relaxed (1.5× → 1.2×); all other quality filters (ADX, choppiness, EMA, CVD) stay strict in both modes
-- Default liquid pairs list is curated for Hyperliquid specifically: all 12 have tight spreads and deep L2 books as of April 2026
-- Trail parameters are passed through `ManagementState` rather than module-level constants, keeping position_manager stateless and testable
+- `round_price()` uses 5 significant figures (not 8 decimal places) — this matches Hyperliquid's documented price requirements. The previous "8 decimal" approach was a workaround for double-rounding that masked the real issue.
+- Dynamic liquid pairs replaces hardcoded list — pairs rotate based on real 24h volume, not a static curated list. $5M daily volume minimum filters out illiquid assets.
+- Growth mode toggle is a UI badge, not a settings panel item — keeps it visible and one-click accessible since it changes fundamental risk parameters.
+- Three stale dashboard instances accumulated overnight because new launches don't kill old ones. Consider adding a PID file or port lock.
 
 ## Assumptions
 
 - `AGENTS.md` is the single source of truth for repo instructions
-- Workspace script sync (`hyperbot.py dashboard`) will push template changes to active workspaces on next restart
-- The 12 default pairs remain liquid on Hyperliquid — should be re-validated if market conditions change significantly
+- Workspace script sync pushes template changes to active workspaces on restart
+- The `round_price` fix will resolve the majority of order rejections (226/239 were "invalid price")

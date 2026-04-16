@@ -2,6 +2,24 @@
 
 Durable findings from hyperbot development that matter beyond this session.
 
+## Hyperliquid Requires 5 Significant Figures for Prices (2026-04-16)
+
+**Finding**: `round_price()` rounding to 8 decimal places does NOT satisfy Hyperliquid's price requirements. The exchange requires ≤5 significant figures, and rejects orders silently with "Order has invalid price."
+
+**The Bug**: Market orders add 0.5% slippage to the mid price. SOL at $83.81 → $84.22905 (7 sig figs). The SDK's `float_to_wire()` doesn't enforce sig fig limits — it just formats and sends. The exchange API rejects it. This caused **226 rejections overnight** with zero fills on attempted orders.
+
+**Why It Was Hard to Find**: The previous session (2026-04-15) changed `round_price()` from a broken 5-sig-fig algorithm to "safe 8 decimal" to fix double-rounding in position_manager. The double-rounding fix was correct, but switching to 8 decimals introduced a new failure mode: prices with >5 sig figs. The error message "Order has invalid price" doesn't mention significant figures.
+
+**The Fix**: `round_price()` now uses `min(5 - 1 - floor(log10(abs(price))), 8)` to compute the exact decimal count for 5 significant figures, capped at 8 for SDK compatibility.
+
+**Action**: When working with Hyperliquid order prices:
+1. Always enforce ≤5 significant figures, not just decimal places
+2. Test with slippage-adjusted prices, not just raw mid prices
+3. The SDK's `float_to_wire()` is NOT a safety net — it only checks round-trip precision, not sig fig limits
+4. Verify with: `len(str(price).replace('.','').lstrip('0')) <= 5`
+
+---
+
 ## Float Precision in Crypto Exchange APIs (2026-04-15)
 
 **Finding**: Double-rounding of prices in position management → exchange API rejection.

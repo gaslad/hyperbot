@@ -2,3 +2,4 @@ Legacy history moved to `.tasks/_log.md`.
 
 Do not append new entries here.
 2026-04-15T21:30 | claude | hyperbot | Added growth mode preset: 2% risk, 4x leverage, 12 default liquid pairs, tighter trailing stops, 15m cooldowns — switchable via --mode flag
+2026-04-16T10:30 | claude | hyperbot | Fixed round_price (5 sig figs — root cause of 226 overnight rejections), added mode toggle UI, dynamic liquid pairs, enhanced daily report suggestions
