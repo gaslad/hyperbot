@@ -401,63 +401,96 @@ class TradeJournal:
         wins = current["wins"]
         losses = current["losses"]
         win_rate = current["win_rate_pct"]
+        rejected = action_counts.get("REJECTED", 0)
+        filled = action_counts.get("FILLED", 0)
+
+        # -- Insights --
 
         if wins > losses and closed_pnl > 0:
-            learning.append("The bot is keeping more of the profitable setups than before; the current guardrails are filtering noise.")
+            learning.append("Profitable day — current filters are selecting quality setups.")
         elif losses > wins:
-            learning.append("The bot is still paying for some weak entries; the next tuning pass should be stricter on entry quality.")
+            learning.append("More losses than wins today; entry quality should be reviewed in the next tuning pass.")
         else:
-            learning.append("The bot is close to break-even on closed fills; the next gain likely comes from better filtering, not more trades.")
+            learning.append("Near break-even on closed fills; gains will come from better filtering, not more trades.")
 
-        if action_counts.get("SKIP", 0) > action_counts.get("FILLED", 0):
-            learning.append("Most opportunities are being rejected or skipped, which suggests the filters are doing real work instead of forcing trades.")
+        if action_counts.get("SKIP", 0) > filled:
+            learning.append("Most opportunities were skipped — filters are doing real work instead of forcing trades.")
 
         if action_counts.get("SL_FAIL", 0) > 0:
-            learning.append("Stop-loss placement is a live execution risk and should stay a priority before increasing size.")
-            suggestions.append("Audit SL placement and reduce reliance on any path that can leave a position briefly unprotected.")
+            learning.append("Stop-loss placement failed at least once — positions may have been briefly unprotected.")
+            suggestions.append("Audit SL placement logic; ensure every entry has a confirmed SL before the next scan cycle.")
 
         if action_counts.get("LEV_FAIL", 0) > 0:
-            learning.append("Leverage updates are occasionally failing, so the bot should pre-check margin and leverage caps before entry.")
-            suggestions.append("Reduce leverage targets or add a preflight margin check before placing entries.")
+            learning.append("Leverage updates failed — margin or leverage caps may need a preflight check.")
+            suggestions.append("Add a margin/leverage preflight check before entry, or reduce target leverage.")
 
-        if action_counts.get("REJECTED", 0) > 0:
-            learning.append("Order rejections are still part of the workflow, which means the bot needs more pre-trade hygiene on size, tick, or notional checks.")
+        # Rejection diagnosis
+        if rejected > 0:
+            reject_rate = rejected / max(rejected + filled, 1) * 100
+            learning.append(f"{rejected} order(s) rejected ({reject_rate:.0f}% rejection rate).")
+            if note_counts:
+                top_note, top_count = note_counts.most_common(1)[0]
+                if "invalid price" in top_note.lower():
+                    suggestions.append(f"**{top_count}x 'invalid price' rejections** — prices must have ≤5 significant figures on Hyperliquid. Verify round_price() is enforcing this.")
+                elif "insufficient" in top_note.lower():
+                    suggestions.append(f"**{top_count}x '{top_note}'** — reduce position size or check margin balance.")
+                else:
+                    suggestions.append(f"Top rejection reason: {top_note} ({top_count}x) — investigate and add a pre-trade check.")
 
-        if note_counts:
-            top_note, top_note_count = note_counts.most_common(1)[0]
-            learning.append(f"Most repeated friction this week was: {top_note} ({top_note_count}x).")
+        # Downtime estimation from trade log gaps
+        records_in_window = current.get("trade_log_count", 0)
+        window_hours = (current["window_end_ms"] - current["window_start_ms"]) / 3_600_000
+        if records_in_window > 0 and window_hours > 0:
+            events_per_hour = records_in_window / window_hours
+            if events_per_hour < 1.0 and window_hours >= 12:
+                est_active_hours = min(records_in_window / max(events_per_hour, 0.5), window_hours)
+                est_downtime = window_hours - est_active_hours
+                if est_downtime > 2:
+                    learning.append(f"Estimated ~{est_downtime:.0f}h of inactivity in the last {window_hours:.0f}h window — potential missed opportunities.")
+                    suggestions.append("Ensure the bot runs 20+ hours/day; crypto markets produce setups in all sessions.")
+
+        # Per-coin performance suggestions
+        outcome = current.get("outcome_by_coin", {})
+        losing_coins = [c for c, s in outcome.items() if s["losses"] > s["wins"] and s["net_pnl"] < -5]
+        winning_coins = [c for c, s in outcome.items() if s["wins"] > s["losses"] and s["net_pnl"] > 5]
+        if losing_coins:
+            suggestions.append(f"Consider removing or tightening filters for underperforming coins: {', '.join(losing_coins)}.")
+        if winning_coins:
+            learning.append(f"Strong performers today: {', '.join(winning_coins)} — validate edge persists before sizing up.")
+
+        # Fee drag
+        fees = current.get("fees", 0)
+        if closed_pnl != 0 and fees > 0:
+            fee_drag = fees / max(abs(closed_pnl), 0.01) * 100
+            if fee_drag > 50:
+                learning.append(f"Fees consumed {fee_drag:.0f}% of gross P&L — consider using more maker (ALO) orders to reduce costs.")
 
         if strategy_activity:
-            top_strategy, top_strategy_count = strategy_activity.most_common(1)[0]
-            learning.append(f"{top_strategy} generated the most activity ({top_strategy_count} events), so it is the best candidate for weekly tuning.")
-        if current.get("attributed_fill_count", 0) > 0:
-            learning.append(f"{current['attributed_fill_count']} closed fills were attributed back to a strategy using prior order logs.")
+            top_strategy, top_count = strategy_activity.most_common(1)[0]
+            learning.append(f"{top_strategy} generated the most activity ({top_count} events).")
 
         if previous:
             delta_win = current["win_rate_pct"] - previous["win_rate_pct"]
             delta_pnl = current["closed_pnl"] - previous["closed_pnl"]
             if delta_win > 0.5:
-                suggestions.append(f"Win rate improved by {delta_win:+.1f} points; keep the recent filter changes and validate them for another week.")
+                suggestions.append(f"Win rate improved by {delta_win:+.1f}pp — keep recent filter changes and validate for another week.")
             elif delta_win < -0.5:
-                suggestions.append(f"Win rate fell by {delta_win:+.1f} points; back off the most recent rule changes before expanding size.")
+                suggestions.append(f"Win rate dropped {delta_win:+.1f}pp — consider rolling back the most recent rule changes.")
             if delta_pnl > 0:
-                learning.append(f"Closed PnL improved by {delta_pnl:+.4f} USDC versus the prior week.")
+                learning.append(f"P&L improved {delta_pnl:+.2f} USDC vs prior period.")
             elif delta_pnl < 0:
-                learning.append(f"Closed PnL declined by {delta_pnl:+.4f} USDC versus the prior week.")
+                learning.append(f"P&L declined {delta_pnl:+.2f} USDC vs prior period.")
 
         if win_rate >= 60 and closed_pnl > 0:
-            suggestions.append("Keep the current primary strategy mix and only widen size after the same edge survives another week.")
+            suggestions.append("Edge looks solid — hold current strategy mix and only increase size after another consistent week.")
         elif win_rate < 45 and losses > wins:
-            suggestions.append("Tighten the highest-frequency entry filter before increasing activity or leverage.")
-
-        if action_counts.get("TP1_SET", 0) + action_counts.get("TP2_SET", 0) > 0:
-            learning.append("Partial exits are being staged correctly, which is a good sign that trade management is working.")
+            suggestions.append("Win rate below 45% — tighten entry filters before increasing activity or leverage.")
 
         if action_counts.get("COOLDOWN", 0) > 0 or action_counts.get("HALT", 0) > 0:
-            learning.append("Cooldowns and halts are firing, which means the risk guardrails are active instead of symbolic.")
+            learning.append("Risk guardrails (cooldowns/halts) fired — circuit breakers are active.")
 
         if not suggestions:
-            suggestions.append("Keep collecting another week of fills before making larger changes; the sample is still small.")
+            suggestions.append("Sample size is still small — collect another week of data before making parameter changes.")
 
         return learning, suggestions
 
